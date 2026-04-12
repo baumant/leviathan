@@ -10,7 +10,10 @@ export class Ship {
   private sinkProgress = 0;
   private readonly hullMaterial: THREE.MeshStandardMaterial;
   private readonly mastMaterial: THREE.MeshStandardMaterial;
+  private readonly sailMaterial: THREE.MeshStandardMaterial;
   private readonly lanternMaterial: THREE.MeshStandardMaterial;
+  private readonly lanternHalo: THREE.Mesh;
+  private readonly lanternHaloMaterial: THREE.MeshBasicMaterial;
   private readonly lanternLight: THREE.PointLight;
   private readonly baseYaw: number;
   private readonly bobOffset = Math.random() * Math.PI * 2;
@@ -64,24 +67,52 @@ export class Ship {
     boom.position.set(0, 5.2, -0.25);
     boom.rotation.x = Math.PI / 2;
 
+    this.sailMaterial = new THREE.MeshStandardMaterial({
+      color: new THREE.Color('#ccb996'),
+      roughness: 1,
+      metalness: 0,
+      flatShading: true,
+    });
+
     const sail = new THREE.Mesh(
       new THREE.BoxGeometry(0.1, 3.6, 4.2),
-      new THREE.MeshStandardMaterial({
-        color: new THREE.Color('#ccb996'),
-        roughness: 1,
-        metalness: 0,
-        flatShading: true,
-      }),
+      this.sailMaterial,
     );
     sail.position.set(0, 5.1, 0.55);
 
     const lantern = new THREE.Mesh(new THREE.SphereGeometry(0.28, 6, 6), this.lanternMaterial);
     lantern.position.set(0, 2.25, 3.9);
 
+    this.lanternHaloMaterial = new THREE.MeshBasicMaterial({
+      color: new THREE.Color('#ffcf8f'),
+      transparent: true,
+      opacity: 0.18,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    this.lanternHaloMaterial.toneMapped = false;
+
+    this.lanternHalo = new THREE.Mesh(
+      new THREE.SphereGeometry(1.2, 10, 10),
+      this.lanternHaloMaterial,
+    );
+    this.lanternHalo.position.copy(lantern.position);
+
     this.lanternLight = new THREE.PointLight('#ffb25a', 2.2, 22, 2);
     this.lanternLight.position.copy(lantern.position);
 
-    this.root.add(hull, foredeck, sternDeck, bow, mast, boom, sail, lantern, this.lanternLight);
+    this.root.add(
+      hull,
+      foredeck,
+      sternDeck,
+      bow,
+      mast,
+      boom,
+      sail,
+      lantern,
+      this.lanternHalo,
+      this.lanternLight,
+    );
     this.root.position.set(36, 0.8, 58);
     this.root.rotation.order = 'YXZ';
   }
@@ -134,6 +165,8 @@ export class Ship {
     const lanternPulse = 0.85 + Math.sin(elapsedSeconds * 4.2 + this.bobOffset * 2) * 0.15;
     this.lanternLight.intensity = Math.max(0, (2.1 - damageRatio - this.sinkProgress * 1.6) * lanternPulse);
     this.lanternMaterial.emissiveIntensity = Math.max(0, 0.9 - this.sinkProgress * 0.72);
+    this.lanternHaloMaterial.opacity = Math.max(0, (0.14 + lanternPulse * 0.06) * (1 - this.sinkProgress * 0.92));
+    this.lanternHalo.scale.setScalar(1.05 + lanternPulse * 0.18 + damageRatio * 0.22);
 
     this.root.updateMatrixWorld();
   }
@@ -147,11 +180,32 @@ export class Ship {
     return this.root.worldToLocal(target);
   }
 
+  setSubmergedReadabilityCue(amount: number): void {
+    const cue = THREE.MathUtils.clamp(amount, 0, 1);
+
+    this.hullMaterial.emissive.set('#8fb7df');
+    this.hullMaterial.emissiveIntensity = cue * 0.14;
+
+    this.mastMaterial.emissive.set('#86a5c8');
+    this.mastMaterial.emissiveIntensity = cue * 0.11;
+
+    this.sailMaterial.emissive.set('#98b6d6');
+    this.sailMaterial.emissiveIntensity = cue * 0.08;
+
+    this.lanternMaterial.emissiveIntensity += cue * 0.62;
+    this.lanternLight.intensity *= 1 + cue * 0.8;
+    this.lanternLight.distance = THREE.MathUtils.lerp(22, 32, cue);
+
+    this.lanternHaloMaterial.opacity = Math.min(0.8, this.lanternHaloMaterial.opacity + cue * 0.34);
+    this.lanternHalo.scale.multiplyScalar(1 + cue * 0.28);
+  }
+
   private updateDamageLook(): void {
     const damageRatio = 1 - this.healthPercent;
 
     this.hullMaterial.color.set('#5e4330').lerp(new THREE.Color('#23150f'), damageRatio * 0.75);
     this.mastMaterial.color.set('#8c674d').lerp(new THREE.Color('#403127'), damageRatio * 0.68);
+    this.sailMaterial.color.set('#ccb996').lerp(new THREE.Color('#6f6351'), damageRatio * 0.42);
     this.lanternMaterial.color.set('#ffd18f').lerp(new THREE.Color('#6d4d28'), damageRatio * 0.6);
   }
 }

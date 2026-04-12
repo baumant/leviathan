@@ -70,6 +70,7 @@ export class Game {
     window.removeEventListener('resize', this.handleResize);
     this.input.dispose();
     this.ui.dispose();
+    this.scene.dispose();
     this.renderer.dispose();
   }
 }

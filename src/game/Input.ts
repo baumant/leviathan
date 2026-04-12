@@ -27,7 +27,7 @@ export class Input {
   }
 
   get turnAxis(): number {
-    return Number(this.anyHeld(KEY_BINDINGS.left)) - Number(this.anyHeld(KEY_BINDINGS.right));
+    return Number(this.anyHeld(KEY_BINDINGS.right)) - Number(this.anyHeld(KEY_BINDINGS.left));
   }
 
   get depthAxis(): number {

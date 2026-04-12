@@ -2,6 +2,7 @@ import * as THREE from 'three';
 
 import { PlayerWhale } from '../entities/PlayerWhale';
 import { Ship } from '../entities/Ship';
+import { UnderwaterReadabilityFX } from '../fx/UnderwaterReadabilityFX';
 import { Input } from '../game/Input';
 import { DamageSystem } from '../systems/DamageSystem';
 import { UISystem } from '../systems/UISystem';
@@ -23,11 +24,18 @@ export class OceanScene {
   private readonly baseWaveCoordinates: Float32Array;
   private readonly cameraTarget = new THREE.Vector3();
   private readonly lookTarget = new THREE.Vector3();
-  private readonly oceanSamplePoint = new THREE.Vector3();
+  private readonly lookTargetCurrent = new THREE.Vector3();
+  private readonly whaleForward = new THREE.Vector3();
+  private readonly whaleRight = new THREE.Vector3();
+  private readonly cameraOffset = new THREE.Vector3();
   private readonly atmosphereColor = SURFACE_FOG.clone();
+  private readonly readabilityFx: UnderwaterReadabilityFX;
 
   private elapsedSeconds = 0;
   private impactShake = 0;
+  private cameraInitialized = false;
+  private shoulderOffset = 0;
+  private cameraRoll = 0;
 
   constructor(
     private readonly input: Input,
@@ -43,10 +51,11 @@ export class OceanScene {
 
     this.baseWaveCoordinates = this.captureWaveCoordinates();
     this.oceanMesh = this.createOcean();
+    this.readabilityFx = new UnderwaterReadabilityFX(this.scene, this.camera);
 
     this.setupLights();
     this.setupSky();
-    this.scene.add(this.oceanMesh, this.whale.root, this.ship.root);
+    this.scene.add(this.oceanMesh, this.whale.root, this.ship.root, this.camera);
 
     this.resize(width, height);
   }
@@ -62,19 +71,38 @@ export class OceanScene {
     this.animateOcean();
     this.whaleMovement.update(this.whale, this.input, deltaSeconds, this.sampleOceanHeight);
     this.ship.update(deltaSeconds, elapsedSeconds, this.sampleOceanHeight);
+    this.whale.getForward(this.whaleForward);
 
     const ramResult = this.damageSystem.resolveRam(this.whale, this.ship, elapsedSeconds);
     if (ramResult) {
       this.impactShake = Math.max(this.impactShake, ramResult.intensity);
     }
 
-    this.updateCamera(deltaSeconds);
-    this.updateAtmosphere(deltaSeconds);
+    const underwaterRatio = this.getUnderwaterRatio();
+
+    this.updateCamera(deltaSeconds, underwaterRatio);
+    this.updateAtmosphere(deltaSeconds, underwaterRatio);
+    this.readabilityFx.update({
+      deltaSeconds,
+      elapsedSeconds,
+      camera: this.camera,
+      whalePosition: this.whale.position,
+      whaleSpeed: this.whale.speed,
+      whaleBoostActive: this.whale.boostActive,
+      underwaterRatio,
+      submerged: this.whale.submerged,
+      surfaceHeightAtCamera: this.sampleOceanHeight(this.camera.position.x, this.camera.position.z),
+      ship: this.ship,
+    });
     this.updateHud();
   }
 
   render(renderer: THREE.WebGLRenderer): void {
     renderer.render(this.scene, this.camera);
+  }
+
+  dispose(): void {
+    this.readabilityFx.dispose();
   }
 
   private createOcean(): THREE.Mesh<THREE.PlaneGeometry, THREE.MeshStandardMaterial> {
@@ -175,19 +203,27 @@ export class OceanScene {
     return longSwell + crossSwell + chop;
   };
 
-  private updateCamera(deltaSeconds: number): void {
-    const forward = this.whale.getForward(this.oceanSamplePoint);
-    const underwaterRatio = THREE.MathUtils.clamp((-this.whale.depth - 0.4) / 5, 0, 1);
-    const cameraDistance = THREE.MathUtils.lerp(14, 10.5, underwaterRatio);
-    const cameraHeight = THREE.MathUtils.lerp(5.6, 2.8, underwaterRatio);
+  private updateCamera(deltaSeconds: number, underwaterRatio: number): void {
+    this.whaleRight.set(1, 0, 0).applyQuaternion(this.whale.root.quaternion).normalize();
+
+    const cameraDistance = THREE.MathUtils.lerp(14.6, 12.2, underwaterRatio);
+    const cameraHeight = THREE.MathUtils.lerp(5.8, 2.4, underwaterRatio);
+    const lookDistance = THREE.MathUtils.lerp(6.5, 10.8, underwaterRatio);
+    const shoulderTarget = underwaterRatio * THREE.MathUtils.clamp(-this.whale.roll * 8.4, -2.6, 2.6);
+
+    this.shoulderOffset = THREE.MathUtils.damp(this.shoulderOffset, shoulderTarget, 3.2, deltaSeconds);
 
     this.cameraTarget
       .copy(this.whale.position)
-      .addScaledVector(forward, -cameraDistance)
-      .add(new THREE.Vector3(0, cameraHeight, 0));
+      .addScaledVector(this.whaleForward, -cameraDistance)
+      .addScaledVector(this.whaleRight, this.shoulderOffset);
+
+    this.cameraOffset.set(0, cameraHeight, 0);
+    this.cameraTarget.add(this.cameraOffset);
 
     if (this.whale.submerged) {
-      this.cameraTarget.y = Math.min(this.cameraTarget.y, this.sampleOceanHeight(this.cameraTarget.x, this.cameraTarget.z) - 0.35);
+      const surfaceHeight = this.sampleOceanHeight(this.cameraTarget.x, this.cameraTarget.z);
+      this.cameraTarget.y = Math.min(this.cameraTarget.y, surfaceHeight - 0.75);
     }
 
     if (this.impactShake > 0.001) {
@@ -197,15 +233,50 @@ export class OceanScene {
       this.impactShake = THREE.MathUtils.damp(this.impactShake, 0, 8, deltaSeconds);
     }
 
-    this.camera.position.lerp(this.cameraTarget, 1 - Math.exp(-deltaSeconds * 4.4));
-    this.lookTarget.copy(this.whale.position).addScaledVector(forward, 6.5);
-    this.camera.lookAt(this.lookTarget);
+    const cameraFollowRate = THREE.MathUtils.lerp(4.4, 3.1, underwaterRatio);
+    this.camera.position.lerp(this.cameraTarget, 1 - Math.exp(-deltaSeconds * cameraFollowRate));
+
+    this.lookTarget
+      .copy(this.whale.position)
+      .addScaledVector(this.whaleForward, lookDistance)
+      .addScaledVector(this.whaleRight, this.shoulderOffset * 0.18);
+    this.lookTarget.y += THREE.MathUtils.lerp(0.8, 0.15, underwaterRatio);
+
+    if (!this.cameraInitialized) {
+      this.lookTargetCurrent.copy(this.lookTarget);
+      this.camera.position.copy(this.cameraTarget);
+      this.cameraInitialized = true;
+    }
+
+    const lookLagRate = THREE.MathUtils.lerp(5.8, 2.4, underwaterRatio);
+    this.lookTargetCurrent.lerp(this.lookTarget, 1 - Math.exp(-deltaSeconds * lookLagRate));
+    this.camera.lookAt(this.lookTargetCurrent);
+
+    this.cameraRoll = THREE.MathUtils.damp(
+      this.cameraRoll,
+      THREE.MathUtils.clamp(this.whale.roll * 0.48, -0.14, 0.14) * underwaterRatio,
+      4.2,
+      deltaSeconds,
+    );
+    this.camera.rotateZ(this.cameraRoll);
+
+    const speedFovBoost = THREE.MathUtils.clamp((this.whale.speed - 12) * 0.18, 0, 2.6);
+    const targetFov = 62 + underwaterRatio * 3.6 + speedFovBoost + (this.whale.boostActive ? 4.8 : 0);
+    this.camera.fov = THREE.MathUtils.damp(this.camera.fov, targetFov, 4.4, deltaSeconds);
+    this.camera.updateProjectionMatrix();
   }
 
-  private updateAtmosphere(deltaSeconds: number): void {
+  private updateAtmosphere(deltaSeconds: number, underwaterRatio: number): void {
     const targetFog = this.whale.submerged ? UNDERWATER_FOG : SURFACE_FOG;
+    const fog = this.scene.fog as THREE.FogExp2;
+
     this.atmosphereColor.lerp(targetFog, 1 - Math.exp(-deltaSeconds * 2.4));
-    (this.scene.fog as THREE.FogExp2).color.copy(this.atmosphereColor);
+    fog.color.copy(this.atmosphereColor);
+    fog.density = THREE.MathUtils.damp(fog.density, THREE.MathUtils.lerp(0.021, 0.013, underwaterRatio), 2.4, deltaSeconds);
+  }
+
+  private getUnderwaterRatio(): number {
+    return THREE.MathUtils.clamp((-this.whale.depth - 0.4) / 5, 0, 1);
   }
 
   private updateHud(): void {
