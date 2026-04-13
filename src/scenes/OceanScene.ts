@@ -1,12 +1,15 @@
 import * as THREE from 'three';
+import { Water } from 'three/addons/objects/Water.js';
 
 import { ModelLibrary } from '../assets/ModelLibrary';
 import { Cannonball } from '../entities/Cannonball';
 import { Harpoon } from '../entities/Harpoon';
 import { PlayerWhale } from '../entities/PlayerWhale';
-import { Ship, ShipSpawnConfig } from '../entities/Ship';
+import { Ship, ShipLanternInfluence, ShipSpawnConfig } from '../entities/Ship';
+import { createArenaFogBankMaterial, updateArenaFogBankMaterial } from '../fx/createArenaFogBankMaterial';
 import { BreachSplashFX } from '../fx/BreachSplashFX';
 import { createPainterlyOceanMaterial, updatePainterlyOceanMaterial } from '../fx/createPainterlyOceanMaterial';
+import { createPainterlySkyMaterial } from '../fx/createPainterlySkyMaterial';
 import { ShipWakeFX } from '../fx/ShipWakeFX';
 import { SurfaceSeafoamFX } from '../fx/SurfaceSeafoamFX';
 import { createOceanUndersideMaterial, UnderwaterReadabilityFX } from '../fx/UnderwaterReadabilityFX';
@@ -16,9 +19,28 @@ import { ShipAIContext, ShipAISystem } from '../systems/ShipAISystem';
 import { UISystem } from '../systems/UISystem';
 import { WhaleMovementResult, WhaleMovementSystem } from '../systems/WhaleMovementSystem';
 
-const SURFACE_FOG = new THREE.Color('#04131a');
-const UNDERWATER_FOG = new THREE.Color('#062229');
-const ARENA_RADIUS = 124;
+const SURFACE_FOG = new THREE.Color('#15202b');
+const UNDERWATER_FOG = new THREE.Color('#020d14');
+const SURFACE_FOG_DENSITY = 0.0154;
+const UNDERWATER_FOG_DENSITY = 0.0188;
+const APPROX_OCEAN_DEPTH = 95;
+const MOON_LIGHT_COLOR = new THREE.Color('#c6d6f5');
+const MOON_LIGHT_INTENSITY = 2.2;
+const MOON_LIGHT_POSITION = new THREE.Vector3(-28, 54, -34);
+const HEMISPHERE_SKY_COLOR = new THREE.Color('#243543');
+const HEMISPHERE_GROUND_COLOR = new THREE.Color('#02070b');
+const HEMISPHERE_INTENSITY = 0.28;
+const MOON_COLOR = new THREE.Color('#e6eefc');
+const MOON_HALO_COLOR = new THREE.Color('#87a1c4');
+const DISTANT_SILHOUETTE_COLOR = new THREE.Color('#081018');
+const ARENA_RADIUS = 182;
+const OCEAN_SIZE = 720;
+const FOG_BANK_INNER_RADIUS = ARENA_RADIUS * 1.04;
+const FOG_BANK_OUTER_RADIUS = ARENA_RADIUS * 1.12;
+const FOG_BANK_INNER_HEIGHT = 72;
+const FOG_BANK_OUTER_HEIGHT = 104;
+const WHALE_BOUNDARY_MARGIN = 4;
+const SHIP_BOUNDARY_MARGIN = 3;
 const HARPOON_SPEED = 30;
 const HARPOON_LIFETIME = 2.4;
 const CANNONBALL_SPEED = 28;
@@ -29,6 +51,53 @@ const AIR_DRAIN_PER_SECOND = 1;
 const AIR_RECOVERY_PER_SECOND = 3.4;
 const SUFFOCATION_DAMAGE_PER_SECOND = 6;
 const LOW_AIR_THRESHOLD = 0.34;
+const MAX_OCEAN_LANTERN_INFLUENCES = 4;
+
+interface OceanSwellLayer {
+  direction: THREE.Vector2;
+  frequency: number;
+  speed: number;
+  amplitude: number;
+  phase: number;
+  waveform: 'sin' | 'cos';
+}
+
+const createSwellDirection = (x: number, z: number): THREE.Vector2 => new THREE.Vector2(x, z).normalize();
+
+const OCEAN_SWELL_LAYERS: readonly OceanSwellLayer[] = [
+  {
+    direction: createSwellDirection(1, 0.22),
+    frequency: 0.014,
+    speed: 0.24,
+    amplitude: 1.18,
+    phase: 0.45,
+    waveform: 'sin',
+  },
+  {
+    direction: createSwellDirection(-0.28, 1),
+    frequency: 0.011,
+    speed: -0.16,
+    amplitude: 0.9,
+    phase: 1.8,
+    waveform: 'cos',
+  },
+  {
+    direction: createSwellDirection(0.84, 0.54),
+    frequency: 0.022,
+    speed: 0.32,
+    amplitude: 0.4,
+    phase: 2.6,
+    waveform: 'sin',
+  },
+  {
+    direction: createSwellDirection(-0.92, 0.38),
+    frequency: 0.038,
+    speed: 0.48,
+    amplitude: 0.14,
+    phase: 0.94,
+    waveform: 'cos',
+  },
+] as const;
 
 const createSpawn = (id: string, role: ShipSpawnConfig['role'], x: number, z: number): ShipSpawnConfig => ({
   id,
@@ -38,13 +107,13 @@ const createSpawn = (id: string, role: ShipSpawnConfig['role'], x: number, z: nu
 });
 
 const FLEET_SPAWNS: ShipSpawnConfig[] = [
-  createSpawn('flagship', 'flagship', 0, 106),
-  createSpawn('rowboat-nw', 'rowboat', -82, 74),
-  createSpawn('rowboat-west', 'rowboat', -108, 18),
-  createSpawn('rowboat-sw', 'rowboat', -86, -82),
-  createSpawn('rowboat-south', 'rowboat', 0, -112),
-  createSpawn('rowboat-se', 'rowboat', 88, -78),
-  createSpawn('rowboat-east', 'rowboat', 108, 16),
+  createSpawn('flagship', 'flagship', 0, 152),
+  createSpawn('rowboat-nw', 'rowboat', -120, 110),
+  createSpawn('rowboat-west', 'rowboat', -158, 28),
+  createSpawn('rowboat-sw', 'rowboat', -126, -118),
+  createSpawn('rowboat-south', 'rowboat', 0, -164),
+  createSpawn('rowboat-se', 'rowboat', 128, -114),
+  createSpawn('rowboat-east', 'rowboat', 156, 26),
 ];
 
 export type ArenaPhase = 'playing' | 'victory' | 'defeat';
@@ -60,9 +129,11 @@ export class OceanScene {
   private readonly whaleMovement = new WhaleMovementSystem();
   private readonly damageSystem = new DamageSystem();
   private readonly shipAiSystem = new ShipAISystem();
-  private readonly oceanGeometry = new THREE.PlaneGeometry(460, 460, 56, 56);
-  private readonly oceanMesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshStandardMaterial>;
+  private readonly oceanGeometry = new THREE.PlaneGeometry(OCEAN_SIZE, OCEAN_SIZE, 72, 72);
+  private readonly arenaFogBankGeometry = new THREE.CylinderGeometry(1, 1, 1, 48, 1, true);
+  private readonly oceanMesh: Water;
   private readonly oceanUndersideMesh: THREE.Mesh<THREE.PlaneGeometry, THREE.ShaderMaterial>;
+  private readonly arenaFogBanks: THREE.Mesh<THREE.CylinderGeometry, THREE.ShaderMaterial>[] = [];
   private readonly baseWaveCoordinates: Float32Array;
   private readonly cameraTarget = new THREE.Vector3();
   private readonly lookTarget = new THREE.Vector3();
@@ -98,7 +169,9 @@ export class OceanScene {
   private readonly tempCannonVelocity = new THREE.Vector3();
   private readonly tempShipForward = new THREE.Vector3();
   private readonly tempImpactPoint = new THREE.Vector3();
+  private readonly tempBoundaryVector = new THREE.Vector3();
   private readonly breachLaunchShipIds = new Set<string>();
+  private readonly oceanLanternInfluences: ShipLanternInfluence[] = [];
 
   private elapsedSeconds = 0;
   private impactShake = 0;
@@ -121,13 +194,13 @@ export class OceanScene {
     height: number,
   ) {
     this.scene.background = this.atmosphereColor;
-    this.scene.fog = new THREE.FogExp2(this.atmosphereColor, 0.021);
+    this.scene.fog = new THREE.FogExp2(this.atmosphereColor, SURFACE_FOG_DENSITY);
 
     this.camera.position.set(0, 6, -14);
     this.camera.lookAt(0, 0, 0);
 
-    this.baseWaveCoordinates = this.captureWaveCoordinates();
     this.oceanMesh = this.createOcean();
+    this.baseWaveCoordinates = this.captureWaveCoordinates();
     this.oceanUndersideMesh = this.createOceanUnderside();
     this.breachSplashFx = new BreachSplashFX(this.scene);
     this.shipWakeFx = new ShipWakeFX(this.scene, this.ships);
@@ -136,9 +209,11 @@ export class OceanScene {
 
     this.setupLights();
     this.setupSky();
+    this.createArenaFogBanks();
     this.scene.add(
       this.oceanMesh,
       this.oceanUndersideMesh,
+      ...this.arenaFogBanks,
       this.whale.root,
       this.camera,
       ...this.ships.map((ship) => ship.root),
@@ -217,6 +292,7 @@ export class OceanScene {
     this.updateShips(deltaSeconds);
     this.updateHarpoons(deltaSeconds);
     this.updateCannonballs(deltaSeconds);
+    this.clampArenaBodies();
     this.syncTetherDragState();
     this.syncShipTetherPulls();
 
@@ -229,6 +305,8 @@ export class OceanScene {
 
     this.updateCamera(deltaSeconds, underwaterRatio);
     this.updateAtmosphere(deltaSeconds, underwaterRatio);
+    this.updateArenaFogBanks(underwaterRatio);
+    this.updateOceanMaterial(underwaterRatio);
     this.breachSplashFx.update(deltaSeconds, this.sampleOceanHeight);
     this.shipWakeFx.update({
       deltaSeconds,
@@ -243,11 +321,13 @@ export class OceanScene {
       cameraPosition: this.camera.position,
       sampleSurfaceHeight: this.sampleOceanHeight,
       whale: this.whale,
+      whaleStrokePulseStrength: movementResult?.strokePulseFired ? movementResult.strokePulseStrength : 0,
       ships: this.ships,
     });
     this.readabilityFx.update({
       deltaSeconds,
       elapsedSeconds,
+      approxWaterDepth: APPROX_OCEAN_DEPTH,
       camera: this.camera,
       whalePosition: this.whale.position,
       whaleSpeed: this.whale.speed,
@@ -273,17 +353,41 @@ export class OceanScene {
     this.shipWakeFx.dispose();
     this.surfaceSeafoamFx.dispose();
     this.readabilityFx.dispose();
+    this.arenaFogBankGeometry.dispose();
+
+    for (const fogBank of this.arenaFogBanks) {
+      fogBank.material.dispose();
+    }
+
     this.clearHarpoons();
     this.clearCannonballs();
   }
 
-  private createOcean(): THREE.Mesh<THREE.PlaneGeometry, THREE.MeshStandardMaterial> {
+  private createOcean(): Water {
     this.oceanGeometry.rotateX(-Math.PI / 2);
-    const material = createPainterlyOceanMaterial();
-
-    const ocean = new THREE.Mesh(this.oceanGeometry, material);
+    const ocean = createPainterlyOceanMaterial(this.oceanGeometry, ARENA_RADIUS);
     ocean.receiveShadow = false;
     return ocean;
+  }
+
+  private createArenaFogBanks(): void {
+    const createFogBankMesh = (
+      radius: number,
+      height: number,
+      opacity: number,
+      renderOrder: number,
+    ): THREE.Mesh<THREE.CylinderGeometry, THREE.ShaderMaterial> => {
+      const mesh = new THREE.Mesh(this.arenaFogBankGeometry, createArenaFogBankMaterial(opacity));
+      mesh.scale.set(radius, height, radius);
+      mesh.position.y = height * 0.5;
+      mesh.renderOrder = renderOrder;
+      return mesh;
+    };
+
+    this.arenaFogBanks.push(
+      createFogBankMesh(FOG_BANK_OUTER_RADIUS, FOG_BANK_OUTER_HEIGHT, 0.2, 6),
+      createFogBankMesh(FOG_BANK_INNER_RADIUS, FOG_BANK_INNER_HEIGHT, 0.34, 7),
+    );
   }
 
   private async initializeVisuals(): Promise<void> {
@@ -303,59 +407,76 @@ export class OceanScene {
   }
 
   private createOceanUnderside(): THREE.Mesh<THREE.PlaneGeometry, THREE.ShaderMaterial> {
-    const underside = new THREE.Mesh(this.oceanGeometry, createOceanUndersideMaterial());
+    const underside = new THREE.Mesh(this.oceanGeometry, createOceanUndersideMaterial(ARENA_RADIUS));
     underside.renderOrder = -2;
     return underside;
   }
 
   private setupLights(): void {
-    const moonLight = new THREE.DirectionalLight('#a8c7ff', 2.5);
-    moonLight.position.set(-20, 40, -10);
+    const moonLight = new THREE.DirectionalLight(MOON_LIGHT_COLOR, MOON_LIGHT_INTENSITY);
+    moonLight.position.copy(MOON_LIGHT_POSITION);
     this.moonDirection.copy(moonLight.position).negate().normalize();
 
-    const fillLight = new THREE.HemisphereLight('#3b5678', '#03121d', 0.65);
-    const lowRim = new THREE.DirectionalLight('#7db7ff', 0.38);
-    lowRim.position.set(12, 8, 18);
+    const fillLight = new THREE.HemisphereLight(
+      HEMISPHERE_SKY_COLOR,
+      HEMISPHERE_GROUND_COLOR,
+      HEMISPHERE_INTENSITY,
+    );
 
-    this.scene.add(moonLight, fillLight, lowRim);
+    this.scene.add(moonLight, fillLight);
   }
 
   private setupSky(): void {
+    const moonAnchor = this.moonDirection.clone().multiplyScalar(-240);
+
     const sky = new THREE.Mesh(
       new THREE.SphereGeometry(320, 18, 18),
+      createPainterlySkyMaterial(),
+    );
+
+    const moonHalo = new THREE.Mesh(
+      new THREE.CircleGeometry(14, 24),
       new THREE.MeshBasicMaterial({
-        color: new THREE.Color('#040913'),
-        side: THREE.BackSide,
+        color: MOON_HALO_COLOR,
+        transparent: true,
+        opacity: 0.045,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
       }),
     );
+    moonHalo.material.toneMapped = false;
+    moonHalo.position.copy(moonAnchor);
 
     const moon = new THREE.Mesh(
       new THREE.CircleGeometry(8, 20),
       new THREE.MeshBasicMaterial({
-        color: new THREE.Color('#dfe8ff'),
+        color: MOON_COLOR,
         transparent: true,
-        opacity: 0.88,
+        opacity: 0.92,
+        depthWrite: false,
       }),
     );
-    moon.position.set(-120, 96, -180);
+    moon.material.toneMapped = false;
+    moon.position.copy(moonAnchor);
 
     const silhouette = new THREE.Mesh(
       new THREE.CylinderGeometry(0.7, 1.3, 54, 5),
       new THREE.MeshStandardMaterial({
-        color: new THREE.Color('#101820'),
+        color: DISTANT_SILHOUETTE_COLOR,
         roughness: 1,
         metalness: 0,
         flatShading: true,
       }),
     );
-    silhouette.position.set(78, 24, 124);
+    silhouette.position.set(122, 26, 178);
     silhouette.rotation.z = 0.06;
 
     const silhouette2 = silhouette.clone();
-    silhouette2.position.set(-96, 22, 88);
+    silhouette2.position.set(-144, 24, 136);
     silhouette2.rotation.z = -0.08;
 
-    this.scene.add(sky, moon, silhouette, silhouette2);
+    sky.rotation.y = Math.PI * 0.15;
+    this.scene.add(sky, moonHalo, moon, silhouette, silhouette2);
   }
 
   private captureWaveCoordinates(): Float32Array {
@@ -381,16 +502,66 @@ export class OceanScene {
 
     this.oceanGeometry.attributes.position.needsUpdate = true;
     this.oceanGeometry.computeVertexNormals();
-    updatePainterlyOceanMaterial(this.oceanMesh.material, this.elapsedSeconds);
   }
 
   private readonly sampleOceanHeight = (x: number, z: number): number => {
-    const time = this.elapsedSeconds;
-    const longSwell = Math.sin(x * 0.03 + time * 0.72) * 0.85;
-    const crossSwell = Math.cos(z * 0.037 - time * 0.94) * 0.55;
-    const chop = Math.sin((x + z) * 0.09 + time * 1.8) * 0.18;
-    return longSwell + crossSwell + chop;
+    let height = 0;
+
+    for (const layer of OCEAN_SWELL_LAYERS) {
+      const waveInput =
+        (x * layer.direction.x + z * layer.direction.y) * layer.frequency +
+        this.elapsedSeconds * layer.speed +
+        layer.phase;
+      const wave = layer.waveform === 'sin' ? Math.sin(waveInput) : Math.cos(waveInput);
+      height += wave * layer.amplitude;
+    }
+
+    return height;
   };
+
+  private updateOceanMaterial(underwaterRatio: number): void {
+    const fog = this.scene.fog as THREE.FogExp2;
+
+    updatePainterlyOceanMaterial(this.oceanMesh, {
+      elapsedSeconds: this.elapsedSeconds,
+      cameraPosition: this.camera.position,
+      fogColor: this.atmosphereColor,
+      fogDensity: fog.density,
+      moonDirection: this.moonDirection,
+      approxWaterDepth: APPROX_OCEAN_DEPTH,
+      underwaterRatio,
+      lanternInfluences: this.collectOceanLanternInfluences(),
+    });
+  }
+
+  private updateArenaFogBanks(underwaterRatio: number): void {
+    for (const fogBank of this.arenaFogBanks) {
+      updateArenaFogBankMaterial(fogBank.material, {
+        atmosphereColor: this.atmosphereColor,
+        elapsedSeconds: this.elapsedSeconds,
+        underwaterRatio,
+      });
+    }
+  }
+
+  private collectOceanLanternInfluences(): readonly ShipLanternInfluence[] {
+    this.oceanLanternInfluences.length = 0;
+
+    for (const ship of this.ships) {
+      ship.appendLanternInfluences(this.oceanLanternInfluences);
+    }
+
+    this.oceanLanternInfluences.sort(
+      (left, right) =>
+        left.position.distanceToSquared(this.camera.position) - right.position.distanceToSquared(this.camera.position),
+    );
+
+    if (this.oceanLanternInfluences.length > MAX_OCEAN_LANTERN_INFLUENCES) {
+      this.oceanLanternInfluences.length = MAX_OCEAN_LANTERN_INFLUENCES;
+    }
+
+    return this.oceanLanternInfluences;
+  }
 
   private updateShips(deltaSeconds: number): void {
     const rowboatsRemaining = this.getRowboatsRemaining();
@@ -789,6 +960,60 @@ export class OceanScene {
     return THREE.MathUtils.clamp(depthPull + tensionAlpha * 1.15, 0, 2.4);
   }
 
+  private clampArenaBodies(): void {
+    this.clampWhaleToArena();
+
+    for (const ship of this.ships) {
+      this.clampShipToArena(ship);
+    }
+  }
+
+  private clampWhaleToArena(): void {
+    const radius = Math.hypot(this.whale.position.x, this.whale.position.z);
+    const maxRadius = ARENA_RADIUS - this.whale.radius - WHALE_BOUNDARY_MARGIN;
+
+    if (radius <= maxRadius || radius <= 0.0001) {
+      return;
+    }
+
+    const clampScale = maxRadius / radius;
+    this.whale.position.x *= clampScale;
+    this.whale.position.z *= clampScale;
+
+    this.tempBoundaryVector.set(this.whale.position.x, 0, this.whale.position.z).normalize();
+    this.whale.getForward(this.whaleForward);
+
+    if (this.whaleForward.dot(this.tempBoundaryVector) > 0) {
+      this.whale.speed *= 0.72;
+      const outwardDrift = this.whale.ramDriftVelocity.dot(this.tempBoundaryVector);
+
+      if (outwardDrift > 0) {
+        this.whale.ramDriftVelocity.addScaledVector(this.tempBoundaryVector, -outwardDrift);
+      }
+    }
+
+    const surfaceHeight = this.sampleOceanHeight(this.whale.position.x, this.whale.position.z);
+    this.whale.position.y = surfaceHeight + this.whale.depth;
+  }
+
+  private clampShipToArena(ship: Ship): void {
+    const radius = Math.hypot(ship.root.position.x, ship.root.position.z);
+    const hullRadius = Math.max(ship.halfExtents.x, ship.halfExtents.z) * 0.42;
+    const maxRadius = ARENA_RADIUS - hullRadius - SHIP_BOUNDARY_MARGIN;
+
+    if (radius <= maxRadius || radius <= 0.0001) {
+      return;
+    }
+
+    const clampScale = maxRadius / radius;
+    ship.root.position.x *= clampScale;
+    ship.root.position.z *= clampScale;
+
+    this.tempBoundaryVector.set(ship.root.position.x, 0, ship.root.position.z).normalize();
+    ship.heading = Math.atan2(-this.tempBoundaryVector.x, -this.tempBoundaryVector.z);
+    ship.travelSpeed *= 0.58;
+  }
+
   private getRowboatsRemaining(): number {
     return this.ships.filter((ship) => ship.role === 'rowboat' && !ship.sinking).length;
   }
@@ -975,11 +1200,11 @@ export class OceanScene {
     const targetFog = this.whale.submerged ? UNDERWATER_FOG : SURFACE_FOG;
     const fog = this.scene.fog as THREE.FogExp2;
 
-    this.atmosphereColor.lerp(targetFog, 1 - Math.exp(-deltaSeconds * 2.4));
+    this.atmosphereColor.lerp(targetFog, 1 - Math.exp(-deltaSeconds * 2.1));
     fog.color.copy(this.atmosphereColor);
     fog.density = THREE.MathUtils.damp(
       fog.density,
-      THREE.MathUtils.lerp(0.021, 0.013, underwaterRatio),
+      THREE.MathUtils.lerp(SURFACE_FOG_DENSITY, UNDERWATER_FOG_DENSITY, underwaterRatio),
       2.4,
       deltaSeconds,
     );

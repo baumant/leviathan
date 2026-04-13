@@ -1,7 +1,7 @@
-import * as THREE from 'three';
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import * as THREE from "three";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 
-export type ActorModelKind = 'whale' | 'rowboat' | 'flagship';
+export type ActorModelKind = "whale" | "rowboat" | "flagship";
 
 export interface ActorVisualProfile {
   wakeOrigin?: THREE.Vector3;
@@ -21,9 +21,9 @@ interface CachedActorTemplate {
 }
 
 const MODEL_URLS: Record<ActorModelKind, string> = {
-  whale: '/models/whale.glb',
-  rowboat: '/models/rowboat.glb',
-  flagship: '/models/flagship.glb',
+  // whale: '/models/whale.glb',
+  // rowboat: '/models/rowboat.glb',
+  // flagship: '/models/flagship.glb',
 };
 
 const SILHOUETTE_DEFAULTS: Record<ActorModelKind, THREE.Vector2> = {
@@ -34,11 +34,16 @@ const SILHOUETTE_DEFAULTS: Record<ActorModelKind, THREE.Vector2> = {
 
 export class ModelLibrary {
   private readonly loader = new GLTFLoader();
-  private readonly cache = new Map<ActorModelKind, Promise<CachedActorTemplate | null>>();
+  private readonly cache = new Map<
+    ActorModelKind,
+    Promise<CachedActorTemplate | null>
+  >();
   private readonly failedKinds = new Set<ActorModelKind>();
   private readonly worldPoint = new THREE.Vector3();
 
-  async getActorModel(kind: ActorModelKind): Promise<CachedActorTemplate | null> {
+  async getActorModel(
+    kind: ActorModelKind,
+  ): Promise<CachedActorTemplate | null> {
     let pending = this.cache.get(kind);
 
     if (!pending) {
@@ -57,10 +62,14 @@ export class ModelLibrary {
     };
   }
 
-  private async loadTemplate(kind: ActorModelKind): Promise<CachedActorTemplate | null> {
+  private async loadTemplate(
+    kind: ActorModelKind,
+  ): Promise<CachedActorTemplate | null> {
     try {
       const gltf = await this.loader.loadAsync(MODEL_URLS[kind]);
-      const scene = (gltf.scene || gltf.scenes[0] || new THREE.Group()) as THREE.Group;
+      const scene = (gltf.scene ||
+        gltf.scenes[0] ||
+        new THREE.Group()) as THREE.Group;
       scene.updateMatrixWorld(true);
 
       const profile = this.extractProfile(scene, kind);
@@ -81,7 +90,10 @@ export class ModelLibrary {
     }
   }
 
-  private extractProfile(scene: THREE.Group, kind: ActorModelKind): ActorVisualProfile {
+  private extractProfile(
+    scene: THREE.Group,
+    kind: ActorModelKind,
+  ): ActorVisualProfile {
     const profile: ActorVisualProfile = {
       surfaceSilhouetteScale: SILHOUETTE_DEFAULTS[kind].clone(),
     };
@@ -91,25 +103,25 @@ export class ModelLibrary {
     const lanternAnchors: THREE.Vector3[] = [];
 
     scene.traverse((object) => {
-      if (!object.name.startsWith('marker:')) {
+      if (!object.name.startsWith("marker:")) {
         return;
       }
 
-      const key = object.name.slice('marker:'.length);
+      const key = object.name.slice("marker:".length);
       object.getWorldPosition(this.worldPoint);
       const localPoint = scene.worldToLocal(this.worldPoint.clone());
 
-      if (key === 'wake_origin') {
+      if (key === "wake_origin") {
         profile.wakeOrigin = localPoint;
-      } else if (key === 'harpoon_origin') {
+      } else if (key === "harpoon_origin") {
         profile.harpoonOrigin = localPoint;
-      } else if (key === 'tether_attach') {
+      } else if (key === "tether_attach") {
         profile.tetherAttach = localPoint;
-      } else if (key.startsWith('lantern_')) {
+      } else if (key.startsWith("lantern_")) {
         lanternAnchors.push(localPoint);
-      } else if (key.startsWith('port_')) {
+      } else if (key.startsWith("port_")) {
         broadsidePorts.push(localPoint);
-      } else if (key.startsWith('starboard_')) {
+      } else if (key.startsWith("starboard_")) {
         broadsideStarboard.push(localPoint);
       }
     });
@@ -168,7 +180,7 @@ export class ModelLibrary {
   private stripMarkers(scene: THREE.Group): void {
     const markers: THREE.Object3D[] = [];
     scene.traverse((object) => {
-      if (object.name.startsWith('marker:')) {
+      if (object.name.startsWith("marker:")) {
         markers.push(object);
       }
     });
@@ -187,7 +199,9 @@ export class ModelLibrary {
       broadsideOrigins: profile.broadsideOrigins
         ? {
             port: profile.broadsideOrigins.port.map((offset) => offset.clone()),
-            starboard: profile.broadsideOrigins.starboard.map((offset) => offset.clone()),
+            starboard: profile.broadsideOrigins.starboard.map((offset) =>
+              offset.clone(),
+            ),
           }
         : undefined,
       surfaceSilhouetteScale: profile.surfaceSilhouetteScale?.clone(),

@@ -13,6 +13,11 @@ export interface ShipSpawnConfig {
   initialHeading: number;
 }
 
+export interface ShipLanternInfluence {
+  position: THREE.Vector3;
+  intensity: number;
+}
+
 interface ShipRoleConfig {
   maxHealth: number;
   scoreValue: number;
@@ -28,6 +33,7 @@ interface ShipRoleConfig {
   scale: number;
   lanternIntensity: number;
   floatHeight: number;
+  visualDraftOffset: number;
   sinkDepth: number;
   halfExtents: THREE.Vector3;
   surfaceShadowScale: THREE.Vector2;
@@ -57,6 +63,7 @@ const SHIP_ROLE_CONFIGS: Record<ShipRole, ShipRoleConfig> = {
     scale: 0.72,
     lanternIntensity: 1.1,
     floatHeight: 0.18,
+    visualDraftOffset: -0.42,
     sinkDepth: 4.8,
     halfExtents: new THREE.Vector3(1.24, 0.78, 2.9),
     surfaceShadowScale: new THREE.Vector2(3.6, 8.6),
@@ -76,6 +83,7 @@ const SHIP_ROLE_CONFIGS: Record<ShipRole, ShipRoleConfig> = {
     scale: 1.45,
     lanternIntensity: 3,
     floatHeight: 0.62,
+    visualDraftOffset: -0.88,
     sinkDepth: 9.8,
     halfExtents: new THREE.Vector3(7.8, 4.1, 18.8),
     surfaceShadowScale: new THREE.Vector2(24, 58),
@@ -211,6 +219,7 @@ export class Ship {
     this.visualRoot.add(this.fallbackVisualRoot);
     this.root.add(this.visualRoot);
     this.root.scale.setScalar(this.roleConfig.scale);
+    this.visualRoot.position.y = this.roleConfig.visualDraftOffset;
     this.root.position.copy(config.position);
     this.root.position.y = this.roleConfig.floatHeight;
     this.root.rotation.order = 'YXZ';
@@ -288,10 +297,12 @@ export class Ship {
 
     if (profile.wakeOrigin) {
       this.wakeOriginLocal.copy(profile.wakeOrigin);
+      this.wakeOriginLocal.y += this.roleConfig.visualDraftOffset;
     }
 
     if (profile.harpoonOrigin) {
       this.harpoonOriginLocal.copy(profile.harpoonOrigin);
+      this.harpoonOriginLocal.y += this.roleConfig.visualDraftOffset;
     }
 
     if (profile.surfaceSilhouetteScale) {
@@ -574,26 +585,48 @@ export class Ship {
     return this.root.localToWorld(target.copy(this.wakeOriginLocal));
   }
 
+  appendLanternInfluences(target: ShipLanternInfluence[]): void {
+    if (this.sinking || this.sunk) {
+      return;
+    }
+
+    for (const light of this.lanternLights) {
+      if (light.intensity <= 0.05) {
+        continue;
+      }
+
+      target.push({
+        position: light.getWorldPosition(new THREE.Vector3()),
+        intensity: light.intensity,
+      });
+    }
+  }
+
   worldToLocalPoint(point: THREE.Vector3, target = new THREE.Vector3()): THREE.Vector3 {
     target.copy(point);
     return this.root.worldToLocal(target);
   }
 
   private buildRowboat(): void {
-    this.harpoonOriginLocal.set(0, 0.88, 2.2);
-    this.wakeOriginLocal.set(0, 0.3, -3.2);
-    const hull = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.7, 4.8), this.hullMaterial);
-    hull.position.y = 0.18;
+    this.harpoonOriginLocal.set(0, 0.88 + this.roleConfig.visualDraftOffset, 2.2);
+    this.wakeOriginLocal.set(0, 0.3 + this.roleConfig.visualDraftOffset, -3.2);
+
+    const hullBottom = new THREE.Mesh(new THREE.IcosahedronGeometry(1.18, 1), this.hullMaterial);
+    hullBottom.scale.set(1.02, 0.9, 2.35);
+    hullBottom.position.set(0, 0.02, 0.18);
+
+    const hullTop = new THREE.Mesh(new THREE.BoxGeometry(2.06, 0.34, 4.28), this.hullMaterial);
+    hullTop.position.y = 0.48;
 
     const bench = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.18, 0.5), this.mastMaterial);
     bench.position.set(0, 0.55, -0.1);
 
     const bow = new THREE.Mesh(new THREE.ConeGeometry(1, 2.2, 5), this.hullMaterial);
     bow.rotation.x = Math.PI / 2;
-    bow.position.set(0, 0.16, 3.15);
+    bow.position.set(0, 0.22, 3.15);
 
-    const stern = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.4, 0.8), this.hullMaterial);
-    stern.position.set(0, 0.38, -2.1);
+    const stern = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.44, 0.9), this.hullMaterial);
+    stern.position.set(0, 0.42, -2.18);
 
     const leftOar = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.08, 0.18), this.mastMaterial);
     leftOar.position.set(-1.5, 0.6, -0.1);
@@ -603,37 +636,42 @@ export class Ship {
     rightOar.position.x *= -1;
     rightOar.rotation.z *= -1;
 
-    this.fallbackVisualRoot.add(hull, bench, bow, stern, leftOar, rightOar);
+    this.fallbackVisualRoot.add(hullBottom, hullTop, bench, bow, stern, leftOar, rightOar);
     this.addLantern(new THREE.Vector3(0, 0.92, 0.45));
   }
 
   private buildFlagship(): void {
-    this.harpoonOriginLocal.set(0, 2.4, 7.6);
-    this.wakeOriginLocal.set(0, 0.72, -9.4);
-    const hull = new THREE.Mesh(new THREE.BoxGeometry(6.4, 2.1, 16.2), this.hullMaterial);
-    hull.position.y = 0.46;
+    this.harpoonOriginLocal.set(0, 2.4 + this.roleConfig.visualDraftOffset, 7.6);
+    this.wakeOriginLocal.set(0, 0.72 + this.roleConfig.visualDraftOffset, -9.4);
+
+    const hullBottom = new THREE.Mesh(new THREE.IcosahedronGeometry(2.9, 1), this.hullMaterial);
+    hullBottom.scale.set(1.36, 0.86, 3.58);
+    hullBottom.position.set(0, 0.18, 0.2);
+
+    const hullTop = new THREE.Mesh(new THREE.BoxGeometry(6.2, 1.22, 14.8), this.hullMaterial);
+    hullTop.position.y = 1.18;
 
     const foredeck = new THREE.Mesh(new THREE.BoxGeometry(5.2, 0.9, 4.4), this.hullMaterial);
-    foredeck.position.set(0, 1.5, 4.3);
+    foredeck.position.set(0, 1.74, 4.3);
 
     const sternDeck = new THREE.Mesh(new THREE.BoxGeometry(5.6, 1.1, 4), this.hullMaterial);
-    sternDeck.position.set(0, 1.75, -4.5);
+    sternDeck.position.set(0, 2.02, -4.5);
 
     const bow = new THREE.Mesh(new THREE.ConeGeometry(2.8, 5.4, 6), this.hullMaterial);
     bow.rotation.x = Math.PI / 2;
-    bow.position.set(0, 0.5, 9.1);
+    bow.position.set(0, 0.78, 9.1);
 
     const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.32, 9.8, 5), this.mastMaterial);
-    mast.position.set(0, 5.3, -0.6);
+    mast.position.set(0, 5.5, -0.6);
 
     const boom = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.24, 7.2), this.mastMaterial);
-    boom.position.set(0, 5.8, -0.4);
+    boom.position.set(0, 6.0, -0.4);
     boom.rotation.x = Math.PI / 2;
 
     const sail = new THREE.Mesh(new THREE.BoxGeometry(0.1, 4.2, 5.4), this.sailMaterial);
-    sail.position.set(0, 5.7, 0.35);
+    sail.position.set(0, 5.9, 0.35);
 
-    this.fallbackVisualRoot.add(hull, foredeck, sternDeck, bow, mast, boom, sail);
+    this.fallbackVisualRoot.add(hullBottom, hullTop, foredeck, sternDeck, bow, mast, boom, sail);
 
     const cannonDepths = [4.4, 1.1, -2.2];
 

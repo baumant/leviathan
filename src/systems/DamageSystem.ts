@@ -3,6 +3,11 @@ import * as THREE from 'three';
 import { PlayerWhale } from '../entities/PlayerWhale';
 import { Ship } from '../entities/Ship';
 
+const MIN_RAM_SPEED_BY_ROLE = {
+  rowboat: 9.5,
+  flagship: 11.5,
+} as const;
+
 export interface RamResult {
   damage: number;
   intensity: number;
@@ -115,7 +120,9 @@ export class DamageSystem {
       Math.abs(localWhalePosition.y) <= ship.halfExtents.y + whale.radius &&
       Math.abs(localWhalePosition.z) <= ship.halfExtents.z + whale.radius;
 
-    if (!intersects || whale.speed < 7.5) {
+    const minimumRamSpeed = MIN_RAM_SPEED_BY_ROLE[ship.role];
+
+    if (!intersects || whale.speed < minimumRamSpeed) {
       return null;
     }
 

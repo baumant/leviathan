@@ -13,11 +13,14 @@ const MAX_BREACH_HEIGHT = 0.9;
 
 const STROKE_BUILD_TIME = 1.8;
 const STROKE_DECAY_TIME = 1.1;
-const STROKE_INTERVAL_SLOW = 0.92;
-const STROKE_INTERVAL_FAST = 0.22;
+const STROKE_INTERVAL = 0.58;
 const STROKE_IMPULSE_MIN = 1.4;
 const STROKE_IMPULSE_MAX = 7.2;
 const TURN_CHARGE_CAP = 0.45;
+const BASELINE_SPEED_SURFACE_FACTOR = 0.46;
+const BASELINE_SPEED_SUBMERGED_FACTOR = 0.38;
+const BASELINE_ACCELERATION = 0.76;
+const BASELINE_BOOST_ACCELERATION = 1.14;
 
 const BREACH_DURATION = 1.45;
 const BREACH_RECOVERY = 0.24;
@@ -125,9 +128,14 @@ export class WhaleMovementSystem {
 
     const effectiveStrokeCharge =
       Math.abs(turnInput) > 0.5 ? Math.min(whale.strokeCharge, TURN_CHARGE_CAP) : whale.strokeCharge;
-    const strokeInterval = THREE.MathUtils.lerp(STROKE_INTERVAL_SLOW, STROKE_INTERVAL_FAST, effectiveStrokeCharge);
-    const baselineTargetSpeed = topSpeed * whale.throttle * THREE.MathUtils.lerp(0.58, 0.48, submergedFactor);
-    const baselineAcceleration = (boostActive ? 1.35 : 0.92) * whale.strokeBuildMultiplier * recoveryScale;
+    const baselineTargetSpeed =
+      topSpeed *
+      whale.throttle *
+      THREE.MathUtils.lerp(BASELINE_SPEED_SURFACE_FACTOR, BASELINE_SPEED_SUBMERGED_FACTOR, submergedFactor);
+    const baselineAcceleration =
+      (boostActive ? BASELINE_BOOST_ACCELERATION : BASELINE_ACCELERATION) *
+      whale.strokeBuildMultiplier *
+      recoveryScale;
 
     whale.speed = THREE.MathUtils.damp(whale.speed, baselineTargetSpeed, baselineAcceleration, deltaSeconds);
 
@@ -136,6 +144,7 @@ export class WhaleMovementSystem {
     }
 
     if (moveInput > 0) {
+      whale.strokeTimer = Math.min(whale.strokeTimer, STROKE_INTERVAL);
       whale.strokeTimer -= deltaSeconds;
 
       if (whale.strokeTimer <= 0) {
@@ -144,13 +153,13 @@ export class WhaleMovementSystem {
           THREE.MathUtils.lerp(1.12, 1, submergedFactor) *
           whale.speedDragMultiplier;
         whale.speed = Math.min(topSpeed, whale.speed + strokeImpulse);
-        whale.strokeVisual = Math.max(whale.strokeVisual, THREE.MathUtils.lerp(0.52, 1.18, effectiveStrokeCharge));
-        whale.strokeTimer += strokeInterval;
+        whale.strokeVisual = Math.max(whale.strokeVisual, THREE.MathUtils.lerp(0.46, 1.0, effectiveStrokeCharge));
+        whale.strokeTimer += STROKE_INTERVAL;
         result.strokePulseFired = true;
         result.strokePulseStrength = strokeImpulse;
       }
     } else {
-      whale.strokeTimer = Math.min(STROKE_INTERVAL_SLOW, whale.strokeTimer + deltaSeconds * 0.9);
+      whale.strokeTimer = Math.min(STROKE_INTERVAL, whale.strokeTimer + deltaSeconds * 0.9);
     }
 
     const turnRate =

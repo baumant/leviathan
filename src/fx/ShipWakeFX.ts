@@ -5,6 +5,12 @@ import { Ship, ShipRole } from '../entities/Ship';
 const MAX_BUBBLES = 24;
 const SURFACE_OFFSET = 0.05;
 const UNDERWATER_OFFSET = -0.18;
+const UNDERWATER_WAKE_LOOK = {
+  ribbonColor: '#173742',
+  bubbleColor: '#587680',
+  ribbonOpacity: 0.12,
+  bubbleOpacity: 0.22,
+} as const;
 
 interface WakeRoleConfig {
   sternPatchScale: THREE.Vector2;
@@ -186,7 +192,13 @@ export class ShipWakeFX {
     rightFan.frustumCulled = false;
     rightFan.renderOrder = 5;
 
-    const underwaterRibbonMaterial = this.createWakeMaterial('#2f7d83', 0.18, THREE.NormalBlending, false, true);
+    const underwaterRibbonMaterial = this.createWakeMaterial(
+      UNDERWATER_WAKE_LOOK.ribbonColor,
+      UNDERWATER_WAKE_LOOK.ribbonOpacity,
+      THREE.NormalBlending,
+      false,
+      true,
+    );
     const underwaterRibbon = new THREE.Mesh(this.underwaterRibbonGeometry, underwaterRibbonMaterial);
     underwaterRibbon.rotation.x = -Math.PI / 2;
     underwaterRibbon.position.y = UNDERWATER_OFFSET;
@@ -194,7 +206,7 @@ export class ShipWakeFX {
     underwaterRibbon.renderOrder = 3;
 
     const bubbleMaterial = new THREE.MeshBasicMaterial({
-      color: new THREE.Color('#98d8d7'),
+      color: new THREE.Color(UNDERWATER_WAKE_LOOK.bubbleColor),
       transparent: true,
       opacity: 0,
       side: THREE.DoubleSide,
@@ -277,37 +289,15 @@ export class ShipWakeFX {
   }
 
   private updateSurfaceLayer(slot: WakeSlot, speedRatio: number): void {
-    const foamPulse = 0.92 + Math.sin(slot.phase * 2.3) * 0.08;
-    const surfaceOpacity = slot.strength * foamPulse;
-
-    slot.surfaceRoot.visible = surfaceOpacity > 0.01;
-
-    const sternScaleX = THREE.MathUtils.lerp(
-      slot.roleConfig.sternPatchScale.x * 0.72,
-      slot.roleConfig.sternPatchScale.x * (1.1 + speedRatio * 0.28),
-      slot.strength,
-    );
-    const sternScaleZ = THREE.MathUtils.lerp(
-      slot.roleConfig.sternPatchScale.y * 0.7,
-      slot.roleConfig.sternPatchScale.y * (1.05 + speedRatio * 0.24),
-      slot.strength,
-    );
-    slot.sternPatch.scale.set(sternScaleX, sternScaleZ, 1);
-
-    const fanWidth = slot.roleConfig.surfaceFanWidth * (0.7 + speedRatio * 0.55);
-    const fanLength = slot.roleConfig.surfaceFanLength * (0.58 + speedRatio * 0.48);
-    slot.leftFan.scale.set(fanWidth, fanLength, 1);
-    slot.rightFan.scale.set(fanWidth, fanLength, 1);
-    slot.leftFan.rotation.z = slot.roleConfig.surfaceSpread;
-    slot.rightFan.rotation.z = -slot.roleConfig.surfaceSpread;
-
-    slot.sternPatch.material.opacity = (slot.sternPatch.material.userData.baseOpacity as number) * surfaceOpacity;
-    slot.leftFan.material.opacity = (slot.leftFan.material.userData.baseOpacity as number) * surfaceOpacity;
-    slot.rightFan.material.opacity = (slot.rightFan.material.userData.baseOpacity as number) * surfaceOpacity;
+    void speedRatio;
+    slot.surfaceRoot.visible = false;
+    slot.sternPatch.material.opacity = 0;
+    slot.leftFan.material.opacity = 0;
+    slot.rightFan.material.opacity = 0;
   }
 
   private updateUnderwaterLayer(slot: WakeSlot, speedRatio: number, underwaterRatio: number): void {
-    const underwaterBias = THREE.MathUtils.lerp(0.32, 0.95, underwaterRatio);
+    const underwaterBias = THREE.MathUtils.lerp(0.24, 0.72, underwaterRatio);
     const underwaterOpacity = slot.strength * underwaterBias;
 
     slot.underwaterRoot.visible = underwaterOpacity > 0.01;
@@ -321,7 +311,7 @@ export class ShipWakeFX {
       (slot.underwaterRibbon.material.userData.baseOpacity as number) * underwaterOpacity;
 
     slot.bubbles.count = slot.roleConfig.bubbleCount;
-    slot.bubbles.material.opacity = underwaterOpacity * 0.38;
+    slot.bubbles.material.opacity = underwaterOpacity * UNDERWATER_WAKE_LOOK.bubbleOpacity;
 
     for (let index = 0; index < slot.roleConfig.bubbleCount; index += 1) {
       const progress = (slot.phase * 0.18 + index / slot.roleConfig.bubbleCount) % 1;
