@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 
+import { createCelMaterial } from '../fx/createCelMaterial';
+
 export class Cannonball {
   readonly root: THREE.Group;
   readonly position: THREE.Vector3;
@@ -12,22 +14,18 @@ export class Cannonball {
   active = false;
 
   constructor() {
-    const coreMaterial = new THREE.MeshStandardMaterial({
-      color: new THREE.Color('#202733'),
-      emissive: new THREE.Color('#ff9452'),
+    const coreMaterial = createCelMaterial({
+      color: '#222935',
+      emissive: '#ff9452',
       emissiveIntensity: 0.18,
-      roughness: 0.32,
-      metalness: 0.34,
-      flatShading: true,
     });
-    const bandMaterial = new THREE.MeshStandardMaterial({
-      color: new THREE.Color('#49525f'),
-      roughness: 0.58,
-      metalness: 0.18,
-      flatShading: true,
+    const bandMaterial = createCelMaterial({
+      color: '#4c5662',
+      emissive: '#111820',
+      emissiveIntensity: 0.02,
     });
 
-    const core = new THREE.Mesh(new THREE.IcosahedronGeometry(this.radius, 1), coreMaterial);
+    const core = new THREE.Mesh(new THREE.SphereGeometry(this.radius, 10, 8), coreMaterial);
     const band = new THREE.Mesh(new THREE.TorusGeometry(this.radius * 0.62, 0.08, 5, 10), bandMaterial);
     band.rotation.x = Math.PI / 2;
 

@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 
+import { createCelMaterial } from '../fx/createCelMaterial';
+
 export type HarpoonMode = 'flying' | 'tethered';
 
 const TETHER_AXIS = new THREE.Vector3(0, 1, 0);
@@ -22,25 +24,23 @@ export class Harpoon {
   private readonly impactMarker: THREE.Group;
   private readonly tetherCore: THREE.Mesh;
   private readonly tetherGlow: THREE.Mesh;
-  private readonly tetherCoreMaterial: THREE.MeshStandardMaterial;
+  private readonly tetherCoreMaterial: THREE.MeshToonMaterial;
   private readonly tetherGlowMaterial: THREE.MeshBasicMaterial;
   private readonly tetherMidpoint = new THREE.Vector3();
 
   constructor(ownerShipId: string) {
     this.ownerShipId = ownerShipId;
 
-    const shaftMaterial = new THREE.MeshStandardMaterial({
-      color: new THREE.Color('#6e5945'),
-      roughness: 0.88,
-      metalness: 0.04,
-      flatShading: true,
+    const shaftMaterial = createCelMaterial({
+      color: '#6f5a46',
+      emissive: '#161b23',
+      emissiveIntensity: 0.02,
     });
 
-    const tipMaterial = new THREE.MeshStandardMaterial({
-      color: new THREE.Color('#c7d6e7'),
-      roughness: 0.28,
-      metalness: 0.3,
-      flatShading: true,
+    const tipMaterial = createCelMaterial({
+      color: '#cddbe8',
+      emissive: '#6c9bc0',
+      emissiveIntensity: 0.04,
     });
 
     const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 2.6, 5), shaftMaterial);
@@ -72,22 +72,18 @@ export class Harpoon {
 
     const impactCore = new THREE.Mesh(
       new THREE.IcosahedronGeometry(0.18, 0),
-      new THREE.MeshStandardMaterial({
-        color: new THREE.Color('#cfe4ef'),
-        emissive: new THREE.Color('#7db6d8'),
+      createCelMaterial({
+        color: '#d4e7f0',
+        emissive: '#7db6d8',
         emissiveIntensity: 0.2,
-        roughness: 0.42,
-        metalness: 0.22,
-        flatShading: true,
       }),
     );
     const impactFin = new THREE.Mesh(
       new THREE.BoxGeometry(0.05, 0.22, 0.44),
-      new THREE.MeshStandardMaterial({
-        color: new THREE.Color('#7d9cae'),
-        roughness: 0.7,
-        metalness: 0.08,
-        flatShading: true,
+      createCelMaterial({
+        color: '#819eb0',
+        emissive: '#1a2430',
+        emissiveIntensity: 0.02,
       }),
     );
     const impactFinCross = impactFin.clone();
@@ -98,13 +94,10 @@ export class Harpoon {
     this.impactMarker.visible = false;
 
     const tetherGeometry = new THREE.CylinderGeometry(0.08, 0.08, 1, 6);
-    this.tetherCoreMaterial = new THREE.MeshStandardMaterial({
-      color: new THREE.Color('#c3d8e4'),
-      emissive: new THREE.Color('#7db7d8'),
+    this.tetherCoreMaterial = createCelMaterial({
+      color: '#c3d8e4',
+      emissive: '#7db7d8',
       emissiveIntensity: 0.22,
-      roughness: 0.72,
-      metalness: 0.04,
-      flatShading: true,
     });
     this.tetherGlowMaterial = new THREE.MeshBasicMaterial({
       color: new THREE.Color('#8fdcff'),

@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 
-import { ActorVisualProfile } from '../assets/ModelLibrary';
+import { createCelMaterial } from '../fx/createCelMaterial';
 
 export type ShipRole = 'rowboat' | 'flagship';
 export type ShipAIState = 'patrol' | 'close' | 'throw' | 'tethered' | 'engage' | 'flee' | 'sinking';
@@ -120,22 +120,22 @@ export class Ship {
 
   private sinkProgress = 0;
   private readonly initialHeading: number;
-  private readonly hullMaterial: THREE.MeshStandardMaterial;
-  private readonly mastMaterial: THREE.MeshStandardMaterial;
-  private readonly sailMaterial: THREE.MeshStandardMaterial;
+  private readonly hullMaterial: THREE.MeshToonMaterial;
+  private readonly mastMaterial: THREE.MeshToonMaterial;
+  private readonly sailMaterial: THREE.MeshToonMaterial;
   private readonly fallbackVisualRoot = new THREE.Group();
-  private readonly hullTintMaterials: THREE.MeshStandardMaterial[] = [];
-  private readonly mastTintMaterials: THREE.MeshStandardMaterial[] = [];
-  private readonly sailTintMaterials: THREE.MeshStandardMaterial[] = [];
-  private readonly lanternMaterials: THREE.MeshStandardMaterial[] = [];
+  private readonly hullTintMaterials: THREE.MeshToonMaterial[] = [];
+  private readonly mastTintMaterials: THREE.MeshToonMaterial[] = [];
+  private readonly sailTintMaterials: THREE.MeshToonMaterial[] = [];
+  private readonly lanternMaterials: THREE.MeshToonMaterial[] = [];
   private readonly lanternMeshes: THREE.Mesh[] = [];
   private readonly lanternHalos: THREE.Mesh[] = [];
   private readonly lanternHaloMaterials: THREE.MeshBasicMaterial[] = [];
   private readonly lanternLights: THREE.PointLight[] = [];
   private readonly portCannons: THREE.Mesh[] = [];
   private readonly starboardCannons: THREE.Mesh[] = [];
-  private readonly cannonPortMaterials: THREE.MeshStandardMaterial[] = [];
-  private readonly cannonStarboardMaterials: THREE.MeshStandardMaterial[] = [];
+  private readonly cannonPortMaterials: THREE.MeshToonMaterial[] = [];
+  private readonly cannonStarboardMaterials: THREE.MeshToonMaterial[] = [];
   private readonly portCannonOffsets: THREE.Vector3[] = [];
   private readonly starboardCannonOffsets: THREE.Vector3[] = [];
   private readonly wakeOriginLocal = new THREE.Vector3();
@@ -162,7 +162,6 @@ export class Ship {
   private waterShoveYawVelocity = 0;
   private airborneHeight = 0;
   private airborneVelocity = 0;
-  private activeVisualModel: THREE.Object3D | null = null;
 
   constructor(config: ShipSpawnConfig) {
     this.id = config.id;
@@ -186,25 +185,22 @@ export class Ship {
     this.halfExtents.copy(this.roleConfig.halfExtents);
     this.visualSurfaceShadowScale.copy(this.roleConfig.surfaceShadowScale);
 
-    this.hullMaterial = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(this.role === 'flagship' ? '#563c2a' : '#4c3828'),
-      roughness: 0.92,
-      metalness: 0.02,
-      flatShading: true,
+    this.hullMaterial = createCelMaterial({
+      color: this.role === 'flagship' ? '#5a4130' : '#4d3a2c',
+      emissive: '#101620',
+      emissiveIntensity: 0.04,
     });
 
-    this.mastMaterial = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(this.role === 'flagship' ? '#8c674d' : '#81614a'),
-      roughness: 0.9,
-      metalness: 0.01,
-      flatShading: true,
+    this.mastMaterial = createCelMaterial({
+      color: this.role === 'flagship' ? '#8d6a52' : '#82624d',
+      emissive: '#0d1318',
+      emissiveIntensity: 0.02,
     });
 
-    this.sailMaterial = new THREE.MeshStandardMaterial({
-      color: new THREE.Color('#ccb996'),
-      roughness: 1,
-      metalness: 0,
-      flatShading: true,
+    this.sailMaterial = createCelMaterial({
+      color: this.role === 'flagship' ? '#c8b28d' : '#9f8a6b',
+      emissive: '#161922',
+      emissiveIntensity: 0.01,
     });
     this.hullTintMaterials.push(this.hullMaterial);
     this.mastTintMaterials.push(this.mastMaterial);
@@ -282,42 +278,6 @@ export class Ship {
     this.root.position.copy(this.anchor);
     this.root.position.y = this.roleConfig.floatHeight;
     this.root.rotation.set(0, this.heading, 0, 'YXZ');
-    this.updateDamageLook();
-    this.root.updateMatrixWorld();
-  }
-
-  applyVisualModel(model: THREE.Object3D, profile: ActorVisualProfile): void {
-    if (this.activeVisualModel) {
-      this.activeVisualModel.removeFromParent();
-    }
-
-    this.fallbackVisualRoot.visible = false;
-    this.activeVisualModel = model;
-    this.visualRoot.add(model);
-
-    if (profile.wakeOrigin) {
-      this.wakeOriginLocal.copy(profile.wakeOrigin);
-      this.wakeOriginLocal.y += this.roleConfig.visualDraftOffset;
-    }
-
-    if (profile.harpoonOrigin) {
-      this.harpoonOriginLocal.copy(profile.harpoonOrigin);
-      this.harpoonOriginLocal.y += this.roleConfig.visualDraftOffset;
-    }
-
-    if (profile.surfaceSilhouetteScale) {
-      this.visualSurfaceShadowScale.copy(profile.surfaceSilhouetteScale);
-    }
-
-    if (profile.lanternAnchors && profile.lanternAnchors.length > 0) {
-      this.applyLanternAnchors(profile.lanternAnchors);
-    }
-
-    if (this.role === 'flagship' && profile.broadsideOrigins) {
-      this.applyBroadsideOrigins(profile.broadsideOrigins.port, profile.broadsideOrigins.starboard);
-    }
-
-    this.collectModelTintMaterials(model);
     this.updateDamageLook();
     this.root.updateMatrixWorld();
   }
@@ -611,12 +571,15 @@ export class Ship {
     this.harpoonOriginLocal.set(0, 0.88 + this.roleConfig.visualDraftOffset, 2.2);
     this.wakeOriginLocal.set(0, 0.3 + this.roleConfig.visualDraftOffset, -3.2);
 
-    const hullBottom = new THREE.Mesh(new THREE.IcosahedronGeometry(1.18, 1), this.hullMaterial);
-    hullBottom.scale.set(1.02, 0.9, 2.35);
-    hullBottom.position.set(0, 0.02, 0.18);
+    const hullBottom = new THREE.Mesh(new THREE.SphereGeometry(1.16, 12, 10), this.hullMaterial);
+    hullBottom.scale.set(0.98, 0.82, 2.04);
+    hullBottom.position.set(0, 0.02, 0.16);
 
-    const hullTop = new THREE.Mesh(new THREE.BoxGeometry(2.06, 0.34, 4.28), this.hullMaterial);
-    hullTop.position.y = 0.48;
+    const hullTop = new THREE.Mesh(new THREE.BoxGeometry(1.98, 0.28, 4.08), this.hullMaterial);
+    hullTop.position.y = 0.52;
+
+    const gunwale = new THREE.Mesh(new THREE.BoxGeometry(2.18, 0.12, 4.4), this.mastMaterial);
+    gunwale.position.set(0, 0.68, 0.02);
 
     const bench = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.18, 0.5), this.mastMaterial);
     bench.position.set(0, 0.55, -0.1);
@@ -636,7 +599,7 @@ export class Ship {
     rightOar.position.x *= -1;
     rightOar.rotation.z *= -1;
 
-    this.fallbackVisualRoot.add(hullBottom, hullTop, bench, bow, stern, leftOar, rightOar);
+    this.fallbackVisualRoot.add(hullBottom, hullTop, gunwale, bench, bow, stern, leftOar, rightOar);
     this.addLantern(new THREE.Vector3(0, 0.92, 0.45));
   }
 
@@ -644,12 +607,16 @@ export class Ship {
     this.harpoonOriginLocal.set(0, 2.4 + this.roleConfig.visualDraftOffset, 7.6);
     this.wakeOriginLocal.set(0, 0.72 + this.roleConfig.visualDraftOffset, -9.4);
 
-    const hullBottom = new THREE.Mesh(new THREE.IcosahedronGeometry(2.9, 1), this.hullMaterial);
-    hullBottom.scale.set(1.36, 0.86, 3.58);
+    const hullBottom = new THREE.Mesh(new THREE.CapsuleGeometry(2.7, 10.4, 6, 12), this.hullMaterial);
+    hullBottom.rotation.x = Math.PI / 2;
+    hullBottom.scale.set(1.18, 0.84, 1.08);
     hullBottom.position.set(0, 0.18, 0.2);
 
-    const hullTop = new THREE.Mesh(new THREE.BoxGeometry(6.2, 1.22, 14.8), this.hullMaterial);
+    const hullTop = new THREE.Mesh(new THREE.BoxGeometry(6.1, 1.16, 14.2), this.hullMaterial);
     hullTop.position.y = 1.18;
+
+    const rail = new THREE.Mesh(new THREE.BoxGeometry(6.6, 0.18, 15.2), this.mastMaterial);
+    rail.position.set(0, 1.92, -0.12);
 
     const foredeck = new THREE.Mesh(new THREE.BoxGeometry(5.2, 0.9, 4.4), this.hullMaterial);
     foredeck.position.set(0, 1.74, 4.3);
@@ -671,7 +638,7 @@ export class Ship {
     const sail = new THREE.Mesh(new THREE.BoxGeometry(0.1, 4.2, 5.4), this.sailMaterial);
     sail.position.set(0, 5.9, 0.35);
 
-    this.fallbackVisualRoot.add(hullBottom, hullTop, foredeck, sternDeck, bow, mast, boom, sail);
+    this.fallbackVisualRoot.add(hullBottom, hullTop, rail, foredeck, sternDeck, bow, mast, boom, sail);
 
     const cannonDepths = [4.4, 1.1, -2.2];
 
@@ -691,16 +658,13 @@ export class Ship {
   }
 
   private addCannon(offset: THREE.Vector3, side: BroadsideSide): void {
-    const cannonMaterial = new THREE.MeshStandardMaterial({
-      color: new THREE.Color('#2c313c'),
-      emissive: new THREE.Color('#ff9e56'),
+    const cannonMaterial = createCelMaterial({
+      color: '#2b313b',
+      emissive: '#ff9e56',
       emissiveIntensity: 0,
-      roughness: 0.42,
-      metalness: 0.3,
-      flatShading: true,
     });
 
-    const cannon = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.22, 1.9, 6), cannonMaterial);
+    const cannon = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.22, 1.9, 8), cannonMaterial);
     cannon.position.copy(offset);
     cannon.rotation.z = Math.PI / 2;
 
@@ -717,15 +681,16 @@ export class Ship {
   }
 
   private addLantern(offset: THREE.Vector3): void {
-    const lanternMaterial = new THREE.MeshStandardMaterial({
-      color: new THREE.Color('#ffd18f'),
-      emissive: new THREE.Color('#ffac4c'),
+    const lanternMaterial = createCelMaterial({
+      color: '#ffd18f',
+      emissive: '#ffac4c',
       emissiveIntensity: 0.9,
-      roughness: 0.35,
-      metalness: 0.05,
     });
 
-    const lantern = new THREE.Mesh(new THREE.SphereGeometry(this.role === 'flagship' ? 0.28 : 0.22, 6, 6), lanternMaterial);
+    const lantern = new THREE.Mesh(
+      new THREE.SphereGeometry(this.role === 'flagship' ? 0.28 : 0.22, 8, 8),
+      lanternMaterial,
+    );
     lantern.position.copy(offset);
 
     const lanternHaloMaterial = new THREE.MeshBasicMaterial({
@@ -768,66 +733,6 @@ export class Ship {
     for (const material of this.cannonStarboardMaterials) {
       material.emissiveIntensity = starboardTelegraph * 1.1 + starboardFlash * 1.6;
     }
-  }
-
-  private applyLanternAnchors(anchors: readonly THREE.Vector3[]): void {
-    const count = Math.min(anchors.length, this.lanternMeshes.length);
-
-    for (let index = 0; index < count; index += 1) {
-      this.lanternMeshes[index].position.copy(anchors[index]);
-      this.lanternHalos[index].position.copy(anchors[index]);
-      this.lanternLights[index].position.copy(anchors[index]);
-    }
-  }
-
-  private applyBroadsideOrigins(port: readonly THREE.Vector3[], starboard: readonly THREE.Vector3[]): void {
-    this.portCannonOffsets.length = 0;
-    this.starboardCannonOffsets.length = 0;
-
-    for (let index = 0; index < port.length && index < this.portCannons.length; index += 1) {
-      this.portCannonOffsets.push(port[index].clone());
-      this.portCannons[index].position.copy(port[index]);
-    }
-
-    for (let index = 0; index < starboard.length && index < this.starboardCannons.length; index += 1) {
-      this.starboardCannonOffsets.push(starboard[index].clone());
-      this.starboardCannons[index].position.copy(starboard[index]);
-    }
-  }
-
-  private collectModelTintMaterials(model: THREE.Object3D): void {
-    const hullMaterials = new Set(this.hullTintMaterials);
-    const mastMaterials = new Set(this.mastTintMaterials);
-    const sailMaterials = new Set(this.sailTintMaterials);
-
-    model.traverse((object) => {
-      if (!(object instanceof THREE.Mesh)) {
-        return;
-      }
-
-      const material = object.material;
-      if (!(material instanceof THREE.MeshStandardMaterial)) {
-        return;
-      }
-
-      material.flatShading = true;
-      material.needsUpdate = true;
-      const partName = object.name.toLowerCase();
-      if (partName.includes('sail')) {
-        sailMaterials.add(material);
-      } else if (partName.includes('mast') || partName.includes('wood') || partName.includes('oar')) {
-        mastMaterials.add(material);
-      } else {
-        hullMaterials.add(material);
-      }
-    });
-
-    this.hullTintMaterials.length = 0;
-    this.hullTintMaterials.push(...hullMaterials);
-    this.mastTintMaterials.length = 0;
-    this.mastTintMaterials.push(...mastMaterials);
-    this.sailTintMaterials.length = 0;
-    this.sailTintMaterials.push(...sailMaterials);
   }
 
   private updateDamageLook(): void {

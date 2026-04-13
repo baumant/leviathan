@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 
-import { ActorVisualProfile } from '../assets/ModelLibrary';
+import { createCelMaterial } from '../fx/createCelMaterial';
 
 const SURFACED_START_DEPTH = -0.18;
 const MAX_AIR = 12;
@@ -56,50 +56,56 @@ export class PlayerWhale {
 
   private readonly fallbackVisualRoot = new THREE.Group();
   private readonly tetherAttachLocal = new THREE.Vector3(0, 0.16, 1.95);
-  private activeVisualModel: THREE.Object3D | null = null;
 
   constructor() {
-    const whaleMaterial = new THREE.MeshStandardMaterial({
-      color: new THREE.Color('#e9f1ff'),
-      roughness: 0.7,
-      metalness: 0.02,
-      emissive: new THREE.Color('#6681aa'),
-      emissiveIntensity: 0.2,
-      flatShading: true,
-    });
-
-    const bellyMaterial = new THREE.MeshStandardMaterial({
-      color: new THREE.Color('#ced9eb'),
-      roughness: 0.82,
-      metalness: 0.01,
-      emissive: new THREE.Color('#526886'),
+    const whaleMaterial = createCelMaterial({
+      color: '#edf3ff',
+      emissive: '#587093',
       emissiveIntensity: 0.12,
-      flatShading: true,
     });
 
-    const body = new THREE.Mesh(new THREE.IcosahedronGeometry(2.2, 1), whaleMaterial);
-    body.scale.set(1.2, 0.85, 2.75);
+    const bellyMaterial = createCelMaterial({
+      color: '#d8e2f1',
+      emissive: '#4d627f',
+      emissiveIntensity: 0.08,
+    });
 
-    const head = new THREE.Mesh(new THREE.IcosahedronGeometry(1.5, 1), whaleMaterial);
-    head.scale.set(1.1, 0.95, 1.4);
-    head.position.set(0, -0.08, 3.9);
+    const body = new THREE.Mesh(new THREE.CapsuleGeometry(1.9, 5.4, 6, 12), whaleMaterial);
+    body.rotation.x = Math.PI / 2;
+    body.scale.set(1.22, 0.84, 1.46);
 
-    const belly = new THREE.Mesh(new THREE.IcosahedronGeometry(1.5, 1), bellyMaterial);
-    belly.scale.set(0.82, 0.45, 2.1);
-    belly.position.set(0, -0.85, 1.5);
+    const head = new THREE.Mesh(new THREE.SphereGeometry(1.65, 12, 10), whaleMaterial);
+    head.scale.set(1.12, 0.92, 1.26);
+    head.position.set(0, -0.04, 4.1);
 
-    const tail = new THREE.Mesh(new THREE.ConeGeometry(1.15, 2.7, 5), whaleMaterial);
+    const brow = new THREE.Mesh(new THREE.SphereGeometry(1.26, 10, 8), whaleMaterial);
+    brow.scale.set(1.18, 0.7, 1.06);
+    brow.position.set(0, 0.32, 3.25);
+
+    const belly = new THREE.Mesh(new THREE.SphereGeometry(1.8, 12, 10), bellyMaterial);
+    belly.scale.set(0.92, 0.46, 1.9);
+    belly.position.set(0, -0.96, 1.4);
+
+    const tail = new THREE.Mesh(new THREE.CylinderGeometry(0.62, 1.08, 2.8, 8), whaleMaterial);
     tail.rotation.x = Math.PI / 2;
-    tail.position.set(0, 0.15, -4.5);
+    tail.position.set(0, 0.12, -4.65);
 
-    const fluke = new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.25, 1.15), whaleMaterial);
-    fluke.position.set(0, 0, -5.8);
+    const flukeBase = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.18, 0.88), whaleMaterial);
+    flukeBase.position.set(0, 0.02, -6.02);
 
-    const dorsalFin = new THREE.Mesh(new THREE.ConeGeometry(0.5, 1.45, 4), whaleMaterial);
+    const leftFluke = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.2, 0.92), whaleMaterial);
+    leftFluke.position.set(-1.25, 0, -6.18);
+    leftFluke.rotation.z = -0.16;
+
+    const rightFluke = leftFluke.clone();
+    rightFluke.position.x *= -1;
+    rightFluke.rotation.z *= -1;
+
+    const dorsalFin = new THREE.Mesh(new THREE.ConeGeometry(0.44, 1.26, 5), whaleMaterial);
     dorsalFin.position.set(0, 1.05, -0.55);
     dorsalFin.rotation.x = Math.PI / 2;
 
-    const leftFin = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.18, 0.95), whaleMaterial);
+    const leftFin = new THREE.Mesh(new THREE.BoxGeometry(1.84, 0.22, 1.02), whaleMaterial);
     leftFin.position.set(-1.55, -0.35, 0.9);
     leftFin.rotation.z = Math.PI / 8;
     leftFin.rotation.x = -Math.PI / 4;
@@ -108,7 +114,7 @@ export class PlayerWhale {
     rightFin.position.x *= -1;
     rightFin.rotation.z *= -1;
 
-    this.fallbackVisualRoot.add(body, head, belly, tail, fluke, dorsalFin, leftFin, rightFin);
+    this.fallbackVisualRoot.add(body, head, brow, belly, tail, flukeBase, leftFluke, rightFluke, dorsalFin, leftFin, rightFin);
     this.visualRoot.add(this.fallbackVisualRoot);
     this.root.add(this.visualRoot);
     this.root.scale.setScalar(WHALE_VISUAL_SCALE);
@@ -154,26 +160,6 @@ export class PlayerWhale {
     this.breachOrigin.set(0, SURFACED_START_DEPTH, 0);
     this.root.position.set(0, SURFACED_START_DEPTH, 0);
     this.root.rotation.set(0, 0, 0, 'YXZ');
-    this.root.updateMatrixWorld();
-  }
-
-  applyVisualModel(model: THREE.Object3D, profile: ActorVisualProfile): void {
-    if (this.activeVisualModel) {
-      this.activeVisualModel.removeFromParent();
-    }
-
-    this.fallbackVisualRoot.visible = false;
-    this.activeVisualModel = model;
-    this.visualRoot.add(model);
-
-    if (profile.tetherAttach) {
-      this.tetherAttachLocal.copy(profile.tetherAttach);
-    }
-
-    if (profile.surfaceSilhouetteScale) {
-      this.surfaceSilhouetteScale.copy(profile.surfaceSilhouetteScale);
-    }
-
     this.root.updateMatrixWorld();
   }
 

@@ -1,7 +1,6 @@
 import * as THREE from 'three';
 import { Water } from 'three/addons/objects/Water.js';
 
-import { ModelLibrary } from '../assets/ModelLibrary';
 import { Cannonball } from '../entities/Cannonball';
 import { Harpoon } from '../entities/Harpoon';
 import { PlayerWhale } from '../entities/PlayerWhale';
@@ -125,7 +124,6 @@ export class OceanScene {
   private readonly whale = new PlayerWhale();
   private readonly ships = FLEET_SPAWNS.map((spawn) => new Ship(spawn));
   private readonly shipById = new Map(this.ships.map((ship) => [ship.id, ship] as const));
-  private readonly modelLibrary = new ModelLibrary();
   private readonly whaleMovement = new WhaleMovementSystem();
   private readonly damageSystem = new DamageSystem();
   private readonly shipAiSystem = new ShipAISystem();
@@ -185,7 +183,6 @@ export class OceanScene {
   private phase: ArenaPhase = 'playing';
   private score = 0;
   private activeTethers = 0;
-  private disposed = false;
 
   constructor(
     private readonly input: Input,
@@ -220,7 +217,6 @@ export class OceanScene {
     );
 
     this.reset();
-    void this.initializeVisuals();
     this.resize(width, height);
   }
 
@@ -348,7 +344,6 @@ export class OceanScene {
   }
 
   dispose(): void {
-    this.disposed = true;
     this.breachSplashFx.dispose();
     this.shipWakeFx.dispose();
     this.surfaceSeafoamFx.dispose();
@@ -388,22 +383,6 @@ export class OceanScene {
       createFogBankMesh(FOG_BANK_OUTER_RADIUS, FOG_BANK_OUTER_HEIGHT, 0.2, 6),
       createFogBankMesh(FOG_BANK_INNER_RADIUS, FOG_BANK_INNER_HEIGHT, 0.34, 7),
     );
-  }
-
-  private async initializeVisuals(): Promise<void> {
-    void this.modelLibrary.getActorModel('whale').then((visual) => {
-      if (!this.disposed && visual) {
-        this.whale.applyVisualModel(visual.scene, visual.profile);
-      }
-    });
-
-    for (const ship of this.ships) {
-      void this.modelLibrary.getActorModel(ship.role).then((visual) => {
-        if (!this.disposed && visual) {
-          ship.applyVisualModel(visual.scene, visual.profile);
-        }
-      });
-    }
   }
 
   private createOceanUnderside(): THREE.Mesh<THREE.PlaneGeometry, THREE.ShaderMaterial> {
