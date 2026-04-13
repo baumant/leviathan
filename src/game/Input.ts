@@ -5,10 +5,14 @@ const KEY_BINDINGS = {
   right: ['KeyD', 'ArrowRight'],
   rise: ['Space'],
   dive: ['ShiftLeft', 'ShiftRight'],
+  tailSlap: ['KeyF'],
+  restart: ['KeyR', 'Enter'],
 } as const;
 
 export class Input {
   private readonly heldKeys = new Set<string>();
+  private restartRequested = false;
+  private tailSlapRequested = false;
 
   constructor(target: Window = window) {
     target.addEventListener('keydown', this.handleKeyDown);
@@ -38,12 +42,38 @@ export class Input {
     return this.anyHeld(KEY_BINDINGS.dive);
   }
 
+  consumeTailSlapPressed(): boolean {
+    if (!this.tailSlapRequested) {
+      return false;
+    }
+
+    this.tailSlapRequested = false;
+    return true;
+  }
+
+  consumeRestartRequested(): boolean {
+    if (!this.restartRequested) {
+      return false;
+    }
+
+    this.restartRequested = false;
+    return true;
+  }
+
   private anyHeld(codes: readonly string[]): boolean {
     return codes.some((code) => this.heldKeys.has(code));
   }
 
   private readonly handleKeyDown = (event: KeyboardEvent): void => {
     this.heldKeys.add(event.code);
+
+    if (!event.repeat && KEY_BINDINGS.restart.includes(event.code as (typeof KEY_BINDINGS.restart)[number])) {
+      this.restartRequested = true;
+    }
+
+    if (!event.repeat && KEY_BINDINGS.tailSlap.includes(event.code as (typeof KEY_BINDINGS.tailSlap)[number])) {
+      this.tailSlapRequested = true;
+    }
   };
 
   private readonly handleKeyUp = (event: KeyboardEvent): void => {
@@ -52,5 +82,6 @@ export class Input {
 
   private readonly handleBlur = (): void => {
     this.heldKeys.clear();
+    this.tailSlapRequested = false;
   };
 }

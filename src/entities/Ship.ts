@@ -1,71 +1,196 @@
 import * as THREE from 'three';
 
+import { ActorVisualProfile } from '../assets/ModelLibrary';
+
+export type ShipRole = 'rowboat' | 'flagship';
+export type ShipAIState = 'patrol' | 'close' | 'throw' | 'tethered' | 'engage' | 'flee' | 'sinking';
+export type BroadsideSide = 'port' | 'starboard';
+
+export interface ShipSpawnConfig {
+  id: string;
+  role: ShipRole;
+  position: THREE.Vector3;
+  initialHeading: number;
+}
+
+interface ShipRoleConfig {
+  maxHealth: number;
+  scoreValue: number;
+  fireInterval: number;
+  attackDamage: number;
+  moveSpeed: number;
+  fleeSpeed: number;
+  turnRate: number;
+  patrolRadius: number;
+  holdRangeMin: number;
+  holdRangeMax: number;
+  orbitOffset: number;
+  scale: number;
+  lanternIntensity: number;
+  floatHeight: number;
+  sinkDepth: number;
+  halfExtents: THREE.Vector3;
+  surfaceShadowScale: THREE.Vector2;
+}
+
+const AIRBORNE_GRAVITY = 26;
+const WATER_SHOVE_DAMPING = 0.95;
+const WATER_SHOVE_YAW_DAMPING = 1.3;
+const WATER_SLIDE_ROLL_DAMPING = 2.4;
+const WATER_SLIDE_ROLL_LIMIT = 0.06;
+
+type ShipDamageReactionProfile = 'default' | 'flagship_ram' | 'flagship_breach';
+
+const SHIP_ROLE_CONFIGS: Record<ShipRole, ShipRoleConfig> = {
+  rowboat: {
+    maxHealth: 45,
+    scoreValue: 100,
+    fireInterval: 2.6,
+    attackDamage: 0,
+    moveSpeed: 9.4,
+    fleeSpeed: 9.8,
+    turnRate: 1.62,
+    patrolRadius: 12,
+    holdRangeMin: 8,
+    holdRangeMax: 14,
+    orbitOffset: 4,
+    scale: 0.72,
+    lanternIntensity: 1.1,
+    floatHeight: 0.18,
+    sinkDepth: 4.8,
+    halfExtents: new THREE.Vector3(1.24, 0.78, 2.9),
+    surfaceShadowScale: new THREE.Vector2(3.6, 8.6),
+  },
+  flagship: {
+    maxHealth: 360,
+    scoreValue: 500,
+    fireInterval: 5.2,
+    attackDamage: 10,
+    moveSpeed: 6.4,
+    fleeSpeed: 7.8,
+    turnRate: 0.68,
+    patrolRadius: 18,
+    holdRangeMin: 34,
+    holdRangeMax: 46,
+    orbitOffset: 24,
+    scale: 1.45,
+    lanternIntensity: 3,
+    floatHeight: 0.62,
+    sinkDepth: 9.8,
+    halfExtents: new THREE.Vector3(7.8, 4.1, 18.8),
+    surfaceShadowScale: new THREE.Vector2(24, 58),
+  },
+};
+
 export class Ship {
+  readonly id: string;
+  readonly role: ShipRole;
   readonly root = new THREE.Group();
-  readonly halfExtents = new THREE.Vector3(2.9, 2.2, 7.1);
+  readonly visualRoot = new THREE.Group();
+  readonly halfExtents = new THREE.Vector3();
+  readonly anchor = new THREE.Vector3();
+  readonly maxHealth: number;
+  readonly scoreValue: number;
+  readonly fireInterval: number;
+  readonly attackDamage: number;
+  readonly moveSpeed: number;
+  readonly fleeSpeed: number;
+  readonly turnRate: number;
+  readonly patrolRadius: number;
+  readonly holdRangeMin: number;
+  readonly holdRangeMax: number;
+  readonly orbitOffset: number;
 
   health: number;
-  readonly maxHealth: number;
+  aiState: ShipAIState = 'patrol';
+  heading: number;
+  travelSpeed = 0;
+  patrolAngle = Math.random() * Math.PI * 2;
+  orbitDirection = Math.random() > 0.5 ? 1 : -1;
+  fireCooldown = 0;
+  scoreAwarded = false;
 
   private sinkProgress = 0;
+  private readonly initialHeading: number;
   private readonly hullMaterial: THREE.MeshStandardMaterial;
   private readonly mastMaterial: THREE.MeshStandardMaterial;
   private readonly sailMaterial: THREE.MeshStandardMaterial;
-  private readonly lanternMaterial: THREE.MeshStandardMaterial;
-  private readonly lanternHalo: THREE.Mesh;
-  private readonly lanternHaloMaterial: THREE.MeshBasicMaterial;
-  private readonly lanternLight: THREE.PointLight;
-  private readonly baseYaw: number;
+  private readonly fallbackVisualRoot = new THREE.Group();
+  private readonly hullTintMaterials: THREE.MeshStandardMaterial[] = [];
+  private readonly mastTintMaterials: THREE.MeshStandardMaterial[] = [];
+  private readonly sailTintMaterials: THREE.MeshStandardMaterial[] = [];
+  private readonly lanternMaterials: THREE.MeshStandardMaterial[] = [];
+  private readonly lanternMeshes: THREE.Mesh[] = [];
+  private readonly lanternHalos: THREE.Mesh[] = [];
+  private readonly lanternHaloMaterials: THREE.MeshBasicMaterial[] = [];
+  private readonly lanternLights: THREE.PointLight[] = [];
+  private readonly portCannons: THREE.Mesh[] = [];
+  private readonly starboardCannons: THREE.Mesh[] = [];
+  private readonly cannonPortMaterials: THREE.MeshStandardMaterial[] = [];
+  private readonly cannonStarboardMaterials: THREE.MeshStandardMaterial[] = [];
+  private readonly portCannonOffsets: THREE.Vector3[] = [];
+  private readonly starboardCannonOffsets: THREE.Vector3[] = [];
+  private readonly wakeOriginLocal = new THREE.Vector3();
+  private readonly harpoonOriginLocal = new THREE.Vector3();
+  private readonly visualSurfaceShadowScale = new THREE.Vector2();
+  private readonly roleConfig: ShipRoleConfig;
   private readonly bobOffset = Math.random() * Math.PI * 2;
+  private readonly knockbackVelocity = new THREE.Vector3();
+  private readonly knockbackDirection = new THREE.Vector3();
+  private readonly waterShoveVelocity = new THREE.Vector3();
+  private readonly waterShoveDirection = new THREE.Vector3();
   private impactRoll = 0;
   private impactPitch = 0;
+  private waterSlideRoll = 0;
+  private readabilityCue = 0;
+  private broadsideTelegraphRemaining = 0;
+  private broadsideTelegraphSide: BroadsideSide | null = null;
+  private broadsideReadySide: BroadsideSide | null = null;
+  private broadsideFlash = 0;
+  private broadsideFlashSide: BroadsideSide | null = null;
+  private tetherPull = 0;
+  private tetherPullTarget = 0;
+  private yawVelocity = 0;
+  private waterShoveYawVelocity = 0;
+  private airborneHeight = 0;
+  private airborneVelocity = 0;
+  private activeVisualModel: THREE.Object3D | null = null;
 
-  constructor(maxHealth = 140) {
-    this.maxHealth = maxHealth;
-    this.health = maxHealth;
-    this.baseYaw = Math.PI * 0.18;
+  constructor(config: ShipSpawnConfig) {
+    this.id = config.id;
+    this.role = config.role;
+    this.roleConfig = SHIP_ROLE_CONFIGS[config.role];
+    this.maxHealth = this.roleConfig.maxHealth;
+    this.health = this.maxHealth;
+    this.scoreValue = this.roleConfig.scoreValue;
+    this.fireInterval = this.roleConfig.fireInterval;
+    this.attackDamage = this.roleConfig.attackDamage;
+    this.moveSpeed = this.roleConfig.moveSpeed;
+    this.fleeSpeed = this.roleConfig.fleeSpeed;
+    this.turnRate = this.roleConfig.turnRate;
+    this.patrolRadius = this.roleConfig.patrolRadius;
+    this.holdRangeMin = this.roleConfig.holdRangeMin;
+    this.holdRangeMax = this.roleConfig.holdRangeMax;
+    this.orbitOffset = this.roleConfig.orbitOffset;
+    this.initialHeading = config.initialHeading;
+    this.heading = config.initialHeading;
+    this.anchor.copy(config.position);
+    this.halfExtents.copy(this.roleConfig.halfExtents);
+    this.visualSurfaceShadowScale.copy(this.roleConfig.surfaceShadowScale);
 
     this.hullMaterial = new THREE.MeshStandardMaterial({
-      color: new THREE.Color('#5e4330'),
+      color: new THREE.Color(this.role === 'flagship' ? '#563c2a' : '#4c3828'),
       roughness: 0.92,
       metalness: 0.02,
       flatShading: true,
     });
 
     this.mastMaterial = new THREE.MeshStandardMaterial({
-      color: new THREE.Color('#8c674d'),
+      color: new THREE.Color(this.role === 'flagship' ? '#8c674d' : '#81614a'),
       roughness: 0.9,
       metalness: 0.01,
       flatShading: true,
     });
-
-    this.lanternMaterial = new THREE.MeshStandardMaterial({
-      color: new THREE.Color('#ffd18f'),
-      emissive: new THREE.Color('#ffac4c'),
-      emissiveIntensity: 0.9,
-      roughness: 0.35,
-      metalness: 0.05,
-    });
-
-    const hull = new THREE.Mesh(new THREE.BoxGeometry(5, 1.8, 12), this.hullMaterial);
-    hull.position.y = 0.4;
-
-    const foredeck = new THREE.Mesh(new THREE.BoxGeometry(4, 0.7, 3.4), this.hullMaterial);
-    foredeck.position.set(0, 1.15, 3.4);
-
-    const sternDeck = new THREE.Mesh(new THREE.BoxGeometry(3.8, 0.8, 2.6), this.hullMaterial);
-    sternDeck.position.set(0, 1.25, -3.4);
-
-    const bow = new THREE.Mesh(new THREE.ConeGeometry(2.35, 4.2, 5), this.hullMaterial);
-    bow.rotation.x = Math.PI / 2;
-    bow.position.set(0, 0.42, 7.4);
-
-    const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.28, 8.2, 5), this.mastMaterial);
-    mast.position.set(0, 4.7, -0.35);
-
-    const boom = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.22, 6.2), this.mastMaterial);
-    boom.position.set(0, 5.2, -0.25);
-    boom.rotation.x = Math.PI / 2;
 
     this.sailMaterial = new THREE.MeshStandardMaterial({
       color: new THREE.Color('#ccb996'),
@@ -73,48 +198,25 @@ export class Ship {
       metalness: 0,
       flatShading: true,
     });
+    this.hullTintMaterials.push(this.hullMaterial);
+    this.mastTintMaterials.push(this.mastMaterial);
+    this.sailTintMaterials.push(this.sailMaterial);
 
-    const sail = new THREE.Mesh(
-      new THREE.BoxGeometry(0.1, 3.6, 4.2),
-      this.sailMaterial,
-    );
-    sail.position.set(0, 5.1, 0.55);
+    if (this.role === 'flagship') {
+      this.buildFlagship();
+    } else {
+      this.buildRowboat();
+    }
 
-    const lantern = new THREE.Mesh(new THREE.SphereGeometry(0.28, 6, 6), this.lanternMaterial);
-    lantern.position.set(0, 2.25, 3.9);
-
-    this.lanternHaloMaterial = new THREE.MeshBasicMaterial({
-      color: new THREE.Color('#ffcf8f'),
-      transparent: true,
-      opacity: 0.18,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending,
-    });
-    this.lanternHaloMaterial.toneMapped = false;
-
-    this.lanternHalo = new THREE.Mesh(
-      new THREE.SphereGeometry(1.2, 10, 10),
-      this.lanternHaloMaterial,
-    );
-    this.lanternHalo.position.copy(lantern.position);
-
-    this.lanternLight = new THREE.PointLight('#ffb25a', 2.2, 22, 2);
-    this.lanternLight.position.copy(lantern.position);
-
-    this.root.add(
-      hull,
-      foredeck,
-      sternDeck,
-      bow,
-      mast,
-      boom,
-      sail,
-      lantern,
-      this.lanternHalo,
-      this.lanternLight,
-    );
-    this.root.position.set(36, 0.8, 58);
+    this.visualRoot.add(this.fallbackVisualRoot);
+    this.root.add(this.visualRoot);
+    this.root.scale.setScalar(this.roleConfig.scale);
+    this.root.position.copy(config.position);
+    this.root.position.y = this.roleConfig.floatHeight;
     this.root.rotation.order = 'YXZ';
+    this.root.updateMatrixWorld();
+
+    this.reset();
   }
 
   get sinking(): boolean {
@@ -129,50 +231,347 @@ export class Ship {
     return THREE.MathUtils.clamp(this.health / this.maxHealth, 0, 1);
   }
 
-  applyDamage(amount: number): void {
+  get displayName(): string {
+    return this.role === 'flagship' ? 'Flagship' : 'Rowboat';
+  }
+
+  get surfaceShadowScale(): THREE.Vector2 {
+    return this.visualSurfaceShadowScale;
+  }
+
+  get isBroadsideTelegraphing(): boolean {
+    return this.broadsideTelegraphSide !== null;
+  }
+
+  reset(): void {
+    this.health = this.maxHealth;
+    this.aiState = 'patrol';
+    this.heading = this.initialHeading;
+    this.travelSpeed = 0;
+    this.patrolAngle = Math.random() * Math.PI * 2;
+    this.orbitDirection = Math.random() > 0.5 ? 1 : -1;
+    this.fireCooldown = Math.random() * this.fireInterval;
+    this.scoreAwarded = false;
+    this.sinkProgress = 0;
+    this.impactRoll = 0;
+    this.impactPitch = 0;
+    this.waterSlideRoll = 0;
+    this.readabilityCue = 0;
+    this.broadsideTelegraphRemaining = 0;
+    this.broadsideTelegraphSide = null;
+    this.broadsideReadySide = null;
+    this.broadsideFlash = 0;
+    this.broadsideFlashSide = null;
+    this.tetherPull = 0;
+    this.tetherPullTarget = 0;
+    this.knockbackVelocity.setScalar(0);
+    this.waterShoveVelocity.setScalar(0);
+    this.yawVelocity = 0;
+    this.waterShoveYawVelocity = 0;
+    this.airborneHeight = 0;
+    this.airborneVelocity = 0;
+    this.root.position.copy(this.anchor);
+    this.root.position.y = this.roleConfig.floatHeight;
+    this.root.rotation.set(0, this.heading, 0, 'YXZ');
+    this.updateDamageLook();
+    this.root.updateMatrixWorld();
+  }
+
+  applyVisualModel(model: THREE.Object3D, profile: ActorVisualProfile): void {
+    if (this.activeVisualModel) {
+      this.activeVisualModel.removeFromParent();
+    }
+
+    this.fallbackVisualRoot.visible = false;
+    this.activeVisualModel = model;
+    this.visualRoot.add(model);
+
+    if (profile.wakeOrigin) {
+      this.wakeOriginLocal.copy(profile.wakeOrigin);
+    }
+
+    if (profile.harpoonOrigin) {
+      this.harpoonOriginLocal.copy(profile.harpoonOrigin);
+    }
+
+    if (profile.surfaceSilhouetteScale) {
+      this.visualSurfaceShadowScale.copy(profile.surfaceSilhouetteScale);
+    }
+
+    if (profile.lanternAnchors && profile.lanternAnchors.length > 0) {
+      this.applyLanternAnchors(profile.lanternAnchors);
+    }
+
+    if (this.role === 'flagship' && profile.broadsideOrigins) {
+      this.applyBroadsideOrigins(profile.broadsideOrigins.port, profile.broadsideOrigins.starboard);
+    }
+
+    this.collectModelTintMaterials(model);
+    this.updateDamageLook();
+    this.root.updateMatrixWorld();
+  }
+
+  applyDamage(amount: number, reactionProfile: ShipDamageReactionProfile = 'default'): void {
     if (this.sinking || this.sunk) {
       return;
     }
 
     this.health = Math.max(0, this.health - amount);
-    this.impactRoll += THREE.MathUtils.clamp(amount / 180, 0.02, 0.28);
-    this.impactPitch -= THREE.MathUtils.clamp(amount / 260, 0.01, 0.12);
+
+    if (reactionProfile === 'flagship_ram') {
+      this.impactRoll += THREE.MathUtils.clamp(amount / 520, 0.008, 0.04);
+    } else if (reactionProfile === 'flagship_breach') {
+      this.impactRoll += THREE.MathUtils.clamp(amount / 1400, 0.004, 0.014);
+    } else {
+      this.impactRoll += THREE.MathUtils.clamp(amount / 180, 0.02, 0.28);
+      this.impactPitch -= THREE.MathUtils.clamp(amount / 260, 0.01, 0.12);
+    }
+
     this.updateDamageLook();
   }
 
-  update(deltaSeconds: number, elapsedSeconds: number, oceanHeightAt: (x: number, z: number) => number): void {
-    const seaLevel = oceanHeightAt(this.root.position.x, this.root.position.z);
+  applyKnockback(direction: THREE.Vector3, strength: number, yawStrength = 0): void {
+    if (this.sinking || this.sunk || strength <= 0) {
+      return;
+    }
+
+    this.knockbackDirection.copy(direction).setY(0);
+
+    if (this.knockbackDirection.lengthSq() <= 0.0001) {
+      this.knockbackDirection.set(Math.sin(this.heading), 0, Math.cos(this.heading));
+    } else {
+      this.knockbackDirection.normalize();
+    }
+
+    this.knockbackVelocity.addScaledVector(this.knockbackDirection, strength);
+    this.yawVelocity += yawStrength;
+    this.impactRoll += THREE.MathUtils.clamp(strength * 0.018, 0.04, 0.22);
+    this.impactPitch -= THREE.MathUtils.clamp(strength * 0.008, 0.01, 0.08);
+  }
+
+  applyWaterShove(direction: THREE.Vector3, strength: number, yawStrength = 0): void {
+    if (this.sinking || this.sunk || strength <= 0) {
+      return;
+    }
+
+    this.waterShoveDirection.copy(direction).setY(0);
+
+    if (this.waterShoveDirection.lengthSq() <= 0.0001) {
+      this.waterShoveDirection.set(Math.sin(this.heading), 0, Math.cos(this.heading));
+    } else {
+      this.waterShoveDirection.normalize();
+    }
+
+    this.waterShoveVelocity.addScaledVector(this.waterShoveDirection, strength);
+    this.waterShoveYawVelocity += yawStrength;
+  }
+
+  applyBlastRock(
+    direction: THREE.Vector3,
+    waterStrength: number,
+    yawStrength: number,
+    rollStrength: number,
+    pitchStrength: number,
+  ): void {
+    if (this.sinking || this.sunk) {
+      return;
+    }
+
+    if (waterStrength > 0) {
+      this.applyWaterShove(direction, waterStrength, yawStrength);
+    }
+
+    this.impactRoll += rollStrength;
+    this.impactPitch -= pitchStrength;
+  }
+
+  launchIntoAir(direction: THREE.Vector3, upwardVelocity: number, horizontalStrength: number, yawStrength = 0): void {
+    if (this.sunk || upwardVelocity <= 0) {
+      return;
+    }
+
+    if (horizontalStrength > 0) {
+      this.applyKnockback(direction, horizontalStrength, yawStrength);
+    }
+
+    this.airborneHeight = Math.max(this.airborneHeight, 0.08);
+    this.airborneVelocity = Math.max(this.airborneVelocity, upwardVelocity);
+    this.travelSpeed *= 0.28;
+    this.impactRoll += THREE.MathUtils.clamp(upwardVelocity * 0.018, 0.1, 0.34);
+    this.impactPitch -= THREE.MathUtils.clamp(upwardVelocity * 0.014, 0.08, 0.26);
+  }
+
+  update(
+    deltaSeconds: number,
+    elapsedSeconds: number,
+    oceanHeightAt: (x: number, z: number) => number,
+    pauseWaterShove = false,
+  ): void {
     const damageRatio = 1 - this.healthPercent;
-    const bob = Math.sin(elapsedSeconds * 1.1 + this.bobOffset) * 0.22;
-    const pitchWave = Math.cos(elapsedSeconds * 0.9 + this.bobOffset * 0.7) * 0.03;
-    const rollWave = Math.sin(elapsedSeconds * 1.2 + this.bobOffset) * 0.04;
+    const bobAmplitude = this.role === 'flagship' ? 0.22 : 0.14;
+    const bob = Math.sin(elapsedSeconds * 1.1 + this.bobOffset) * bobAmplitude;
+    const pitchWave = Math.cos(elapsedSeconds * 0.9 + this.bobOffset * 0.7) * (this.role === 'flagship' ? 0.03 : 0.02);
+    const rollWave = Math.sin(elapsedSeconds * 1.2 + this.bobOffset) * (this.role === 'flagship' ? 0.04 : 0.05);
+    const speedRatio = THREE.MathUtils.clamp(this.travelSpeed / this.fleeSpeed, 0, 1);
+    const cue = this.sinking ? 0 : this.readabilityCue;
+    const telegraphAlpha =
+      this.broadsideTelegraphRemaining > 0 ? 1 - this.broadsideTelegraphRemaining / 0.6 : 0;
 
     this.impactRoll = THREE.MathUtils.damp(this.impactRoll, damageRatio * 0.11, 2.8, deltaSeconds);
     this.impactPitch = THREE.MathUtils.damp(this.impactPitch, damageRatio * 0.05, 2.4, deltaSeconds);
+    this.tetherPull = THREE.MathUtils.damp(this.tetherPull, this.tetherPullTarget, 5.2, deltaSeconds);
+    this.knockbackVelocity.x = THREE.MathUtils.damp(this.knockbackVelocity.x, 0, 2.8, deltaSeconds);
+    this.knockbackVelocity.z = THREE.MathUtils.damp(this.knockbackVelocity.z, 0, 2.8, deltaSeconds);
+    this.yawVelocity = THREE.MathUtils.damp(this.yawVelocity, 0, 3.1, deltaSeconds);
 
-    if (this.sinking) {
-      this.sinkProgress = Math.min(1, this.sinkProgress + deltaSeconds * 0.18);
+    if (!pauseWaterShove) {
+      this.waterShoveVelocity.x = THREE.MathUtils.damp(this.waterShoveVelocity.x, 0, WATER_SHOVE_DAMPING, deltaSeconds);
+      this.waterShoveVelocity.z = THREE.MathUtils.damp(this.waterShoveVelocity.z, 0, WATER_SHOVE_DAMPING, deltaSeconds);
+      this.waterShoveYawVelocity = THREE.MathUtils.damp(this.waterShoveYawVelocity, 0, WATER_SHOVE_YAW_DAMPING, deltaSeconds);
+
+      if (this.role === 'flagship') {
+        this.waterShoveDirection.set(Math.cos(this.heading), 0, -Math.sin(this.heading));
+        const lateralSlideSpeed = this.waterShoveVelocity.dot(this.waterShoveDirection);
+        const slideRollTarget = THREE.MathUtils.clamp(-lateralSlideSpeed * 0.02, -WATER_SLIDE_ROLL_LIMIT, WATER_SLIDE_ROLL_LIMIT);
+        this.waterSlideRoll = THREE.MathUtils.damp(this.waterSlideRoll, slideRollTarget, WATER_SLIDE_ROLL_DAMPING, deltaSeconds);
+      } else {
+        this.waterSlideRoll = THREE.MathUtils.damp(this.waterSlideRoll, 0, WATER_SLIDE_ROLL_DAMPING, deltaSeconds);
+      }
     }
 
-    this.root.position.y = seaLevel + 0.95 + bob - this.sinkProgress * 8.5;
+    const wasAirborne = this.airborneHeight > 0.001 || this.airborneVelocity > 0.001;
+    if (wasAirborne) {
+      this.airborneVelocity -= AIRBORNE_GRAVITY * deltaSeconds;
+      this.airborneHeight = Math.max(0, this.airborneHeight + this.airborneVelocity * deltaSeconds);
+
+      if (this.airborneHeight === 0 && this.airborneVelocity < 0) {
+        this.airborneVelocity = 0;
+        this.impactRoll += 0.08;
+        this.impactPitch += 0.04;
+      }
+    }
+
+    if (this.sinking) {
+      this.sinkProgress = Math.min(1, this.sinkProgress + deltaSeconds * (this.role === 'flagship' ? 0.18 : 0.42));
+      this.aiState = 'sinking';
+      this.travelSpeed = THREE.MathUtils.damp(this.travelSpeed, 0, 4.2, deltaSeconds);
+    }
+
+    if (this.broadsideTelegraphRemaining > 0) {
+      this.broadsideTelegraphRemaining = Math.max(0, this.broadsideTelegraphRemaining - deltaSeconds);
+
+      if (this.broadsideTelegraphRemaining === 0 && this.broadsideTelegraphSide) {
+        this.broadsideReadySide = this.broadsideTelegraphSide;
+        this.broadsideFlash = 1;
+        this.broadsideFlashSide = this.broadsideTelegraphSide;
+        this.broadsideTelegraphSide = null;
+      }
+    }
+
+    this.broadsideFlash = THREE.MathUtils.damp(this.broadsideFlash, 0, 8.5, deltaSeconds);
+
+    const waterShoveX = pauseWaterShove ? 0 : this.waterShoveVelocity.x;
+    const waterShoveZ = pauseWaterShove ? 0 : this.waterShoveVelocity.z;
+    const waterShoveYaw = pauseWaterShove ? 0 : this.waterShoveYawVelocity;
+    this.root.position.x += (this.knockbackVelocity.x + waterShoveX) * deltaSeconds;
+    this.root.position.z += (this.knockbackVelocity.z + waterShoveZ) * deltaSeconds;
+    this.heading += (this.yawVelocity + waterShoveYaw) * deltaSeconds;
+
+    const seaLevel = oceanHeightAt(this.root.position.x, this.root.position.z);
+    this.root.position.y =
+      seaLevel + this.roleConfig.floatHeight + bob + this.airborneHeight - this.sinkProgress * this.roleConfig.sinkDepth - this.tetherPull;
     this.root.rotation.set(
-      pitchWave + this.impactPitch - this.sinkProgress * 0.28,
-      this.baseYaw,
-      rollWave + this.impactRoll + this.sinkProgress * 1.28,
+      pitchWave + this.impactPitch - this.sinkProgress * 0.28 - this.tetherPull * 0.12,
+      this.heading,
+      rollWave + this.impactRoll + this.waterSlideRoll + this.sinkProgress * 1.28 + speedRatio * 0.04 * this.orbitDirection,
       'YXZ',
     );
 
     const lanternPulse = 0.85 + Math.sin(elapsedSeconds * 4.2 + this.bobOffset * 2) * 0.15;
-    this.lanternLight.intensity = Math.max(0, (2.1 - damageRatio - this.sinkProgress * 1.6) * lanternPulse);
-    this.lanternMaterial.emissiveIntensity = Math.max(0, 0.9 - this.sinkProgress * 0.72);
-    this.lanternHaloMaterial.opacity = Math.max(0, (0.14 + lanternPulse * 0.06) * (1 - this.sinkProgress * 0.92));
-    this.lanternHalo.scale.setScalar(1.05 + lanternPulse * 0.18 + damageRatio * 0.22);
+    const haloBaseScale = 1.05 + lanternPulse * 0.18 + damageRatio * 0.22;
+    const haloBaseOpacity = Math.max(0, (0.14 + lanternPulse * 0.06) * (1 - this.sinkProgress * 0.92));
 
+    for (const material of this.hullTintMaterials) {
+      material.emissive.set('#8fb7df');
+      material.emissiveIntensity = cue * (this.role === 'flagship' ? 0.028 : 0.036);
+    }
+
+    for (const material of this.mastTintMaterials) {
+      material.emissive.set('#86a5c8');
+      material.emissiveIntensity = cue * 0.026;
+    }
+
+    for (const material of this.sailTintMaterials) {
+      material.emissive.set('#98b6d6');
+      material.emissiveIntensity = cue * 0.012;
+    }
+
+    for (let index = 0; index < this.lanternLights.length; index += 1) {
+      const lanternStrength = index === 0 ? 1 : 0.76;
+      const light = this.lanternLights[index];
+      const halo = this.lanternHalos[index];
+      const haloMaterial = this.lanternHaloMaterials[index];
+      const lanternMaterial = this.lanternMaterials[index];
+      const baseIntensity = Math.max(
+        0,
+        (this.roleConfig.lanternIntensity - damageRatio - this.sinkProgress * 1.6) * lanternPulse * lanternStrength,
+      );
+
+      light.intensity = baseIntensity * (1 + cue * 0.24);
+      light.distance = THREE.MathUtils.lerp(18, 28, cue) * this.roleConfig.scale;
+
+      lanternMaterial.emissiveIntensity = Math.max(0, 0.9 - this.sinkProgress * 0.72) + cue * 0.18;
+      haloMaterial.opacity = Math.min(0.62, haloBaseOpacity + cue * 0.08);
+      halo.scale.setScalar(haloBaseScale * lanternStrength * (1 + cue * 0.08));
+    }
+
+    this.updateCannonTelegraphVisuals(telegraphAlpha);
     this.root.updateMatrixWorld();
+  }
+
+  setSubmergedReadabilityCue(amount: number): void {
+    this.readabilityCue = THREE.MathUtils.clamp(amount, 0, 1);
+  }
+
+  setTetherPull(amount: number): void {
+    this.tetherPullTarget = THREE.MathUtils.clamp(amount, 0, 2.6);
+  }
+
+  markHarpoonFired(): void {
+    this.fireCooldown = this.fireInterval;
+  }
+
+  startBroadsideTelegraph(side: BroadsideSide): void {
+    if (this.role !== 'flagship' || this.broadsideTelegraphSide !== null || this.sinking) {
+      return;
+    }
+
+    this.broadsideTelegraphSide = side;
+    this.broadsideTelegraphRemaining = 0.6;
+    this.fireCooldown = this.fireInterval;
+  }
+
+  consumeBroadsideReady(): BroadsideSide | null {
+    const side = this.broadsideReadySide;
+    this.broadsideReadySide = null;
+    return side;
+  }
+
+  getHarpoonOrigin(target = new THREE.Vector3()): THREE.Vector3 {
+    return this.root.localToWorld(target.copy(this.harpoonOriginLocal));
+  }
+
+  getBroadsideOrigins(side: BroadsideSide): THREE.Vector3[] {
+    const offsets = side === 'port' ? this.portCannonOffsets : this.starboardCannonOffsets;
+    return offsets.map((offset) => this.root.localToWorld(offset.clone()));
   }
 
   getForward(target = new THREE.Vector3()): THREE.Vector3 {
     return target.set(0, 0, 1).applyQuaternion(this.root.quaternion).normalize();
+  }
+
+  getWakeOrigin(target = new THREE.Vector3()): THREE.Vector3 {
+    return this.root.localToWorld(target.copy(this.wakeOriginLocal));
   }
 
   worldToLocalPoint(point: THREE.Vector3, target = new THREE.Vector3()): THREE.Vector3 {
@@ -180,32 +579,242 @@ export class Ship {
     return this.root.worldToLocal(target);
   }
 
-  setSubmergedReadabilityCue(amount: number): void {
-    const cue = THREE.MathUtils.clamp(amount, 0, 1);
+  private buildRowboat(): void {
+    this.harpoonOriginLocal.set(0, 0.88, 2.2);
+    this.wakeOriginLocal.set(0, 0.3, -3.2);
+    const hull = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.7, 4.8), this.hullMaterial);
+    hull.position.y = 0.18;
 
-    this.hullMaterial.emissive.set('#8fb7df');
-    this.hullMaterial.emissiveIntensity = cue * 0.14;
+    const bench = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.18, 0.5), this.mastMaterial);
+    bench.position.set(0, 0.55, -0.1);
 
-    this.mastMaterial.emissive.set('#86a5c8');
-    this.mastMaterial.emissiveIntensity = cue * 0.11;
+    const bow = new THREE.Mesh(new THREE.ConeGeometry(1, 2.2, 5), this.hullMaterial);
+    bow.rotation.x = Math.PI / 2;
+    bow.position.set(0, 0.16, 3.15);
 
-    this.sailMaterial.emissive.set('#98b6d6');
-    this.sailMaterial.emissiveIntensity = cue * 0.08;
+    const stern = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.4, 0.8), this.hullMaterial);
+    stern.position.set(0, 0.38, -2.1);
 
-    this.lanternMaterial.emissiveIntensity += cue * 0.62;
-    this.lanternLight.intensity *= 1 + cue * 0.8;
-    this.lanternLight.distance = THREE.MathUtils.lerp(22, 32, cue);
+    const leftOar = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.08, 0.18), this.mastMaterial);
+    leftOar.position.set(-1.5, 0.6, -0.1);
+    leftOar.rotation.z = 0.16;
 
-    this.lanternHaloMaterial.opacity = Math.min(0.8, this.lanternHaloMaterial.opacity + cue * 0.34);
-    this.lanternHalo.scale.multiplyScalar(1 + cue * 0.28);
+    const rightOar = leftOar.clone();
+    rightOar.position.x *= -1;
+    rightOar.rotation.z *= -1;
+
+    this.fallbackVisualRoot.add(hull, bench, bow, stern, leftOar, rightOar);
+    this.addLantern(new THREE.Vector3(0, 0.92, 0.45));
+  }
+
+  private buildFlagship(): void {
+    this.harpoonOriginLocal.set(0, 2.4, 7.6);
+    this.wakeOriginLocal.set(0, 0.72, -9.4);
+    const hull = new THREE.Mesh(new THREE.BoxGeometry(6.4, 2.1, 16.2), this.hullMaterial);
+    hull.position.y = 0.46;
+
+    const foredeck = new THREE.Mesh(new THREE.BoxGeometry(5.2, 0.9, 4.4), this.hullMaterial);
+    foredeck.position.set(0, 1.5, 4.3);
+
+    const sternDeck = new THREE.Mesh(new THREE.BoxGeometry(5.6, 1.1, 4), this.hullMaterial);
+    sternDeck.position.set(0, 1.75, -4.5);
+
+    const bow = new THREE.Mesh(new THREE.ConeGeometry(2.8, 5.4, 6), this.hullMaterial);
+    bow.rotation.x = Math.PI / 2;
+    bow.position.set(0, 0.5, 9.1);
+
+    const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.32, 9.8, 5), this.mastMaterial);
+    mast.position.set(0, 5.3, -0.6);
+
+    const boom = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.24, 7.2), this.mastMaterial);
+    boom.position.set(0, 5.8, -0.4);
+    boom.rotation.x = Math.PI / 2;
+
+    const sail = new THREE.Mesh(new THREE.BoxGeometry(0.1, 4.2, 5.4), this.sailMaterial);
+    sail.position.set(0, 5.7, 0.35);
+
+    this.fallbackVisualRoot.add(hull, foredeck, sternDeck, bow, mast, boom, sail);
+
+    const cannonDepths = [4.4, 1.1, -2.2];
+
+    for (const depth of cannonDepths) {
+      const portOffset = new THREE.Vector3(-3.4, 1.45, depth);
+      const starboardOffset = new THREE.Vector3(3.4, 1.45, depth);
+      this.portCannonOffsets.push(portOffset.clone());
+      this.starboardCannonOffsets.push(starboardOffset.clone());
+      this.addCannon(portOffset, 'port');
+      this.addCannon(starboardOffset, 'starboard');
+    }
+
+    this.addLantern(new THREE.Vector3(0, 2.35, 5.2));
+    this.addLantern(new THREE.Vector3(-1.5, 2.3, -3.1));
+    this.addLantern(new THREE.Vector3(1.5, 2.3, -3.1));
+    this.addLantern(new THREE.Vector3(0, 2.5, -6.1));
+  }
+
+  private addCannon(offset: THREE.Vector3, side: BroadsideSide): void {
+    const cannonMaterial = new THREE.MeshStandardMaterial({
+      color: new THREE.Color('#2c313c'),
+      emissive: new THREE.Color('#ff9e56'),
+      emissiveIntensity: 0,
+      roughness: 0.42,
+      metalness: 0.3,
+      flatShading: true,
+    });
+
+    const cannon = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.22, 1.9, 6), cannonMaterial);
+    cannon.position.copy(offset);
+    cannon.rotation.z = Math.PI / 2;
+
+    if (side === 'port') {
+      cannon.rotation.y = Math.PI;
+      this.portCannons.push(cannon);
+      this.cannonPortMaterials.push(cannonMaterial);
+    } else {
+      this.starboardCannons.push(cannon);
+      this.cannonStarboardMaterials.push(cannonMaterial);
+    }
+
+    this.visualRoot.add(cannon);
+  }
+
+  private addLantern(offset: THREE.Vector3): void {
+    const lanternMaterial = new THREE.MeshStandardMaterial({
+      color: new THREE.Color('#ffd18f'),
+      emissive: new THREE.Color('#ffac4c'),
+      emissiveIntensity: 0.9,
+      roughness: 0.35,
+      metalness: 0.05,
+    });
+
+    const lantern = new THREE.Mesh(new THREE.SphereGeometry(this.role === 'flagship' ? 0.28 : 0.22, 6, 6), lanternMaterial);
+    lantern.position.copy(offset);
+
+    const lanternHaloMaterial = new THREE.MeshBasicMaterial({
+      color: new THREE.Color('#ffcf8f'),
+      transparent: true,
+      opacity: 0.18,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    lanternHaloMaterial.toneMapped = false;
+
+    const lanternHalo = new THREE.Mesh(
+      new THREE.SphereGeometry(this.role === 'flagship' ? 1.2 : 0.9, 10, 10),
+      lanternHaloMaterial,
+    );
+    lanternHalo.position.copy(offset);
+
+    const lanternLight = new THREE.PointLight('#ffb25a', this.role === 'flagship' ? 2.6 : 1.5, this.role === 'flagship' ? 24 : 16, 2);
+    lanternLight.position.copy(offset);
+
+    this.lanternMaterials.push(lanternMaterial);
+    this.lanternMeshes.push(lantern);
+    this.lanternHaloMaterials.push(lanternHaloMaterial);
+    this.lanternHalos.push(lanternHalo);
+    this.lanternLights.push(lanternLight);
+
+    this.visualRoot.add(lantern, lanternHalo, lanternLight);
+  }
+
+  private updateCannonTelegraphVisuals(telegraphAlpha: number): void {
+    const portTelegraph = this.broadsideTelegraphSide === 'port' ? telegraphAlpha : 0;
+    const starboardTelegraph = this.broadsideTelegraphSide === 'starboard' ? telegraphAlpha : 0;
+    const portFlash = this.broadsideFlashSide === 'port' ? this.broadsideFlash : 0;
+    const starboardFlash = this.broadsideFlashSide === 'starboard' ? this.broadsideFlash : 0;
+
+    for (const material of this.cannonPortMaterials) {
+      material.emissiveIntensity = portTelegraph * 1.1 + portFlash * 1.6;
+    }
+
+    for (const material of this.cannonStarboardMaterials) {
+      material.emissiveIntensity = starboardTelegraph * 1.1 + starboardFlash * 1.6;
+    }
+  }
+
+  private applyLanternAnchors(anchors: readonly THREE.Vector3[]): void {
+    const count = Math.min(anchors.length, this.lanternMeshes.length);
+
+    for (let index = 0; index < count; index += 1) {
+      this.lanternMeshes[index].position.copy(anchors[index]);
+      this.lanternHalos[index].position.copy(anchors[index]);
+      this.lanternLights[index].position.copy(anchors[index]);
+    }
+  }
+
+  private applyBroadsideOrigins(port: readonly THREE.Vector3[], starboard: readonly THREE.Vector3[]): void {
+    this.portCannonOffsets.length = 0;
+    this.starboardCannonOffsets.length = 0;
+
+    for (let index = 0; index < port.length && index < this.portCannons.length; index += 1) {
+      this.portCannonOffsets.push(port[index].clone());
+      this.portCannons[index].position.copy(port[index]);
+    }
+
+    for (let index = 0; index < starboard.length && index < this.starboardCannons.length; index += 1) {
+      this.starboardCannonOffsets.push(starboard[index].clone());
+      this.starboardCannons[index].position.copy(starboard[index]);
+    }
+  }
+
+  private collectModelTintMaterials(model: THREE.Object3D): void {
+    const hullMaterials = new Set(this.hullTintMaterials);
+    const mastMaterials = new Set(this.mastTintMaterials);
+    const sailMaterials = new Set(this.sailTintMaterials);
+
+    model.traverse((object) => {
+      if (!(object instanceof THREE.Mesh)) {
+        return;
+      }
+
+      const material = object.material;
+      if (!(material instanceof THREE.MeshStandardMaterial)) {
+        return;
+      }
+
+      material.flatShading = true;
+      material.needsUpdate = true;
+      const partName = object.name.toLowerCase();
+      if (partName.includes('sail')) {
+        sailMaterials.add(material);
+      } else if (partName.includes('mast') || partName.includes('wood') || partName.includes('oar')) {
+        mastMaterials.add(material);
+      } else {
+        hullMaterials.add(material);
+      }
+    });
+
+    this.hullTintMaterials.length = 0;
+    this.hullTintMaterials.push(...hullMaterials);
+    this.mastTintMaterials.length = 0;
+    this.mastTintMaterials.push(...mastMaterials);
+    this.sailTintMaterials.length = 0;
+    this.sailTintMaterials.push(...sailMaterials);
   }
 
   private updateDamageLook(): void {
     const damageRatio = 1 - this.healthPercent;
+    const hullBase = this.role === 'flagship' ? new THREE.Color('#5e4330') : new THREE.Color('#4c3828');
+    const hullDamage = this.role === 'flagship' ? new THREE.Color('#23150f') : new THREE.Color('#1e1410');
+    const mastBase = this.role === 'flagship' ? new THREE.Color('#8c674d') : new THREE.Color('#81614a');
+    const mastDamage = this.role === 'flagship' ? new THREE.Color('#403127') : new THREE.Color('#3c2e24');
+    const sailBase = this.role === 'flagship' ? new THREE.Color('#ccb996') : new THREE.Color('#9e8a6a');
+    const sailDamage = this.role === 'flagship' ? new THREE.Color('#6f6351') : new THREE.Color('#56493a');
 
-    this.hullMaterial.color.set('#5e4330').lerp(new THREE.Color('#23150f'), damageRatio * 0.75);
-    this.mastMaterial.color.set('#8c674d').lerp(new THREE.Color('#403127'), damageRatio * 0.68);
-    this.sailMaterial.color.set('#ccb996').lerp(new THREE.Color('#6f6351'), damageRatio * 0.42);
-    this.lanternMaterial.color.set('#ffd18f').lerp(new THREE.Color('#6d4d28'), damageRatio * 0.6);
+    for (const material of this.hullTintMaterials) {
+      material.color.copy(hullBase).lerp(hullDamage, damageRatio * 0.75);
+    }
+
+    for (const material of this.mastTintMaterials) {
+      material.color.copy(mastBase).lerp(mastDamage, damageRatio * 0.68);
+    }
+
+    for (const material of this.sailTintMaterials) {
+      material.color.copy(sailBase).lerp(sailDamage, damageRatio * 0.42);
+    }
+
+    for (const lanternMaterial of this.lanternMaterials) {
+      lanternMaterial.color.set('#ffd18f').lerp(new THREE.Color('#6d4d28'), damageRatio * 0.6);
+    }
   }
 }

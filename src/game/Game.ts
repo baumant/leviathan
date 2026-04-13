@@ -44,12 +44,39 @@ export class Game {
 
     this.states.add('INTRO_DECK', { update: () => undefined });
     this.states.add('ATTACK_CINEMATIC', { update: () => undefined });
-    this.states.add('ENDGAME', { update: () => undefined });
-    this.states.add('GAME_OVER', { update: () => undefined });
-
-    this.states.add('WHALE_PLAY', {
+    this.states.add('ENDGAME', {
       update: (deltaSeconds) => {
         this.scene.update(deltaSeconds, this.time.elapsedSeconds);
+
+        if (this.input.consumeRestartRequested()) {
+          this.scene.reset();
+          this.states.change('WHALE_PLAY');
+        }
+      },
+    });
+    this.states.add('GAME_OVER', {
+      update: (deltaSeconds) => {
+        this.scene.update(deltaSeconds, this.time.elapsedSeconds);
+
+        if (this.input.consumeRestartRequested()) {
+          this.scene.reset();
+          this.states.change('WHALE_PLAY');
+        }
+      },
+    });
+
+    this.states.add('WHALE_PLAY', {
+      enter: () => {
+        this.scene.reset();
+      },
+      update: (deltaSeconds) => {
+        this.scene.update(deltaSeconds, this.time.elapsedSeconds);
+
+        if (this.scene.outcome === 'victory') {
+          this.states.change('ENDGAME');
+        } else if (this.scene.outcome === 'defeat') {
+          this.states.change('GAME_OVER');
+        }
       },
     });
   }
