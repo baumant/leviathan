@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 
 import { OceanScene } from '../scenes/OceanScene';
+import { IntroScene } from '../scenes/IntroScene';
 import { UISystem } from '../systems/UISystem';
 import { Input } from './Input';
 import { StateMachine } from './StateMachine';
@@ -16,7 +17,8 @@ export class Game {
   private readonly time = new Time();
   private readonly states = new StateMachine<GameStateId>();
   private readonly ui: UISystem;
-  private readonly scene: OceanScene;
+  private readonly introScene: IntroScene;
+  private readonly oceanScene: OceanScene;
 
   constructor(private readonly mount: HTMLElement) {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -27,7 +29,8 @@ export class Game {
 
     this.mount.append(this.renderer.domElement);
     this.ui = new UISystem(document.body);
-    this.scene = new OceanScene(this.input, this.ui, window.innerWidth, window.innerHeight);
+    this.introScene = new IntroScene(this.input, this.ui, window.innerWidth, window.innerHeight);
+    this.oceanScene = new OceanScene(this.input, this.ui, window.innerWidth, window.innerHeight);
 
     this.registerStates();
     this.states.change('BOOT');
@@ -38,43 +41,64 @@ export class Game {
 
   private registerStates(): void {
     this.states.add('BOOT', {
-      enter: () => this.states.change('WHALE_PLAY'),
+      enter: () => this.states.change('INTRO_DECK'),
       update: () => undefined,
     });
 
-    this.states.add('INTRO_DECK', { update: () => undefined });
-    this.states.add('ATTACK_CINEMATIC', { update: () => undefined });
+    this.states.add('INTRO_DECK', {
+      enter: () => {
+        this.introScene.reset();
+      },
+      update: (deltaSeconds) => {
+        const result = this.introScene.update(deltaSeconds, this.time.elapsedSeconds);
+
+        if (result === 'start_attack') {
+          this.states.change('ATTACK_CINEMATIC');
+        } else if (result === 'complete') {
+          this.states.change('WHALE_PLAY');
+        }
+      },
+    });
+    this.states.add('ATTACK_CINEMATIC', {
+      update: (deltaSeconds) => {
+        const result = this.introScene.update(deltaSeconds, this.time.elapsedSeconds);
+
+        if (result === 'complete') {
+          this.states.change('WHALE_PLAY');
+        }
+      },
+    });
     this.states.add('ENDGAME', {
       update: (deltaSeconds) => {
-        this.scene.update(deltaSeconds, this.time.elapsedSeconds);
+        this.oceanScene.update(deltaSeconds, this.time.elapsedSeconds);
 
         if (this.input.consumeRestartRequested()) {
-          this.scene.reset();
-          this.states.change('WHALE_PLAY');
+          this.oceanScene.reset();
+          this.states.change('INTRO_DECK');
         }
       },
     });
     this.states.add('GAME_OVER', {
       update: (deltaSeconds) => {
-        this.scene.update(deltaSeconds, this.time.elapsedSeconds);
+        this.oceanScene.update(deltaSeconds, this.time.elapsedSeconds);
 
         if (this.input.consumeRestartRequested()) {
-          this.scene.reset();
-          this.states.change('WHALE_PLAY');
+          this.oceanScene.reset();
+          this.states.change('INTRO_DECK');
         }
       },
     });
 
     this.states.add('WHALE_PLAY', {
       enter: () => {
-        this.scene.reset();
+        this.oceanScene.reset();
       },
       update: (deltaSeconds) => {
-        this.scene.update(deltaSeconds, this.time.elapsedSeconds);
+        this.oceanScene.update(deltaSeconds, this.time.elapsedSeconds);
 
-        if (this.scene.outcome === 'victory') {
+        if (this.oceanScene.outcome === 'victory') {
           this.states.change('ENDGAME');
-        } else if (this.scene.outcome === 'defeat') {
+        } else if (this.oceanScene.outcome === 'defeat') {
           this.states.change('GAME_OVER');
         }
       },
@@ -84,20 +108,27 @@ export class Game {
   private readonly loop = (timestamp: number): void => {
     const deltaSeconds = this.time.tick(timestamp);
     this.states.update(deltaSeconds);
-    this.scene.render(this.renderer);
+    this.getActiveScene().render(this.renderer);
     requestAnimationFrame(this.loop);
   };
 
   private readonly handleResize = (): void => {
     this.renderer.setSize(window.innerWidth, window.innerHeight);
-    this.scene.resize(window.innerWidth, window.innerHeight);
+    this.introScene.resize(window.innerWidth, window.innerHeight);
+    this.oceanScene.resize(window.innerWidth, window.innerHeight);
   };
 
   dispose(): void {
     window.removeEventListener('resize', this.handleResize);
     this.input.dispose();
     this.ui.dispose();
-    this.scene.dispose();
+    this.introScene.dispose();
+    this.oceanScene.dispose();
     this.renderer.dispose();
+  }
+
+  private getActiveScene(): IntroScene | OceanScene {
+    const current = this.states.current;
+    return current === 'INTRO_DECK' || current === 'ATTACK_CINEMATIC' ? this.introScene : this.oceanScene;
   }
 }

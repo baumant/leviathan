@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { Water } from 'three/addons/objects/Water.js';
 
 const MAX_LANTERN_INFLUENCES = 4;
+const MAX_SUBSURFACE_REVEAL_WINDOWS = 8;
 const NORMAL_TEXTURE_SIZE = 256;
 const FAR_LANTERN_POSITION = new THREE.Vector3(9999, 0, 9999);
 
@@ -56,11 +57,45 @@ const OCEAN_SURFACE_TUNING = {
     intensityScale: 0.1,
     warmBlend: 0.038,
   },
+  subsurfaceReveal: {
+    clarityStrength: 0.32,
+    densityReduction: 0.2,
+    transmissionBoost: 0.08,
+    minAlpha: 0.74,
+  },
+} as const;
+
+export const OCEAN_SUBSURFACE_REVEAL_TUNING = {
+  whale: {
+    minDepth: 0.4,
+    strongStart: 1.0,
+    strongEnd: 3.0,
+    maxDepth: 6.0,
+    fadeDistanceStart: 10,
+    fadeDistanceEnd: 54,
+    maxStrength: 0.94,
+  },
+  ship: {
+    minDepth: 0.25,
+    strongStart: 0.5,
+    strongEnd: 1.2,
+    maxDepth: 2.0,
+    fadeDistanceStart: 8,
+    fadeDistanceEnd: 36,
+    maxStrength: 0.44,
+  },
 } as const;
 
 export interface PainterlyOceanLanternInfluence {
   position: THREE.Vector3;
   intensity: number;
+}
+
+export interface PainterlyOceanSubsurfaceRevealWindow {
+  positionXZ: THREE.Vector2;
+  halfWidth: number;
+  halfLength: number;
+  strength: number;
 }
 
 export interface PainterlyOceanMaterialSnapshot {
@@ -72,6 +107,7 @@ export interface PainterlyOceanMaterialSnapshot {
   approxWaterDepth: number;
   underwaterRatio: number;
   lanternInfluences: readonly PainterlyOceanLanternInfluence[];
+  subsurfaceRevealWindows: readonly PainterlyOceanSubsurfaceRevealWindow[];
 }
 
 type OceanWaterShader = THREE.ShaderMaterial & {
@@ -94,12 +130,12 @@ export function createPainterlyOceanMaterial(geometry: THREE.PlaneGeometry, aren
     side: THREE.FrontSide,
   });
 
-  // This pass uses Water.js for its base surface shader only, not mirrored reflections.
   water.onBeforeRender = () => {};
+  water.renderOrder = 20;
 
   const material = water.material as OceanWaterShader;
-  material.transparent = false;
-  material.depthWrite = true;
+  material.transparent = true;
+  material.depthWrite = false;
   material.toneMapped = true;
   material.uniforms.size.value = OCEAN_SURFACE_TUNING.reflection.textureScale;
   material.uniforms.uLanternPositions = {
@@ -138,6 +174,16 @@ export function createPainterlyOceanMaterial(geometry: THREE.PlaneGeometry, aren
   material.uniforms.uLanternRadius = { value: OCEAN_SURFACE_TUNING.lantern.radius };
   material.uniforms.uLanternIntensityScale = { value: OCEAN_SURFACE_TUNING.lantern.intensityScale };
   material.uniforms.uLanternWarmBlend = { value: OCEAN_SURFACE_TUNING.lantern.warmBlend };
+  material.uniforms.uRevealWindows = {
+    value: Array.from({ length: MAX_SUBSURFACE_REVEAL_WINDOWS }, () => new THREE.Vector4()),
+  };
+  material.uniforms.uRevealWindowStrengths = {
+    value: Array.from({ length: MAX_SUBSURFACE_REVEAL_WINDOWS }, () => 0),
+  };
+  material.uniforms.uRevealClarityStrength = { value: OCEAN_SURFACE_TUNING.subsurfaceReveal.clarityStrength };
+  material.uniforms.uRevealDensityReduction = { value: OCEAN_SURFACE_TUNING.subsurfaceReveal.densityReduction };
+  material.uniforms.uRevealTransmissionBoost = { value: OCEAN_SURFACE_TUNING.subsurfaceReveal.transmissionBoost };
+  material.uniforms.uRevealMinAlpha = { value: OCEAN_SURFACE_TUNING.subsurfaceReveal.minAlpha };
   material.uniforms.uApproxWaterDepth = { value: 95 };
   material.uniforms.uUnderwaterRatio = { value: 0 };
   material.uniforms.uArenaRadius = { value: arenaRadius };
@@ -177,6 +223,12 @@ uniform float uSpecularStrength;
 uniform float uLanternRadius;
 uniform float uLanternIntensityScale;
 uniform float uLanternWarmBlend;
+uniform vec4 uRevealWindows[${MAX_SUBSURFACE_REVEAL_WINDOWS}];
+uniform float uRevealWindowStrengths[${MAX_SUBSURFACE_REVEAL_WINDOWS}];
+uniform float uRevealClarityStrength;
+uniform float uRevealDensityReduction;
+uniform float uRevealTransmissionBoost;
+uniform float uRevealMinAlpha;
 uniform float uApproxWaterDepth;
 uniform float uUnderwaterRatio;
 uniform float uArenaRadius;
@@ -193,6 +245,32 @@ float lanternInfluence( vec2 point ) {
   }
 
   return clamp( accumulated, 0.0, 1.0 );
+}
+
+float revealWindowMask( vec2 point, vec2 halfSize ) {
+  vec2 safeHalfSize = max( halfSize, vec2( 0.001 ) );
+  vec2 scaled = point / safeHalfSize;
+  float radial = dot( scaled, scaled );
+  return 1.0 - smoothstep( 0.58, 1.28, radial );
+}
+
+float subsurfaceRevealWindow( vec2 waterPoint ) {
+  float windowStrength = 0.0;
+
+  for ( int index = 0; index < ${MAX_SUBSURFACE_REVEAL_WINDOWS}; index ++ ) {
+    vec4 bounds = uRevealWindows[ index ];
+    float strength = uRevealWindowStrengths[ index ];
+
+    if ( strength <= 0.001 || bounds.z <= 0.0 || bounds.w <= 0.0 ) {
+      continue;
+    }
+
+    vec2 delta = waterPoint - bounds.xy;
+    float mask = revealWindowMask( delta, bounds.zw );
+    windowStrength = max( windowStrength, mask * strength );
+  }
+
+  return clamp( windowStrength, 0.0, 1.0 );
 }`,
   );
 
@@ -245,6 +323,10 @@ float secondaryWave = cos( dot( worldPosition.xz, uWaveSecondaryDirection ) * uW
 float waveMotion = primaryWave * 0.58 + secondaryWave * 0.42;
 float waveLift = waveMotion * 0.5 + 0.5;
 bodyDensity = clamp( bodyDensity + ( waveLift - 0.5 ) * uWaveBandStrength, uMinimumDensity, 1.0 );
+float aboveWaterReveal = 1.0 - smoothstep( 0.05, 0.34, uUnderwaterRatio );
+float translucencyWindow = subsurfaceRevealWindow( worldPosition.xz ) * aboveWaterReveal;
+float revealClarity = translucencyWindow * ( 1.0 - smoothstep( 0.72, 1.0, viewGrazing ) * 0.32 );
+bodyDensity = mix( bodyDensity, max( uMinimumDensity * 0.82, bodyDensity * ( 1.0 - uRevealDensityReduction ) ), revealClarity );
 vec3 bodyColor = mix( uShallowColor, uMidColor, clamp( distanceDensity * 0.72 + viewGrazing * 0.18, 0.0, 1.0 ) );
 bodyColor = mix( bodyColor, uDeepColor, clamp( bodyDensity * 0.88 + troughBias * 0.18, 0.0, 1.0 ) );
 bodyColor = mix( bodyColor, uShallowColor, waveLift * uWaveBandStrength * 0.6 );
@@ -265,6 +347,7 @@ float horizonFade = pow(
 float reflectionFade = 1.0 - horizonFade * 0.42;
 float nearDistanceFade = 1.0 - smoothstep( 14.0, uDepthFalloff * 1.8, distance );
 float refractionBias = clamp( ( uRefractionIOR - 1.0 ) * 0.85, 0.0, 0.3 );
+float revealWindowClarity = revealClarity * uRevealClarityStrength * ( 1.0 - horizonFade * 0.38 );
 float transmissionStrength =
   nearDistanceFade *
   facing *
@@ -273,7 +356,7 @@ float transmissionStrength =
   ( 1.08 - refractionBias ) *
   ( 1.0 - horizonFade ) *
   ( 1.0 - uUnderwaterRatio * 0.35 );
-vec3 transmission = uTransmissionColor * transmissionStrength;
+vec3 transmission = uTransmissionColor * ( transmissionStrength + revealWindowClarity * uRevealTransmissionBoost );
 vec3 shadowedScatter = ( scatter + sunColor * diffuseLight * 0.05 ) * getShadowMask();
 float moonSheenMask = reflectance * reflectionFade * ( 0.36 + viewGrazing * 0.64 );
 vec3 moonSheen =
@@ -284,7 +367,13 @@ vec3 albedo = shadowedScatter + transmission + moonSheen;
 albedo += uLanternColor * lanternGlow * uLanternWarmBlend;
 albedo = mix( albedo, fogColor, horizonFade * clamp( 0.34 + fogDensity * 10.0, 0.0, 0.74 ) );
 albedo = max( albedo, uDeepColor * uMinimumDensity * 0.68 );
-albedo = mix( fogColor, albedo, arenaMask );`,
+albedo = mix( fogColor, albedo, arenaMask );
+float localAlpha = mix( alpha, max( uRevealMinAlpha, alpha * ( 1.0 - translucencyWindow * 0.28 ) ), revealWindowClarity );`,
+  );
+
+  material.fragmentShader = material.fragmentShader.replace(
+    'gl_FragColor = vec4( outgoingLight, alpha );',
+    'gl_FragColor = vec4( outgoingLight, localAlpha );',
   );
 
   material.needsUpdate = true;
@@ -298,19 +387,21 @@ export function updatePainterlyOceanMaterial(
   const material = water.material as OceanWaterShader;
 
   (material.uniforms.time.value as number) = snapshot.elapsedSeconds * OCEAN_SURFACE_TUNING.lighting.timeScale;
-  ((material.uniforms.sunDirection.value as THREE.Vector3)).copy(snapshot.moonDirection).negate().normalize();
-  ((material.uniforms.sunColor.value as THREE.Color)).copy(OCEAN_SURFACE_TUNING.lighting.moonColor);
-  ((material.uniforms.waterColor.value as THREE.Color))
+  (material.uniforms.sunDirection.value as THREE.Vector3).copy(snapshot.moonDirection).negate().normalize();
+  (material.uniforms.sunColor.value as THREE.Color).copy(OCEAN_SURFACE_TUNING.lighting.moonColor);
+  (material.uniforms.waterColor.value as THREE.Color)
     .copy(OCEAN_SURFACE_TUNING.body.deepColor)
     .lerp(OCEAN_SURFACE_TUNING.body.midColor, 0.08);
-  ((material.uniforms.eye.value as THREE.Vector3)).copy(snapshot.cameraPosition);
-  ((material.uniforms.fogColor.value as THREE.Color)).copy(snapshot.fogColor);
+  (material.uniforms.eye.value as THREE.Vector3).copy(snapshot.cameraPosition);
+  (material.uniforms.fogColor.value as THREE.Color).copy(snapshot.fogColor);
   (material.uniforms.fogDensity.value as number) = snapshot.fogDensity;
   (material.uniforms.uApproxWaterDepth.value as number) = snapshot.approxWaterDepth;
   (material.uniforms.uUnderwaterRatio.value as number) = snapshot.underwaterRatio;
 
   const lanternPositions = material.uniforms.uLanternPositions.value as THREE.Vector3[];
   const lanternIntensities = material.uniforms.uLanternIntensities.value as number[];
+  const revealWindows = material.uniforms.uRevealWindows.value as THREE.Vector4[];
+  const revealStrengths = material.uniforms.uRevealWindowStrengths.value as number[];
 
   for (let index = 0; index < MAX_LANTERN_INFLUENCES; index += 1) {
     const influence = snapshot.lanternInfluences[index];
@@ -323,6 +414,24 @@ export function updatePainterlyOceanMaterial(
 
     lanternPositions[index].copy(FAR_LANTERN_POSITION);
     lanternIntensities[index] = 0;
+  }
+
+  for (let index = 0; index < MAX_SUBSURFACE_REVEAL_WINDOWS; index += 1) {
+    const window = snapshot.subsurfaceRevealWindows[index];
+
+    if (window) {
+      revealWindows[index].set(
+        window.positionXZ.x,
+        window.positionXZ.y,
+        window.halfWidth,
+        window.halfLength,
+      );
+      revealStrengths[index] = window.strength;
+      continue;
+    }
+
+    revealWindows[index].set(0, 0, 0, 0);
+    revealStrengths[index] = 0;
   }
 }
 

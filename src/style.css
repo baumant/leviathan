@@ -39,6 +39,15 @@ canvas {
   text-shadow: 0 1px 14px rgba(0, 0, 0, 0.78);
 }
 
+.hud[hidden],
+.hud__top[hidden],
+.hud__bottom[hidden],
+.hud__card[hidden],
+.hud__status[hidden],
+.hud__debug[hidden] {
+  display: none;
+}
+
 .hud__top,
 .hud__bottom {
   display: flex;
@@ -198,6 +207,26 @@ canvas {
 
 .hud__overlay[hidden] {
   display: none;
+}
+
+.hud__fade {
+  position: absolute;
+  inset: 0;
+  background: #000;
+  opacity: 0;
+  transition: opacity 80ms linear;
+}
+
+.hud__fade[hidden] {
+  display: none;
+}
+
+.hud--intro .hud__card {
+  max-width: min(360px, 44vw);
+}
+
+.hud--intro .hud__copy {
+  color: rgba(217, 221, 215, 0.8);
 }
 
 @media (max-width: 820px) {

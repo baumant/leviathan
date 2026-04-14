@@ -7,10 +7,15 @@ import { PlayerWhale } from '../entities/PlayerWhale';
 import { Ship, ShipLanternInfluence, ShipSpawnConfig } from '../entities/Ship';
 import { createArenaFogBankMaterial, updateArenaFogBankMaterial } from '../fx/createArenaFogBankMaterial';
 import { BreachSplashFX } from '../fx/BreachSplashFX';
-import { createPainterlyOceanMaterial, updatePainterlyOceanMaterial } from '../fx/createPainterlyOceanMaterial';
+import {
+  createPainterlyOceanMaterial,
+  OCEAN_SUBSURFACE_REVEAL_TUNING,
+  PainterlyOceanSubsurfaceRevealWindow,
+  updatePainterlyOceanMaterial,
+} from '../fx/createPainterlyOceanMaterial';
 import { createPainterlySkyMaterial } from '../fx/createPainterlySkyMaterial';
 import { ShipWakeFX } from '../fx/ShipWakeFX';
-import { SurfaceSeafoamFX } from '../fx/SurfaceSeafoamFX';
+import { TopsideSubsurfaceRevealFX, TopsideSubsurfaceRevealTarget } from '../fx/TopsideSubsurfaceRevealFX';
 import { createOceanUndersideMaterial, UnderwaterReadabilityFX } from '../fx/UnderwaterReadabilityFX';
 import { Input } from '../game/Input';
 import { DamageSystem } from '../systems/DamageSystem';
@@ -46,7 +51,7 @@ const CANNONBALL_SPEED = 28;
 const CANNONBALL_LIFETIME = 5.2;
 const CANNON_SPLASH_RADIUS = 4;
 const TETHER_SNAP_SPEED = 18;
-const AIR_DRAIN_PER_SECOND = 1;
+const AIR_DRAIN_PER_SECOND = 0.35;
 const AIR_RECOVERY_PER_SECOND = 3.4;
 const SUFFOCATION_DAMAGE_PER_SECOND = 6;
 const LOW_AIR_THRESHOLD = 0.34;
@@ -146,7 +151,7 @@ export class OceanScene {
   private readonly atmosphereColor = SURFACE_FOG.clone();
   private readonly breachSplashFx: BreachSplashFX;
   private readonly shipWakeFx: ShipWakeFX;
-  private readonly surfaceSeafoamFx: SurfaceSeafoamFX;
+  private readonly topsideSubsurfaceRevealFx: TopsideSubsurfaceRevealFX;
   private readonly readabilityFx: UnderwaterReadabilityFX;
   private readonly shipAiContext: ShipAIContext = {
     arenaRadius: ARENA_RADIUS,
@@ -168,8 +173,11 @@ export class OceanScene {
   private readonly tempShipForward = new THREE.Vector3();
   private readonly tempImpactPoint = new THREE.Vector3();
   private readonly tempBoundaryVector = new THREE.Vector3();
+  private readonly tempRevealPoint = new THREE.Vector3();
   private readonly breachLaunchShipIds = new Set<string>();
   private readonly oceanLanternInfluences: ShipLanternInfluence[] = [];
+  private readonly oceanRevealWindows: PainterlyOceanSubsurfaceRevealWindow[] = [];
+  private readonly topsideRevealTargets: TopsideSubsurfaceRevealTarget[] = [];
 
   private elapsedSeconds = 0;
   private impactShake = 0;
@@ -201,7 +209,7 @@ export class OceanScene {
     this.oceanUndersideMesh = this.createOceanUnderside();
     this.breachSplashFx = new BreachSplashFX(this.scene);
     this.shipWakeFx = new ShipWakeFX(this.scene, this.ships);
-    this.surfaceSeafoamFx = new SurfaceSeafoamFX(this.scene, this.ships);
+    this.topsideSubsurfaceRevealFx = new TopsideSubsurfaceRevealFX(this.scene);
     this.readabilityFx = new UnderwaterReadabilityFX(this.scene, this.camera);
 
     this.setupLights();
@@ -260,7 +268,7 @@ export class OceanScene {
     this.clearCannonballs();
     this.breachSplashFx.reset();
     this.shipWakeFx.reset();
-    this.surfaceSeafoamFx.reset();
+    this.topsideSubsurfaceRevealFx.reset();
     this.syncTetherDragState();
   }
 
@@ -310,15 +318,9 @@ export class OceanScene {
       sampleSurfaceHeight: this.sampleOceanHeight,
       ships: this.ships,
     });
-    this.surfaceSeafoamFx.update({
-      deltaSeconds,
-      elapsedSeconds,
+    this.topsideSubsurfaceRevealFx.update({
       underwaterRatio,
-      cameraPosition: this.camera.position,
-      sampleSurfaceHeight: this.sampleOceanHeight,
-      whale: this.whale,
-      whaleStrokePulseStrength: movementResult?.strokePulseFired ? movementResult.strokePulseStrength : 0,
-      ships: this.ships,
+      targets: this.collectTopsideRevealTargets(),
     });
     this.readabilityFx.update({
       deltaSeconds,
@@ -346,7 +348,7 @@ export class OceanScene {
   dispose(): void {
     this.breachSplashFx.dispose();
     this.shipWakeFx.dispose();
-    this.surfaceSeafoamFx.dispose();
+    this.topsideSubsurfaceRevealFx.dispose();
     this.readabilityFx.dispose();
     this.arenaFogBankGeometry.dispose();
 
@@ -510,6 +512,7 @@ export class OceanScene {
       approxWaterDepth: APPROX_OCEAN_DEPTH,
       underwaterRatio,
       lanternInfluences: this.collectOceanLanternInfluences(),
+      subsurfaceRevealWindows: this.collectOceanSubsurfaceRevealWindows(),
     });
   }
 
@@ -540,6 +543,93 @@ export class OceanScene {
     }
 
     return this.oceanLanternInfluences;
+  }
+
+  private collectTopsideRevealTargets(): readonly TopsideSubsurfaceRevealTarget[] {
+    this.topsideRevealTargets.length = 0;
+    this.appendWhaleRevealTarget();
+
+    for (const ship of this.ships) {
+      this.appendShipRevealTarget(ship);
+    }
+
+    return this.topsideRevealTargets;
+  }
+
+  private collectOceanSubsurfaceRevealWindows(): readonly PainterlyOceanSubsurfaceRevealWindow[] {
+    this.oceanRevealWindows.length = 0;
+
+    for (const target of this.collectTopsideRevealTargets()) {
+      this.oceanRevealWindows.push({
+        positionXZ: new THREE.Vector2(target.position.x, target.position.z),
+        halfWidth: target.halfWidth * (target.kind === 'whale' ? 1.36 : 1.18),
+        halfLength: target.halfLength * (target.kind === 'whale' ? 1.08 : 1.02),
+        strength: target.strength,
+      });
+    }
+
+    return this.oceanRevealWindows;
+  }
+
+  private appendWhaleRevealTarget(): void {
+    const surfaceHeight = this.sampleOceanHeight(this.whale.position.x, this.whale.position.z);
+    const depthBelowSurface = surfaceHeight - this.whale.position.y;
+    const tuning = OCEAN_SUBSURFACE_REVEAL_TUNING.whale;
+    const depthFadeIn = THREE.MathUtils.smoothstep(depthBelowSurface, tuning.minDepth, tuning.strongStart);
+    const depthFadeOut = 1 - THREE.MathUtils.smoothstep(depthBelowSurface, tuning.strongEnd, tuning.maxDepth);
+    const distanceFade =
+      1 -
+      THREE.MathUtils.smoothstep(
+        this.camera.position.distanceTo(this.whale.position),
+        tuning.fadeDistanceStart,
+        tuning.fadeDistanceEnd,
+      );
+    const strength = THREE.MathUtils.clamp(depthFadeIn * depthFadeOut * distanceFade * tuning.maxStrength, 0, 1);
+
+    if (strength <= 0.01) {
+      return;
+    }
+
+    this.topsideRevealTargets.push({
+      kind: 'whale',
+      position: this.whale.position.clone(),
+      yaw: this.whale.yaw,
+      depthBelowSurface,
+      halfWidth: this.whale.subsurfaceRevealHalfExtents.x,
+      halfLength: this.whale.subsurfaceRevealHalfExtents.y,
+      strength,
+    });
+  }
+
+  private appendShipRevealTarget(ship: Ship): void {
+    ship.getSubsurfaceRevealPoint(this.tempRevealPoint);
+    const surfaceHeight = this.sampleOceanHeight(this.tempRevealPoint.x, this.tempRevealPoint.z);
+    const depthBelowSurface = surfaceHeight - this.tempRevealPoint.y;
+    const tuning = OCEAN_SUBSURFACE_REVEAL_TUNING.ship;
+    const depthFadeIn = THREE.MathUtils.smoothstep(depthBelowSurface, tuning.minDepth, tuning.strongStart);
+    const depthFadeOut = 1 - THREE.MathUtils.smoothstep(depthBelowSurface, tuning.strongEnd, tuning.maxDepth);
+    const distanceFade =
+      1 -
+      THREE.MathUtils.smoothstep(
+        this.camera.position.distanceTo(this.tempRevealPoint),
+        tuning.fadeDistanceStart,
+        tuning.fadeDistanceEnd,
+      );
+    const strength = THREE.MathUtils.clamp(depthFadeIn * depthFadeOut * distanceFade * tuning.maxStrength, 0, 1);
+
+    if (strength <= 0.01) {
+      return;
+    }
+
+    this.topsideRevealTargets.push({
+      kind: 'ship',
+      position: this.tempRevealPoint.clone(),
+      yaw: ship.heading,
+      depthBelowSurface,
+      halfWidth: ship.subsurfaceRevealHalfExtents.x,
+      halfLength: ship.subsurfaceRevealHalfExtents.y,
+      strength,
+    });
   }
 
   private updateShips(deltaSeconds: number): void {
@@ -711,7 +801,6 @@ export class OceanScene {
         this.whale.breachOrigin.z,
       );
       this.breachSplashFx.spawnLaunch(this.tempImpactPoint, this.getBreachSplashIntensity());
-      this.surfaceSeafoamFx.spawnLaunch(this.tempImpactPoint, this.getBreachSplashIntensity());
     }
 
     if (this.whale.actionState === 'breach' && this.whale.verticalSpeed > 0) {
@@ -720,7 +809,6 @@ export class OceanScene {
 
     if (result.breachImpact) {
       this.breachSplashFx.spawnReentry(result.breachImpact.position, this.getBreachSplashIntensity());
-      this.surfaceSeafoamFx.spawnReentry(result.breachImpact.position, this.getBreachSplashIntensity());
 
       for (const ship of this.ships) {
         if (ship.role === 'flagship' && this.flagshipBreachedThisArc) {

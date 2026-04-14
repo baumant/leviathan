@@ -16,7 +16,8 @@ export class PlayerWhale {
   readonly maxAir = MAX_AIR;
   readonly radius = WHALE_COLLISION_RADIUS;
   readonly visualRoot = new THREE.Group();
-  readonly surfaceSilhouetteScale = new THREE.Vector2(4.4, 12.2);
+  readonly surfaceSilhouetteScale = new THREE.Vector2(5.6, 15.4);
+  readonly subsurfaceRevealHalfExtents = new THREE.Vector2(3.3, 8.1);
   readonly breachDirection = new THREE.Vector3();
   readonly breachOrigin = new THREE.Vector3();
   readonly ramDriftVelocity = new THREE.Vector3();

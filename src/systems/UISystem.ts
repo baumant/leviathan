@@ -1,3 +1,5 @@
+import * as THREE from 'three';
+
 export interface HUDSnapshot {
   objective: string;
   whaleHealth: number;
@@ -14,11 +16,21 @@ export interface HUDSnapshot {
   activeTethers: number;
   overlayTitle?: string;
   overlayCopy?: string;
+  presentation?: 'combat' | 'intro';
+  controlsText?: string;
+  eyebrowText?: string;
+  fadeAlpha?: number;
 }
 
 export class UISystem {
   private readonly root = document.createElement('div');
+  private readonly topRow = document.createElement('div');
+  private readonly bottomRow = document.createElement('div');
+  private readonly introCard = document.createElement('section');
+  private readonly metricsCard = document.createElement('section');
   private readonly objectiveEl = document.createElement('p');
+  private readonly controlsEl = document.createElement('p');
+  private readonly eyebrowEl = document.createElement('p');
   private readonly whaleFill = document.createElement('div');
   private readonly airFill = document.createElement('div');
   private readonly shipFill = document.createElement('div');
@@ -34,19 +46,17 @@ export class UISystem {
   private readonly overlayCard = document.createElement('section');
   private readonly overlayTitle = document.createElement('h2');
   private readonly overlayCopy = document.createElement('p');
+  private readonly fadeEl = document.createElement('div');
 
   constructor(parent: HTMLElement) {
     this.root.className = 'hud';
 
-    const topRow = document.createElement('div');
-    topRow.className = 'hud__top';
+    this.topRow.className = 'hud__top';
 
-    const introCard = document.createElement('section');
-    introCard.className = 'hud__card';
+    this.introCard.className = 'hud__card';
 
-    const eyebrow = document.createElement('p');
-    eyebrow.className = 'hud__eyebrow';
-    eyebrow.textContent = 'First playable';
+    this.eyebrowEl.className = 'hud__eyebrow';
+    this.eyebrowEl.textContent = 'First playable';
 
     const title = document.createElement('h1');
     title.className = 'hud__title';
@@ -54,14 +64,13 @@ export class UISystem {
 
     this.objectiveEl.className = 'hud__copy';
 
-    const controls = document.createElement('p');
-    controls.className = 'hud__copy';
-    controls.textContent = 'W/S accelerate or brake  A/D turn  Shift dive and burst  Space rise / breach auto  F tail slap  R restart';
+    this.controlsEl.className = 'hud__copy';
+    this.controlsEl.textContent =
+      'W/S accelerate or brake  A/D turn  Shift dive and burst  Space rise / breach auto  F tail slap  R restart';
 
-    introCard.append(eyebrow, title, this.objectiveEl, controls);
+    this.introCard.append(this.eyebrowEl, title, this.objectiveEl, this.controlsEl);
 
-    const metricsCard = document.createElement('section');
-    metricsCard.className = 'hud__card';
+    this.metricsCard.className = 'hud__card';
 
     const bars = document.createElement('div');
     bars.className = 'hud__bars';
@@ -75,11 +84,10 @@ export class UISystem {
     this.statusEl.className = 'hud__status';
     this.debugEl.className = 'hud__debug';
 
-    metricsCard.append(bars, this.statusEl, this.debugEl);
-    topRow.append(introCard, metricsCard);
+    this.metricsCard.append(bars, this.statusEl, this.debugEl);
+    this.topRow.append(this.introCard, this.metricsCard);
 
-    const bottomRow = document.createElement('div');
-    bottomRow.className = 'hud__bottom';
+    this.bottomRow.className = 'hud__bottom';
 
     const scoreCard = document.createElement('section');
     scoreCard.className = 'hud__card hud__card--compact';
@@ -88,7 +96,7 @@ export class UISystem {
       this.createFact('Fleet remaining', this.fleetValueEl),
       this.createFact('Tethers', this.tetherValueEl),
     );
-    bottomRow.append(scoreCard);
+    this.bottomRow.append(scoreCard);
 
     this.overlayCard.className = 'hud__overlay';
     this.overlayCard.hidden = true;
@@ -102,12 +110,21 @@ export class UISystem {
 
     this.overlayCard.append(overlayEyebrow, this.overlayTitle, this.overlayCopy);
 
-    this.root.append(topRow, bottomRow, this.overlayCard);
+    this.fadeEl.className = 'hud__fade';
+    this.fadeEl.hidden = true;
+
+    this.root.append(this.topRow, this.bottomRow, this.overlayCard, this.fadeEl);
     parent.append(this.root);
   }
 
   update(snapshot: HUDSnapshot): void {
+    const presentation = snapshot.presentation ?? 'combat';
+    const isIntro = presentation === 'intro';
     this.objectiveEl.textContent = snapshot.objective;
+    this.controlsEl.textContent =
+      snapshot.controlsText ??
+      'W/S accelerate or brake  A/D turn  Shift dive and burst  Space rise / breach auto  F tail slap  R restart';
+    this.eyebrowEl.textContent = snapshot.eyebrowText ?? 'First playable';
     this.setBar(this.whaleFill, this.whaleValue, snapshot.whaleHealth);
     this.setBar(this.airFill, this.airValue, snapshot.whaleAir);
     this.setBar(this.shipFill, this.shipValue, snapshot.targetHealth);
@@ -134,6 +151,16 @@ export class UISystem {
       this.overlayTitle.textContent = snapshot.overlayTitle ?? '';
       this.overlayCopy.textContent = snapshot.overlayCopy ?? '';
     }
+
+    this.metricsCard.hidden = isIntro;
+    this.bottomRow.hidden = isIntro;
+    this.statusEl.hidden = isIntro;
+    this.debugEl.hidden = isIntro;
+    this.root.classList.toggle('hud--intro', isIntro);
+
+    const fadeAlpha = THREE.MathUtils.clamp(snapshot.fadeAlpha ?? 0, 0, 1);
+    this.fadeEl.hidden = fadeAlpha <= 0.001;
+    this.fadeEl.style.opacity = `${fadeAlpha}`;
   }
 
   dispose(): void {

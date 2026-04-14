@@ -34,9 +34,11 @@ interface ShipRoleConfig {
   lanternIntensity: number;
   floatHeight: number;
   visualDraftOffset: number;
+  subsurfaceRevealOffsetY: number;
   sinkDepth: number;
   halfExtents: THREE.Vector3;
   surfaceShadowScale: THREE.Vector2;
+  subsurfaceRevealHalfExtents: THREE.Vector2;
 }
 
 const AIRBORNE_GRAVITY = 26;
@@ -64,9 +66,11 @@ const SHIP_ROLE_CONFIGS: Record<ShipRole, ShipRoleConfig> = {
     lanternIntensity: 1.1,
     floatHeight: 0.18,
     visualDraftOffset: -0.42,
+    subsurfaceRevealOffsetY: -0.62,
     sinkDepth: 4.8,
     halfExtents: new THREE.Vector3(1.24, 0.78, 2.9),
     surfaceShadowScale: new THREE.Vector2(3.6, 8.6),
+    subsurfaceRevealHalfExtents: new THREE.Vector2(1.2, 3.2),
   },
   flagship: {
     maxHealth: 360,
@@ -84,9 +88,11 @@ const SHIP_ROLE_CONFIGS: Record<ShipRole, ShipRoleConfig> = {
     lanternIntensity: 3,
     floatHeight: 0.62,
     visualDraftOffset: -0.88,
+    subsurfaceRevealOffsetY: -0.72,
     sinkDepth: 9.8,
     halfExtents: new THREE.Vector3(7.8, 4.1, 18.8),
     surfaceShadowScale: new THREE.Vector2(24, 58),
+    subsurfaceRevealHalfExtents: new THREE.Vector2(5.8, 14.8),
   },
 };
 
@@ -140,7 +146,9 @@ export class Ship {
   private readonly starboardCannonOffsets: THREE.Vector3[] = [];
   private readonly wakeOriginLocal = new THREE.Vector3();
   private readonly harpoonOriginLocal = new THREE.Vector3();
+  private readonly subsurfaceRevealLocal = new THREE.Vector3();
   private readonly visualSurfaceShadowScale = new THREE.Vector2();
+  private readonly visualSubsurfaceRevealHalfExtents = new THREE.Vector2();
   private readonly roleConfig: ShipRoleConfig;
   private readonly bobOffset = Math.random() * Math.PI * 2;
   private readonly knockbackVelocity = new THREE.Vector3();
@@ -184,6 +192,8 @@ export class Ship {
     this.anchor.copy(config.position);
     this.halfExtents.copy(this.roleConfig.halfExtents);
     this.visualSurfaceShadowScale.copy(this.roleConfig.surfaceShadowScale);
+    this.visualSubsurfaceRevealHalfExtents.copy(this.roleConfig.subsurfaceRevealHalfExtents);
+    this.subsurfaceRevealLocal.set(0, this.roleConfig.subsurfaceRevealOffsetY, 0);
 
     this.hullMaterial = createCelMaterial({
       color: this.role === 'flagship' ? '#5a4130' : '#4d3a2c',
@@ -242,6 +252,10 @@ export class Ship {
 
   get surfaceShadowScale(): THREE.Vector2 {
     return this.visualSurfaceShadowScale;
+  }
+
+  get subsurfaceRevealHalfExtents(): THREE.Vector2 {
+    return this.visualSubsurfaceRevealHalfExtents;
   }
 
   get isBroadsideTelegraphing(): boolean {
@@ -543,6 +557,10 @@ export class Ship {
 
   getWakeOrigin(target = new THREE.Vector3()): THREE.Vector3 {
     return this.root.localToWorld(target.copy(this.wakeOriginLocal));
+  }
+
+  getSubsurfaceRevealPoint(target = new THREE.Vector3()): THREE.Vector3 {
+    return this.root.localToWorld(target.copy(this.subsurfaceRevealLocal));
   }
 
   appendLanternInfluences(target: ShipLanternInfluence[]): void {

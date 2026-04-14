@@ -6,12 +6,14 @@ const KEY_BINDINGS = {
   rise: ['Space'],
   dive: ['ShiftLeft', 'ShiftRight'],
   tailSlap: ['KeyF'],
-  restart: ['KeyR', 'Enter'],
+  restart: ['KeyR'],
+  skip: ['Enter'],
 } as const;
 
 export class Input {
   private readonly heldKeys = new Set<string>();
   private restartRequested = false;
+  private skipRequested = false;
   private tailSlapRequested = false;
 
   constructor(target: Window = window) {
@@ -60,6 +62,15 @@ export class Input {
     return true;
   }
 
+  consumeSkipRequested(): boolean {
+    if (!this.skipRequested) {
+      return false;
+    }
+
+    this.skipRequested = false;
+    return true;
+  }
+
   private anyHeld(codes: readonly string[]): boolean {
     return codes.some((code) => this.heldKeys.has(code));
   }
@@ -69,6 +80,10 @@ export class Input {
 
     if (!event.repeat && KEY_BINDINGS.restart.includes(event.code as (typeof KEY_BINDINGS.restart)[number])) {
       this.restartRequested = true;
+    }
+
+    if (!event.repeat && KEY_BINDINGS.skip.includes(event.code as (typeof KEY_BINDINGS.skip)[number])) {
+      this.skipRequested = true;
     }
 
     if (!event.repeat && KEY_BINDINGS.tailSlap.includes(event.code as (typeof KEY_BINDINGS.tailSlap)[number])) {
@@ -82,6 +97,7 @@ export class Input {
 
   private readonly handleBlur = (): void => {
     this.heldKeys.clear();
+    this.skipRequested = false;
     this.tailSlapRequested = false;
   };
 }

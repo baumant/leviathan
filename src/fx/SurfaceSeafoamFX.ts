@@ -31,6 +31,39 @@ const WHALE_DISTURBANCE_TUNING = {
   boostBonus: 0.16,
 } as const;
 
+const SURFACE_SILHOUETTE_LOOK = {
+  whaleCoreColor: '#3b6a72',
+  whalePenumbraColor: '#4f8891',
+  shipCoreColor: '#14343b',
+  shipPenumbraColor: '#204851',
+} as const;
+
+const WHALE_SURFACE_SILHOUETTE = {
+  minDepth: 0.42,
+  strongStart: 1.05,
+  strongEnd: 3.4,
+  maxDepth: 6.4,
+  fadeDistanceStart: 10,
+  fadeDistanceEnd: 52,
+  coreOpacityMin: 0.18,
+  coreOpacityMax: 0.34,
+  penumbraOpacityMin: 0.06,
+  penumbraOpacityMax: 0.12,
+} as const;
+
+const SHIP_SURFACE_SILHOUETTE = {
+  minDepth: 0.38,
+  strongStart: 0.5,
+  strongEnd: 0.94,
+  maxDepth: 1.65,
+  fadeDistanceStart: 8,
+  fadeDistanceEnd: 32,
+  coreOpacityMin: 0.04,
+  coreOpacityMax: 0.08,
+  penumbraOpacityMin: 0.014,
+  penumbraOpacityMax: 0.03,
+} as const;
+
 interface ShipFoamConfig {
   churnScale: THREE.Vector2;
   fanWidth: number;
@@ -89,6 +122,7 @@ interface BreachBurstSlot {
 }
 
 interface SilhouetteSlot {
+  readonly kind: 'whale' | 'ship';
   readonly root: THREE.Group;
   readonly core: THREE.Mesh<THREE.ShapeGeometry, THREE.MeshBasicMaterial>;
   readonly penumbra: THREE.Mesh<THREE.ShapeGeometry, THREE.MeshBasicMaterial>;
@@ -117,47 +151,80 @@ export interface SurfaceSeafoamSnapshot {
   ships: readonly Ship[];
 }
 
+export interface SurfaceSeafoamFXOptions {
+  enableWorldPatches?: boolean;
+  enableShipFoam?: boolean;
+  enableBreachBursts?: boolean;
+  enableWhaleDisturbance?: boolean;
+  enableSilhouettes?: boolean;
+}
+
 export class SurfaceSeafoamFX {
   private readonly root = new THREE.Group();
   private readonly worldPatchGeometry = this.createFoamPatchGeometry();
   private readonly wakeFanGeometry = this.createWakeFanGeometry();
-  private readonly silhouetteGeometry = this.createSilhouetteGeometry();
+  private readonly shipSilhouetteGeometry = this.createShipSilhouetteGeometry();
+  private readonly whaleSilhouetteGeometry = this.createWhaleSilhouetteGeometry();
   private readonly shipFoamSlots = new Map<string, ShipFoamSlot>();
   private readonly worldPatchSlots: WorldPatchSlot[] = [];
   private readonly breachBursts: BreachBurstSlot[] = [];
   private readonly silhouetteSlots: SilhouetteSlot[] = [];
-  private readonly whaleDisturbance: WhaleDisturbanceSlot;
+  private readonly whaleDisturbance: WhaleDisturbanceSlot | null;
   private readonly tempWakeOrigin = new THREE.Vector3();
   private readonly tempPoint = new THREE.Vector3();
+  private readonly options: Required<SurfaceSeafoamFXOptions>;
 
-  constructor(scene: THREE.Scene, ships: readonly Ship[]) {
+  constructor(scene: THREE.Scene, ships: readonly Ship[], options: SurfaceSeafoamFXOptions = {}) {
+    this.options = {
+      enableWorldPatches: options.enableWorldPatches ?? true,
+      enableShipFoam: options.enableShipFoam ?? true,
+      enableBreachBursts: options.enableBreachBursts ?? true,
+      enableWhaleDisturbance: options.enableWhaleDisturbance ?? true,
+      enableSilhouettes: options.enableSilhouettes ?? true,
+    };
     this.root.renderOrder = 6;
     scene.add(this.root);
 
-    for (let index = 0; index < WORLD_PATCH_COUNT; index += 1) {
-      this.worldPatchSlots.push(this.createWorldPatchSlot(index));
+    if (this.options.enableWorldPatches) {
+      for (let index = 0; index < WORLD_PATCH_COUNT; index += 1) {
+        this.worldPatchSlots.push(this.createWorldPatchSlot(index));
+      }
     }
 
-    for (const ship of ships) {
-      this.shipFoamSlots.set(ship.id, this.createShipFoamSlot(ship));
+    if (this.options.enableShipFoam) {
+      for (const ship of ships) {
+        this.shipFoamSlots.set(ship.id, this.createShipFoamSlot(ship));
+      }
     }
 
-    for (let index = 0; index < BREACH_BURST_COUNT; index += 1) {
-      this.breachBursts.push(this.createBreachBurstSlot());
+    if (this.options.enableBreachBursts) {
+      for (let index = 0; index < BREACH_BURST_COUNT; index += 1) {
+        this.breachBursts.push(this.createBreachBurstSlot());
+      }
     }
 
-    for (let index = 0; index < MAX_SILHOUETTES; index += 1) {
-      this.silhouetteSlots.push(this.createSilhouetteSlot());
+    if (this.options.enableSilhouettes) {
+      this.silhouetteSlots.push(this.createSilhouetteSlot('whale'));
+
+      for (let index = 1; index < MAX_SILHOUETTES; index += 1) {
+        this.silhouetteSlots.push(this.createSilhouetteSlot('ship'));
+      }
     }
 
-    this.whaleDisturbance = this.createWhaleDisturbanceSlot();
+    this.whaleDisturbance = this.options.enableWhaleDisturbance ? this.createWhaleDisturbanceSlot() : null;
   }
 
   spawnLaunch(origin: THREE.Vector3, intensity: number): void {
+    if (!this.options.enableBreachBursts) {
+      return;
+    }
     this.spawnBreachBurst(origin, intensity, 'launch');
   }
 
   spawnReentry(origin: THREE.Vector3, intensity: number): void {
+    if (!this.options.enableBreachBursts) {
+      return;
+    }
     this.spawnBreachBurst(origin, intensity, 'reentry');
   }
 
@@ -165,11 +232,25 @@ export class SurfaceSeafoamFX {
     const aboveWaterAlpha = 1 - THREE.MathUtils.smoothstep(snapshot.underwaterRatio, 0.08, 0.78);
     const seafoamAlpha = aboveWaterAlpha * 0.8;
 
-    this.updateWorldPatches(snapshot, seafoamAlpha);
-    this.updateShipFoam(snapshot, seafoamAlpha);
-    this.updateBreachBursts(snapshot, seafoamAlpha);
-    this.updateWhaleDisturbance(snapshot, seafoamAlpha);
-    this.updateSilhouettes(snapshot, aboveWaterAlpha);
+    if (this.options.enableWorldPatches) {
+      this.updateWorldPatches(snapshot, seafoamAlpha);
+    }
+
+    if (this.options.enableShipFoam) {
+      this.updateShipFoam(snapshot, seafoamAlpha);
+    }
+
+    if (this.options.enableBreachBursts) {
+      this.updateBreachBursts(snapshot, seafoamAlpha);
+    }
+
+    if (this.options.enableWhaleDisturbance) {
+      this.updateWhaleDisturbance(snapshot, seafoamAlpha);
+    }
+
+    if (this.options.enableSilhouettes) {
+      this.updateSilhouettes(snapshot, aboveWaterAlpha);
+    }
   }
 
   reset(): void {
@@ -202,21 +283,24 @@ export class SurfaceSeafoamFX {
       slot.penumbra.material.opacity = 0;
     }
 
-    this.whaleDisturbance.energy = 0;
-    this.whaleDisturbance.pulse = 0;
-    this.whaleDisturbance.previousSpeed = 0;
-    this.whaleDisturbance.root.visible = false;
-    this.whaleDisturbance.churn.material.opacity = 0;
-    this.whaleDisturbance.leftFan.material.opacity = 0;
-    this.whaleDisturbance.rightFan.material.opacity = 0;
-    this.whaleDisturbance.ring.material.opacity = 0;
+    if (this.whaleDisturbance) {
+      this.whaleDisturbance.energy = 0;
+      this.whaleDisturbance.pulse = 0;
+      this.whaleDisturbance.previousSpeed = 0;
+      this.whaleDisturbance.root.visible = false;
+      this.whaleDisturbance.churn.material.opacity = 0;
+      this.whaleDisturbance.leftFan.material.opacity = 0;
+      this.whaleDisturbance.rightFan.material.opacity = 0;
+      this.whaleDisturbance.ring.material.opacity = 0;
+    }
   }
 
   dispose(): void {
     this.root.removeFromParent();
     this.worldPatchGeometry.dispose();
     this.wakeFanGeometry.dispose();
-    this.silhouetteGeometry.dispose();
+    this.shipSilhouetteGeometry.dispose();
+    this.whaleSilhouetteGeometry.dispose();
 
     for (const slot of this.worldPatchSlots) {
       slot.mesh.material.dispose();
@@ -238,10 +322,12 @@ export class SurfaceSeafoamFX {
       slot.penumbra.material.dispose();
     }
 
-    this.whaleDisturbance.churn.material.dispose();
-    this.whaleDisturbance.leftFan.material.dispose();
-    this.whaleDisturbance.rightFan.material.dispose();
-    this.whaleDisturbance.ring.material.dispose();
+    if (this.whaleDisturbance) {
+      this.whaleDisturbance.churn.material.dispose();
+      this.whaleDisturbance.leftFan.material.dispose();
+      this.whaleDisturbance.rightFan.material.dispose();
+      this.whaleDisturbance.ring.material.dispose();
+    }
   }
 
   private updateWorldPatches(snapshot: SurfaceSeafoamSnapshot, aboveWaterAlpha: number): void {
@@ -342,6 +428,10 @@ export class SurfaceSeafoamFX {
   }
 
   private updateWhaleDisturbance(snapshot: SurfaceSeafoamSnapshot, aboveWaterAlpha: number): void {
+    if (!this.whaleDisturbance) {
+      return;
+    }
+
     const slot = this.whaleDisturbance;
     const surfaceHeight = snapshot.sampleSurfaceHeight(snapshot.whale.position.x, snapshot.whale.position.z);
     const depthBelow = surfaceHeight - snapshot.whale.position.y;
@@ -399,13 +489,17 @@ export class SurfaceSeafoamFX {
   }
 
   private updateSilhouettes(snapshot: SurfaceSeafoamSnapshot, aboveWaterAlpha: number): void {
-    let visibleCount = 0;
+    if (this.silhouetteSlots.length === 0) {
+      return;
+    }
+
+    let visibleCount = 1;
 
     const aboveSurfaceAlpha = aboveWaterAlpha * 0.92;
     const whaleSurfaceHeight = snapshot.sampleSurfaceHeight(snapshot.whale.position.x, snapshot.whale.position.z);
     const whaleDepthBelow = whaleSurfaceHeight - snapshot.whale.position.y;
-    visibleCount = this.updateSilhouetteSlot(
-      visibleCount,
+    this.updateSilhouetteSlot(
+      this.silhouetteSlots[0],
       snapshot.whale.position,
       snapshot.whale.yaw,
       snapshot.whale.surfaceSilhouetteScale,
@@ -413,6 +507,7 @@ export class SurfaceSeafoamFX {
       snapshot.cameraPosition.distanceTo(snapshot.whale.position),
       aboveSurfaceAlpha,
       snapshot.deltaSeconds,
+      WHALE_SURFACE_SILHOUETTE,
     );
 
     for (const ship of snapshot.ships) {
@@ -427,8 +522,9 @@ export class SurfaceSeafoamFX {
       }
 
       this.tempPoint.copy(ship.root.position);
-      visibleCount = this.updateSilhouetteSlot(
-        visibleCount,
+      const slot = this.silhouetteSlots[visibleCount];
+      this.updateSilhouetteSlot(
+        slot,
         this.tempPoint,
         ship.heading,
         new THREE.Vector2(ship.surfaceShadowScale.x * 0.42, ship.surfaceShadowScale.y * 0.42),
@@ -436,7 +532,9 @@ export class SurfaceSeafoamFX {
         snapshot.cameraPosition.distanceTo(this.tempPoint),
         aboveSurfaceAlpha,
         snapshot.deltaSeconds,
+        SHIP_SURFACE_SILHOUETTE,
       );
+      visibleCount += 1;
     }
 
     for (let index = visibleCount; index < this.silhouetteSlots.length; index += 1) {
@@ -449,7 +547,7 @@ export class SurfaceSeafoamFX {
   }
 
   private updateSilhouetteSlot(
-    slotIndex: number,
+    slot: SilhouetteSlot,
     position: THREE.Vector3,
     heading: number,
     scale: THREE.Vector2,
@@ -457,18 +555,40 @@ export class SurfaceSeafoamFX {
     cameraDistance: number,
     aboveWaterAlpha: number,
     deltaSeconds: number,
-  ): number {
-    if (slotIndex >= this.silhouetteSlots.length || depthBelow <= 0.38 || depthBelow >= 1.45 || aboveWaterAlpha <= 0.01) {
-      return slotIndex;
+    tuning: {
+      minDepth: number;
+      strongStart: number;
+      strongEnd: number;
+      maxDepth: number;
+      fadeDistanceStart: number;
+      fadeDistanceEnd: number;
+      coreOpacityMin: number;
+      coreOpacityMax: number;
+      penumbraOpacityMin: number;
+      penumbraOpacityMax: number;
+    },
+  ): void {
+    if (depthBelow <= tuning.minDepth || depthBelow >= tuning.maxDepth || aboveWaterAlpha <= 0.01) {
+      slot.strength = THREE.MathUtils.damp(slot.strength, 0, 6.4, deltaSeconds);
+      slot.root.visible = false;
+      slot.core.material.opacity = 0;
+      slot.penumbra.material.opacity = 0;
+      return;
     }
 
-    const slot = this.silhouetteSlots[slotIndex];
-    const depthAlpha = 1 - THREE.MathUtils.smoothstep(depthBelow, 0.42, 1.45);
-    const distanceAlpha = 1 - THREE.MathUtils.smoothstep(cameraDistance, 8, 32);
+    const depthFadeIn = THREE.MathUtils.smoothstep(depthBelow, tuning.minDepth, tuning.strongStart);
+    const depthFadeOut = 1 - THREE.MathUtils.smoothstep(depthBelow, tuning.strongEnd, tuning.maxDepth);
+    const depthAlpha = Math.min(depthFadeIn, depthFadeOut);
+    const distanceAlpha =
+      1 - THREE.MathUtils.smoothstep(cameraDistance, tuning.fadeDistanceStart, tuning.fadeDistanceEnd);
     const targetAlpha = aboveWaterAlpha * depthAlpha * distanceAlpha;
 
     if (targetAlpha <= 0.01) {
-      return slotIndex;
+      slot.strength = THREE.MathUtils.damp(slot.strength, 0, 6.4, deltaSeconds);
+      slot.root.visible = false;
+      slot.core.material.opacity = 0;
+      slot.penumbra.material.opacity = 0;
+      return;
     }
 
     slot.strength = THREE.MathUtils.damp(slot.strength, targetAlpha, 4.8, deltaSeconds);
@@ -476,9 +596,10 @@ export class SurfaceSeafoamFX {
     slot.root.position.set(position.x, position.y + depthBelow + SILHOUETTE_OFFSET, position.z);
     slot.root.rotation.set(0, heading, 0);
     slot.root.scale.set(scale.x, 1, scale.y);
-    slot.core.material.opacity = slot.strength * 0.05;
-    slot.penumbra.material.opacity = slot.strength * 0.018;
-    return slotIndex + 1;
+    slot.core.material.opacity =
+      slot.strength * THREE.MathUtils.lerp(tuning.coreOpacityMin, tuning.coreOpacityMax, depthAlpha);
+    slot.penumbra.material.opacity =
+      slot.strength * THREE.MathUtils.lerp(tuning.penumbraOpacityMin, tuning.penumbraOpacityMax, depthAlpha);
   }
 
   private createWorldPatchSlot(index: number): WorldPatchSlot {
@@ -651,11 +772,13 @@ export class SurfaceSeafoamFX {
     burst.inner.material.opacity = 0;
   }
 
-  private createSilhouetteSlot(): SilhouetteSlot {
+  private createSilhouetteSlot(kind: 'whale' | 'ship'): SilhouetteSlot {
     const core = new THREE.Mesh(
-      this.silhouetteGeometry,
+      kind === 'whale' ? this.whaleSilhouetteGeometry : this.shipSilhouetteGeometry,
       new THREE.MeshBasicMaterial({
-        color: new THREE.Color('#051f26'),
+        color: new THREE.Color(
+          kind === 'whale' ? SURFACE_SILHOUETTE_LOOK.whaleCoreColor : SURFACE_SILHOUETTE_LOOK.shipCoreColor,
+        ),
         transparent: true,
         opacity: 0,
         side: THREE.DoubleSide,
@@ -670,9 +793,13 @@ export class SurfaceSeafoamFX {
     core.renderOrder = 5;
 
     const penumbra = new THREE.Mesh(
-      this.silhouetteGeometry,
+      kind === 'whale' ? this.whaleSilhouetteGeometry : this.shipSilhouetteGeometry,
       new THREE.MeshBasicMaterial({
-        color: new THREE.Color('#0b3239'),
+        color: new THREE.Color(
+          kind === 'whale'
+            ? SURFACE_SILHOUETTE_LOOK.whalePenumbraColor
+            : SURFACE_SILHOUETTE_LOOK.shipPenumbraColor,
+        ),
         transparent: true,
         opacity: 0,
         side: THREE.DoubleSide,
@@ -693,6 +820,7 @@ export class SurfaceSeafoamFX {
     this.root.add(root);
 
     return {
+      kind,
       root,
       core,
       penumbra,
@@ -722,7 +850,7 @@ export class SurfaceSeafoamFX {
     return new THREE.ShapeGeometry(shape, 1);
   }
 
-  private createSilhouetteGeometry(): THREE.ShapeGeometry {
+  private createShipSilhouetteGeometry(): THREE.ShapeGeometry {
     const radius = 0.34;
     const halfLength = 0.92;
     const shape = new THREE.Shape();
@@ -734,6 +862,39 @@ export class SurfaceSeafoamFX {
     shape.absarc(0, -halfLength, radius, Math.PI, Math.PI * 2, false);
 
     const geometry = new THREE.ShapeGeometry(shape, 24);
+    geometry.rotateX(-Math.PI / 2);
+    return geometry;
+  }
+
+  private createWhaleSilhouetteGeometry(): THREE.ShapeGeometry {
+    const shape = new THREE.Shape();
+
+    shape.moveTo(0.24, -1.68);
+    shape.bezierCurveTo(0.62, -1.62, 0.94, -1.28, 1.02, -0.74);
+    shape.bezierCurveTo(1.12, -0.2, 1.08, 0.54, 0.84, 1.04);
+    shape.bezierCurveTo(0.72, 1.36, 0.54, 1.7, 0.36, 1.96);
+    shape.lineTo(0.24, 2.78);
+    shape.lineTo(0.62, 3.32);
+    shape.lineTo(0.42, 3.54);
+    shape.lineTo(0.08, 3.08);
+    shape.lineTo(0.02, 3.86);
+    shape.lineTo(-0.02, 3.86);
+    shape.lineTo(-0.08, 3.08);
+    shape.lineTo(-0.42, 3.54);
+    shape.lineTo(-0.62, 3.32);
+    shape.lineTo(-0.24, 2.78);
+    shape.lineTo(-0.36, 1.96);
+    shape.bezierCurveTo(-0.54, 1.7, -0.72, 1.36, -0.84, 1.04);
+    shape.bezierCurveTo(-1.08, 0.54, -1.12, -0.2, -1.02, -0.74);
+    shape.bezierCurveTo(-0.94, -1.28, -0.62, -1.62, -0.24, -1.68);
+    shape.bezierCurveTo(-0.8, -1.28, -1.06, -0.8, -1.04, -0.14);
+    shape.bezierCurveTo(-1.02, 0.46, -0.66, 0.94, -0.24, 1.16);
+    shape.bezierCurveTo(-0.08, 1.54, -0.02, 1.94, 0.0, 2.36);
+    shape.bezierCurveTo(0.02, 1.94, 0.08, 1.54, 0.24, 1.16);
+    shape.bezierCurveTo(0.66, 0.94, 1.02, 0.46, 1.04, -0.14);
+    shape.bezierCurveTo(1.06, -0.8, 0.8, -1.28, 0.24, -1.68);
+
+    const geometry = new THREE.ShapeGeometry(shape, 32);
     geometry.rotateX(-Math.PI / 2);
     return geometry;
   }
