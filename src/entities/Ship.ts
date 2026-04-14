@@ -196,6 +196,8 @@ export class Ship {
   private readonly starboardCannonOffsets: THREE.Vector3[] = [];
   private readonly wakeOriginLocal = new THREE.Vector3();
   private readonly harpoonOriginLocal = new THREE.Vector3();
+  private readonly towPortOriginLocal = new THREE.Vector3();
+  private readonly towStarboardOriginLocal = new THREE.Vector3();
   private readonly reinforcementLaunchOffsets: THREE.Vector3[] = [];
   private readonly subsurfaceRevealLocal = new THREE.Vector3();
   private readonly visualSurfaceShadowScale = new THREE.Vector2();
@@ -666,6 +668,19 @@ export class Ship {
     return this.root.localToWorld(target.copy(this.wakeOriginLocal));
   }
 
+  getTowAnchorOrigin(target = new THREE.Vector3()): THREE.Vector3 {
+    target.copy(this.towPortOriginLocal).lerp(this.towStarboardOriginLocal, 0.5);
+    return this.root.localToWorld(target);
+  }
+
+  getTowOrigin(side: BroadsideSide, target = new THREE.Vector3()): THREE.Vector3 {
+    return this.root.localToWorld(target.copy(side === 'port' ? this.towPortOriginLocal : this.towStarboardOriginLocal));
+  }
+
+  getExtractionAnchor(target = new THREE.Vector3()): THREE.Vector3 {
+    return this.root.localToWorld(target.copy(this.harpoonOriginLocal));
+  }
+
   getSubsurfaceRevealPoint(target = new THREE.Vector3()): THREE.Vector3 {
     return this.root.localToWorld(target.copy(this.subsurfaceRevealLocal));
   }
@@ -695,6 +710,8 @@ export class Ship {
   private buildRowboat(): void {
     this.harpoonOriginLocal.set(0, 0.88 + this.roleConfig.visualDraftOffset, 2.2);
     this.wakeOriginLocal.set(0, 0.3 + this.roleConfig.visualDraftOffset, -3.2);
+    this.towPortOriginLocal.set(-0.64, 0.4 + this.roleConfig.visualDraftOffset, -2.68);
+    this.towStarboardOriginLocal.set(0.64, 0.4 + this.roleConfig.visualDraftOffset, -2.68);
 
     const hullBottom = new THREE.Mesh(new THREE.SphereGeometry(1.16, 12, 10), this.hullMaterial);
     hullBottom.scale.set(0.98, 0.82, 2.04);
@@ -731,6 +748,8 @@ export class Ship {
   private buildFlagship(): void {
     this.harpoonOriginLocal.set(0, 2.4 + this.roleConfig.visualDraftOffset, 7.6);
     this.wakeOriginLocal.set(0, 0.72 + this.roleConfig.visualDraftOffset, -9.4);
+    this.towPortOriginLocal.set(-1.7, 1.08 + this.roleConfig.visualDraftOffset, -8.2);
+    this.towStarboardOriginLocal.set(1.7, 1.08 + this.roleConfig.visualDraftOffset, -8.2);
 
     const hullBottom = new THREE.Mesh(new THREE.CapsuleGeometry(2.7, 10.4, 6, 12), this.hullMaterial);
     hullBottom.rotation.x = Math.PI / 2;
@@ -785,6 +804,8 @@ export class Ship {
   private buildCorporateWhaler(): void {
     this.harpoonOriginLocal.set(0, 3.8 + this.roleConfig.visualDraftOffset, 14.8);
     this.wakeOriginLocal.set(0, 1.12 + this.roleConfig.visualDraftOffset, -18.4);
+    this.towPortOriginLocal.set(-2.1, 1.46 + this.roleConfig.visualDraftOffset, -14.8);
+    this.towStarboardOriginLocal.set(2.1, 1.46 + this.roleConfig.visualDraftOffset, -14.8);
 
     const hullBottom = new THREE.Mesh(new THREE.CapsuleGeometry(2.8, 13.8, 7, 14), this.hullMaterial);
     hullBottom.rotation.x = Math.PI / 2;

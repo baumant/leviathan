@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { Water } from 'three/addons/objects/Water.js';
 
 import { Cannonball } from '../entities/Cannonball';
+import { CaptiveWhale } from '../entities/CaptiveWhale';
 import { Harpoon } from '../entities/Harpoon';
 import { PlayerWhale } from '../entities/PlayerWhale';
 import { Ship, ShipLanternInfluence, ShipSpawnConfig } from '../entities/Ship';
@@ -61,6 +62,13 @@ const CORPORATE_ARRIVAL_TIME = 75;
 const CORPORATE_PROXIMITY_TRIGGER = 90;
 const CORPORATE_SHIP_ID = 'corporate-whaler';
 const CORPORATE_ROWBOAT_ID_PREFIX = 'corporate-rowboat';
+const RESCUE_TOW_BOAT_ID_PREFIX = 'rescue-towboat';
+const RESCUE_TOW_BOAT_COUNT = 3;
+const RESCUE_SPAWN_DELTA_SECONDS = 1 / 60;
+const RESCUE_TOW_BOAT_START_DISTANCE = 70;
+const RESCUE_TOW_BOAT_TARGET_DISTANCE = 8.5;
+const RESCUE_CONVOY_CAPTURE_RADIUS = 10.5;
+const RESCUE_CORPORATE_CREEP_SPEED = 2.2;
 const TAIL_SLAP_CAMERA_BLEND_IN = 0.08;
 const TAIL_SLAP_CAMERA_POST_HOLD = 0.18;
 const TAIL_SLAP_CAMERA_BLEND_OUT = 0.22;
@@ -135,11 +143,13 @@ const FLEET_SPAWNS: ShipSpawnConfig[] = [
 
 export type ArenaPhase = 'playing' | 'victory' | 'defeat';
 type CorporateArrivalState = 'pending' | 'active' | 'defeated';
+type RescueEncounterState = 'inactive' | 'towed' | 'escaping' | 'failed' | 'complete';
 
 export class OceanScene {
   readonly scene = new THREE.Scene();
   readonly camera = new THREE.PerspectiveCamera(62, 1, 0.1, 700);
 
+  private readonly captiveWhale = new CaptiveWhale();
   private readonly whale = new PlayerWhale();
   private readonly ships = FLEET_SPAWNS.map((spawn) => new Ship(spawn));
   private readonly shipById = new Map(this.ships.map((ship) => [ship.id, ship] as const));
@@ -197,6 +207,11 @@ export class OceanScene {
   private readonly tempRevealPoint = new THREE.Vector3();
   private readonly tempSpawnDirection = new THREE.Vector3();
   private readonly tempLaunchDirection = new THREE.Vector3();
+  private readonly tempRescueAnchor = new THREE.Vector3();
+  private readonly tempRescueTarget = new THREE.Vector3();
+  private readonly tempRescueDirection = new THREE.Vector3();
+  private readonly tempRescueLateral = new THREE.Vector3();
+  private readonly rescueTowOrigins = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
   private readonly breachLaunchShipIds = new Set<string>();
   private readonly capitalBreachedThisArc = new Set<string>();
   private readonly oceanLanternInfluences: ShipLanternInfluence[] = [];
@@ -224,6 +239,9 @@ export class OceanScene {
   private corporateRowboatsLaunched = false;
   private corporateShip: Ship | null = null;
   private nextCorporateRowboatIndex = 0;
+  private rescueEncounterState: RescueEncounterState = 'inactive';
+  private rescueTowBoatIds: string[] = [];
+  private rescueInitialExtractionDistance = 1;
 
   constructor(
     private readonly input: Input,
@@ -253,6 +271,7 @@ export class OceanScene {
       this.oceanMesh,
       this.oceanUndersideMesh,
       ...this.arenaFogBanks,
+      this.captiveWhale.root,
       this.whale.root,
       this.camera,
       ...this.ships.map((ship) => ship.root),
@@ -297,11 +316,15 @@ export class OceanScene {
     this.corporateRowboatsLaunched = false;
     this.corporateShip = null;
     this.nextCorporateRowboatIndex = 0;
+    this.rescueEncounterState = 'inactive';
+    this.rescueTowBoatIds = [];
+    this.rescueInitialExtractionDistance = 1;
     this.breachLaunchShipIds.clear();
     this.capitalBreachedThisArc.clear();
 
     this.removeDynamicShipsForReset();
 
+    this.captiveWhale.reset();
     this.whale.reset();
 
     for (const ship of this.ships) {
@@ -348,6 +371,7 @@ export class OceanScene {
     }
 
     this.updateShips(deltaSeconds);
+    this.updateRescueEncounter(deltaSeconds);
     if (this.phase === 'playing') {
       this.maybeLaunchCorporateRowboats();
     }
@@ -409,6 +433,7 @@ export class OceanScene {
     this.shipWakeFx.dispose();
     this.topsideSubsurfaceRevealFx.dispose();
     this.readabilityFx.dispose();
+    this.captiveWhale.dispose();
     this.arenaFogBankGeometry.dispose();
 
     for (const fogBank of this.arenaFogBanks) {
@@ -693,6 +718,7 @@ export class OceanScene {
 
   private updateShips(deltaSeconds: number): void {
     const rowboatsRemaining = this.getRowboatsRemaining();
+    const rescueTowActive = this.rescueEncounterState === 'towed';
     this.shipAiContext.deltaSeconds = deltaSeconds;
     this.shipAiContext.rowboatsRemaining = rowboatsRemaining;
     this.shipAiContext.whalePosition.copy(this.whale.position);
@@ -701,16 +727,28 @@ export class OceanScene {
       const activeHarpoon = this.activeHarpoonsByShipId.get(ship.id);
       this.shipAiContext.shipHasActiveHarpoon = Boolean(activeHarpoon?.active);
       this.shipAiContext.shipHasTether = activeHarpoon?.mode === 'tethered';
+      const isTowBoat = rescueTowActive && this.isActiveRescueTowBoat(ship);
+      const isCorporateAnchor =
+        rescueTowActive &&
+        this.corporateShip?.id === ship.id &&
+        !ship.sinking &&
+        !ship.sunk;
 
       if (this.phase === 'playing') {
-        const aiResult = this.shipAiSystem.update(ship, this.shipAiContext);
+        if (isTowBoat) {
+          this.updateRescueTowBoat(ship, deltaSeconds);
+        } else if (isCorporateAnchor) {
+          this.updateRescueCorporateShip(ship, deltaSeconds);
+        } else {
+          const aiResult = this.shipAiSystem.update(ship, this.shipAiContext);
 
-        if (aiResult.wantsHarpoonThrow && ship.role === 'rowboat' && !activeHarpoon) {
-          this.spawnHarpoon(ship);
-        }
+          if (aiResult.wantsHarpoonThrow && ship.role === 'rowboat' && !activeHarpoon) {
+            this.spawnHarpoon(ship);
+          }
 
-        if (aiResult.broadsideTelegraphSide) {
-          ship.startBroadsideTelegraph(aiResult.broadsideTelegraphSide);
+          if (aiResult.broadsideTelegraphSide) {
+            ship.startBroadsideTelegraph(aiResult.broadsideTelegraphSide);
+          }
         }
       }
 
@@ -738,6 +776,99 @@ export class OceanScene {
         this.score += ship.scoreValue;
       }
     }
+  }
+
+  private isRescueTowBoat(ship: Ship): boolean {
+    return this.rescueTowBoatIds.includes(ship.id);
+  }
+
+  private isActiveRescueTowBoat(ship: Ship): boolean {
+    return this.isRescueTowBoat(ship) && !ship.sinking && !ship.sunk;
+  }
+
+  private getAliveRescueTowBoats(): Ship[] {
+    return this.rescueTowBoatIds
+      .map((shipId) => this.shipById.get(shipId) ?? null)
+      .filter((ship): ship is Ship => ship !== null && !ship.sinking && !ship.sunk);
+  }
+
+  private getRescueTowBoatLateralOffsets(count: number): readonly number[] {
+    if (count <= 1) {
+      return [0];
+    }
+
+    if (count === 2) {
+      return [-2.8, 2.8];
+    }
+
+    return [-5.4, 0, 5.4];
+  }
+
+  private updateRescueCorporateShip(ship: Ship, deltaSeconds: number): void {
+    ship.getForward(this.tempRescueDirection).setY(0);
+
+    if (this.tempRescueDirection.lengthSq() <= 0.0001) {
+      this.tempRescueDirection.set(Math.sin(ship.heading), 0, Math.cos(ship.heading));
+    } else {
+      this.tempRescueDirection.normalize();
+    }
+
+    ship.aiState = 'engage';
+    ship.travelSpeed = THREE.MathUtils.damp(ship.travelSpeed, RESCUE_CORPORATE_CREEP_SPEED, 2.1, deltaSeconds);
+    ship.root.position.addScaledVector(this.tempRescueDirection, ship.travelSpeed * deltaSeconds);
+  }
+
+  private updateRescueTowBoat(ship: Ship, deltaSeconds: number): void {
+    const corporateShip = this.corporateShip;
+
+    if (!corporateShip || corporateShip.sinking || corporateShip.sunk) {
+      return;
+    }
+
+    const aliveTowBoats = this.getAliveRescueTowBoats();
+    const towBoatIndex = aliveTowBoats.findIndex((candidate) => candidate.id === ship.id);
+
+    if (towBoatIndex < 0) {
+      return;
+    }
+
+    const slotOffsets = this.getRescueTowBoatLateralOffsets(aliveTowBoats.length);
+    corporateShip.getExtractionAnchor(this.tempRescueAnchor);
+    corporateShip.getForward(this.tempRescueDirection).setY(0).normalize();
+    this.tempRescueLateral.set(-this.tempRescueDirection.z, 0, this.tempRescueDirection.x);
+
+    this.tempRescueTarget
+      .copy(this.tempRescueAnchor)
+      .addScaledVector(this.tempRescueDirection, RESCUE_TOW_BOAT_TARGET_DISTANCE)
+      .addScaledVector(this.tempRescueLateral, slotOffsets[towBoatIndex] ?? 0);
+
+    ship.aiState = 'close';
+    this.steerShipDirect(ship, this.tempRescueTarget, this.getRescueTowSpeed(aliveTowBoats.length), deltaSeconds);
+  }
+
+  private getRescueTowSpeed(aliveTowBoatCount: number): number {
+    if (aliveTowBoatCount <= 1) {
+      return 2.2;
+    }
+
+    if (aliveTowBoatCount === 2) {
+      return 3.2;
+    }
+
+    return 4.3;
+  }
+
+  private steerShipDirect(ship: Ship, targetPosition: THREE.Vector3, desiredSpeed: number, deltaSeconds: number): void {
+    this.tempShipVector.copy(targetPosition).sub(ship.root.position).setY(0);
+    const hasTarget = this.tempShipVector.lengthSq() > 0.25;
+    const desiredHeading = hasTarget ? Math.atan2(this.tempShipVector.x, this.tempShipVector.z) : ship.heading;
+    const headingDelta =
+      THREE.MathUtils.euclideanModulo(desiredHeading - ship.heading + Math.PI, Math.PI * 2) - Math.PI;
+    const turnStep = ship.turnRate * deltaSeconds;
+    ship.heading += THREE.MathUtils.clamp(headingDelta, -turnStep, turnStep);
+    ship.travelSpeed = THREE.MathUtils.damp(ship.travelSpeed, desiredSpeed, 2.6, deltaSeconds);
+    ship.root.position.x += Math.sin(ship.heading) * ship.travelSpeed * deltaSeconds;
+    ship.root.position.z += Math.cos(ship.heading) * ship.travelSpeed * deltaSeconds;
   }
 
   private updateHarpoons(deltaSeconds: number): void {
@@ -1257,12 +1388,14 @@ export class OceanScene {
     this.addShip(ship);
     this.corporateShip = ship;
     this.corporateArrivalState = 'active';
+    this.beginRescueEncounter(ship);
   }
 
   private maybeLaunchCorporateRowboats(): void {
     if (
       this.corporateArrivalState !== 'active' ||
       this.corporateRowboatsLaunched ||
+      this.rescueEncounterState === 'towed' ||
       !this.corporateShip ||
       this.corporateShip.sinking ||
       this.corporateShip.sunk
@@ -1301,6 +1434,154 @@ export class OceanScene {
 
       this.addShip(ship);
     }
+  }
+
+  private beginRescueEncounter(corporateShip: Ship): void {
+    this.rescueEncounterState = 'towed';
+    this.rescueTowBoatIds = [];
+    corporateShip.getForward(this.tempRescueDirection).setY(0).normalize();
+    this.tempRescueLateral.set(-this.tempRescueDirection.z, 0, this.tempRescueDirection.x);
+
+    const towHeading = Math.atan2(-this.tempRescueDirection.x, -this.tempRescueDirection.z);
+    const spawnOffsets = this.getRescueTowBoatLateralOffsets(RESCUE_TOW_BOAT_COUNT);
+
+    for (let index = 0; index < RESCUE_TOW_BOAT_COUNT; index += 1) {
+      const shipId = `${RESCUE_TOW_BOAT_ID_PREFIX}-${index}`;
+      this.tempRescueTarget
+        .copy(corporateShip.root.position)
+        .addScaledVector(this.tempRescueDirection, RESCUE_TOW_BOAT_START_DISTANCE)
+        .addScaledVector(this.tempRescueLateral, spawnOffsets[index] ?? 0);
+
+      const towBoat = new Ship({
+        id: shipId,
+        role: 'rowboat',
+        position: new THREE.Vector3(this.tempRescueTarget.x, 0.8, this.tempRescueTarget.z),
+        initialHeading: towHeading,
+      });
+
+      this.addShip(towBoat);
+      this.rescueTowBoatIds.push(shipId);
+    }
+
+    this.captiveWhale.beginTow();
+    this.updateTowedCaptiveWhale(this.getAliveRescueTowBoats(), RESCUE_SPAWN_DELTA_SECONDS);
+    corporateShip.getExtractionAnchor(this.tempRescueAnchor);
+    this.rescueInitialExtractionDistance = Math.max(
+      this.captiveWhale.position.distanceTo(this.tempRescueAnchor),
+      0.001,
+    );
+  }
+
+  private updateRescueEncounter(deltaSeconds: number): void {
+    if (this.rescueEncounterState === 'inactive' || this.rescueEncounterState === 'complete') {
+      return;
+    }
+
+    if (this.rescueEncounterState === 'towed') {
+      if (!this.corporateShip || this.corporateShip.sinking || this.corporateShip.sunk) {
+        this.startRescueEscape();
+        return;
+      }
+
+      const aliveTowBoats = this.getAliveRescueTowBoats();
+
+      if (aliveTowBoats.length <= 0) {
+        this.startRescueEscape();
+        return;
+      }
+
+      this.updateTowedCaptiveWhale(aliveTowBoats, deltaSeconds);
+      this.corporateShip.getExtractionAnchor(this.tempRescueAnchor);
+
+      if (this.captiveWhale.position.distanceTo(this.tempRescueAnchor) <= RESCUE_CONVOY_CAPTURE_RADIUS) {
+        this.failRescueEncounter();
+      }
+      return;
+    }
+
+    this.captiveWhale.update(deltaSeconds, this.elapsedSeconds, this.sampleOceanHeight);
+
+    if (this.captiveWhale.state === 'gone') {
+      this.rescueEncounterState = 'complete';
+    }
+  }
+
+  private updateTowedCaptiveWhale(towBoats: readonly Ship[], deltaSeconds: number): void {
+    if (!this.corporateShip || towBoats.length <= 0) {
+      return;
+    }
+
+    for (let index = 0; index < towBoats.length; index += 1) {
+      towBoats[index].getTowAnchorOrigin(this.rescueTowOrigins[index]);
+    }
+
+    this.corporateShip.getExtractionAnchor(this.tempRescueAnchor);
+    this.tempRescueDirection.copy(this.tempRescueAnchor).sub(this.captiveWhale.position).setY(0);
+
+    if (this.tempRescueDirection.lengthSq() <= 0.0001) {
+      this.corporateShip.getForward(this.tempRescueDirection).setY(0).normalize();
+      this.tempRescueDirection.multiplyScalar(-1);
+    } else {
+      this.tempRescueDirection.normalize();
+    }
+
+    this.captiveWhale.updateTow({
+      deltaSeconds,
+      elapsedSeconds: this.elapsedSeconds,
+      towOrigins: this.rescueTowOrigins.slice(0, towBoats.length),
+      towDirection: this.tempRescueDirection,
+      sampleSurfaceHeight: this.sampleOceanHeight,
+    });
+  }
+
+  private startRescueEscape(): void {
+    if (this.rescueEncounterState !== 'towed') {
+      return;
+    }
+
+    this.rescueEncounterState = 'escaping';
+    this.rescueTowBoatIds = [];
+
+    if (!this.corporateShip) {
+      this.captiveWhale.release(this.tempRescueDirection.set(0, 0, -1));
+      return;
+    }
+
+    this.tempRescueDirection.copy(this.captiveWhale.position).sub(this.corporateShip.root.position).setY(0);
+
+    if (this.tempRescueDirection.lengthSq() <= 0.0001) {
+      this.corporateShip.getForward(this.tempRescueDirection).setY(0).normalize();
+    } else {
+      this.tempRescueDirection.normalize();
+    }
+
+    this.captiveWhale.release(this.tempRescueDirection);
+  }
+
+  private failRescueEncounter(): void {
+    if (this.rescueEncounterState !== 'towed') {
+      return;
+    }
+
+    this.rescueEncounterState = 'failed';
+
+    if (this.corporateShip) {
+      this.corporateShip.getExtractionAnchor(this.tempRescueAnchor);
+      this.captiveWhale.capture(this.tempRescueAnchor);
+
+      if (!this.corporateRowboatsLaunched && !this.corporateShip.sinking && !this.corporateShip.sunk) {
+        this.spawnCorporateRowboats(this.corporateShip);
+        this.corporateRowboatsLaunched = true;
+      }
+    } else {
+      this.captiveWhale.capture(this.tempRescueAnchor.set(this.captiveWhale.position.x, this.captiveWhale.position.y, this.captiveWhale.position.z));
+    }
+
+    for (const towBoat of this.getAliveRescueTowBoats()) {
+      towBoat.anchor.copy(towBoat.root.position);
+    }
+
+    this.rescueTowBoatIds = [];
   }
 
   private resolveArenaOutcome(): void {
@@ -1557,13 +1838,40 @@ export class OceanScene {
     return THREE.MathUtils.clamp((-this.whale.depth - 0.4) / 5, 0, 1);
   }
 
+  private getActiveRescueTowBoatTarget(): Ship | null {
+    if (this.rescueEncounterState !== 'towed') {
+      return null;
+    }
+
+    return this.getAliveRescueTowBoats().reduce<Ship | null>((nearest, ship) => {
+      if (!nearest) {
+        return ship;
+      }
+
+      const nextDistance = this.tempShipVector.copy(ship.root.position).sub(this.whale.position).lengthSq();
+      const currentDistance = this.tempTargetPoint.copy(nearest.root.position).sub(this.whale.position).lengthSq();
+      return nextDistance < currentDistance ? ship : nearest;
+    }, null);
+  }
+
+  private getRescueExtractionProgress(): number {
+    if (this.rescueEncounterState !== 'towed' || !this.corporateShip) {
+      return 0;
+    }
+
+    this.corporateShip.getExtractionAnchor(this.tempRescueAnchor);
+    const distanceRemaining = this.captiveWhale.position.distanceTo(this.tempRescueAnchor);
+    return THREE.MathUtils.clamp(1 - distanceRemaining / Math.max(this.rescueInitialExtractionDistance, 0.001), 0, 1);
+  }
+
   private updateHud(): void {
     const livingShips = this.ships.filter((ship) => !ship.sinking);
     const fleetRemaining = livingShips.length;
     const rowboatsRemaining = livingShips.filter((ship) => ship.role === 'rowboat').length;
     const livingCapitals = livingShips.filter((ship) => ship.isCapitalShip);
     const corporateActive = this.corporateArrivalState === 'active' && this.corporateShip && !this.corporateShip.sinking;
-    const focusCandidates = rowboatsRemaining > 0 ? livingShips : livingCapitals;
+    const rescueTowBoatTarget = this.getActiveRescueTowBoatTarget();
+    const focusCandidates = rescueTowBoatTarget ? [rescueTowBoatTarget] : rowboatsRemaining > 0 ? livingShips : livingCapitals;
     const focusShip = focusCandidates.reduce<Ship | null>((nearest, ship) => {
         if (!nearest) {
           return ship;
@@ -1578,7 +1886,10 @@ export class OceanScene {
     let shipStatus = `${rowboatsRemaining} rowboats swarming / ${livingCapitals.length} capital ship${livingCapitals.length === 1 ? '' : 's'} armed`;
     let overlayTitle: string | undefined;
     let overlayCopy: string | undefined;
+    let targetLabel = focusShip ? focusShip.displayName : 'No target';
     const airPercent = this.whale.air / this.whale.maxAir;
+    const towBoatsRemaining = this.getAliveRescueTowBoats().length;
+    const extractionProgress = Math.round(this.getRescueExtractionProgress() * 100);
 
     if (corporateActive && !this.corporateRowboatsLaunched) {
       objective = 'A corporate whaler is pushing in from the fog. Close before it opens the full battery and launches more crews.';
@@ -1601,7 +1912,25 @@ export class OceanScene {
       }
     }
 
-    if (this.phase === 'playing' && this.activeTethers > 0) {
+    if (rescueTowBoatTarget) {
+      objective = 'Tow boats are hauling a captive whale back to the corporate whaler. Break the convoy before it closes the gap.';
+      shipStatus = `${towBoatsRemaining} tow boats hauling / extraction ${extractionProgress}%`;
+      targetLabel = 'Tow Rowboat';
+    } else if (this.rescueEncounterState === 'escaping') {
+      objective = 'The captive slips free into the deep. Turn back on the fleet before it regroups.';
+      shipStatus = 'Rescue complete / corporate formation breaking';
+    } else if (this.rescueEncounterState === 'failed') {
+      objective = 'The convoy reached the whaler. The captive is lost and the hunt tightens around you.';
+      shipStatus = this.corporateRowboatsLaunched ? 'Rescue failed / fresh crews in the water' : 'Rescue failed / corporate deck crews surging';
+    }
+
+    if (
+      this.phase === 'playing' &&
+      this.activeTethers > 0 &&
+      this.rescueEncounterState !== 'towed' &&
+      this.rescueEncounterState !== 'escaping' &&
+      this.rescueEncounterState !== 'failed'
+    ) {
       objective = 'Harpoons buried. Dive deep to drown the crews or burst hard enough to snap the lines.';
       shipStatus = `${this.activeTethers} tether${this.activeTethers === 1 ? '' : 's'} biting / ${rowboatsRemaining} rowboats left`;
     }
@@ -1637,7 +1966,7 @@ export class OceanScene {
       whaleHealth: this.whale.health / this.whale.maxHealth,
       whaleAir: airPercent,
       targetHealth: focusShip?.healthPercent ?? 0,
-      targetLabel: focusShip ? focusShip.displayName : 'No target',
+      targetLabel,
       shipStatus,
       speed: this.whale.speed,
       depth: -this.whale.depth,
