@@ -59,6 +59,21 @@ const WAKE_ROLE_CONFIGS: Record<ShipRole, WakeRoleConfig> = {
     airborneThreshold: 1.55,
     sinkThreshold: -1.8,
   },
+  corporate_whaler: {
+    sternPatchScale: new THREE.Vector2(6.4, 8.8),
+    surfaceFanLength: 20.8,
+    surfaceFanWidth: 5.4,
+    surfaceSpread: 0.22,
+    underwaterRibbonLength: 23.5,
+    underwaterRibbonWidth: 8.8,
+    bubbleCount: 24,
+    bubbleTrailLength: 18.2,
+    bubbleLateral: 2.2,
+    bubbleRise: 1.7,
+    expectedFloatHeight: 1.12,
+    airborneThreshold: 2.3,
+    sinkThreshold: -2.6,
+  },
 };
 
 interface WakeSlot {
@@ -104,10 +119,11 @@ export class ShipWakeFX {
 
   update(snapshot: ShipWakeSnapshot): void {
     for (const ship of snapshot.ships) {
-      const slot = this.slots.get(ship.id);
+      let slot = this.slots.get(ship.id);
 
       if (!slot) {
-        continue;
+        slot = this.createSlot(ship);
+        this.slots.set(ship.id, slot);
       }
 
       ship.getWakeOrigin(this.sternOrigin);

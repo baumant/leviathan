@@ -56,6 +56,10 @@ const AIR_RECOVERY_PER_SECOND = 3.4;
 const SUFFOCATION_DAMAGE_PER_SECOND = 6;
 const LOW_AIR_THRESHOLD = 0.34;
 const MAX_OCEAN_LANTERN_INFLUENCES = 4;
+const CORPORATE_ARRIVAL_TIME = 75;
+const CORPORATE_PROXIMITY_TRIGGER = 90;
+const CORPORATE_SHIP_ID = 'corporate-whaler';
+const CORPORATE_ROWBOAT_ID_PREFIX = 'corporate-rowboat';
 
 interface OceanSwellLayer {
   direction: THREE.Vector2;
@@ -111,16 +115,22 @@ const createSpawn = (id: string, role: ShipSpawnConfig['role'], x: number, z: nu
 });
 
 const FLEET_SPAWNS: ShipSpawnConfig[] = [
-  createSpawn('flagship', 'flagship', 0, 152),
-  createSpawn('rowboat-nw', 'rowboat', -120, 110),
-  createSpawn('rowboat-west', 'rowboat', -158, 28),
-  createSpawn('rowboat-sw', 'rowboat', -126, -118),
-  createSpawn('rowboat-south', 'rowboat', 0, -164),
-  createSpawn('rowboat-se', 'rowboat', 128, -114),
-  createSpawn('rowboat-east', 'rowboat', 156, 26),
+  createSpawn('flagship-west', 'flagship', -72, 138),
+  createSpawn('flagship-east', 'flagship', 72, 138),
+  createSpawn('rowboat-nw', 'rowboat', -146, 102),
+  createSpawn('rowboat-wnw', 'rowboat', -168, 38),
+  createSpawn('rowboat-wsw', 'rowboat', -154, -52),
+  createSpawn('rowboat-sw', 'rowboat', -118, -126),
+  createSpawn('rowboat-ssw', 'rowboat', -46, -168),
+  createSpawn('rowboat-sse', 'rowboat', 46, -168),
+  createSpawn('rowboat-se', 'rowboat', 118, -126),
+  createSpawn('rowboat-ese', 'rowboat', 154, -52),
+  createSpawn('rowboat-ene', 'rowboat', 168, 38),
+  createSpawn('rowboat-ne', 'rowboat', 146, 102),
 ];
 
 export type ArenaPhase = 'playing' | 'victory' | 'defeat';
+type CorporateArrivalState = 'pending' | 'active' | 'defeated';
 
 export class OceanScene {
   readonly scene = new THREE.Scene();
@@ -129,6 +139,7 @@ export class OceanScene {
   private readonly whale = new PlayerWhale();
   private readonly ships = FLEET_SPAWNS.map((spawn) => new Ship(spawn));
   private readonly shipById = new Map(this.ships.map((ship) => [ship.id, ship] as const));
+  private readonly initialShipIds = new Set(FLEET_SPAWNS.map((spawn) => spawn.id));
   private readonly whaleMovement = new WhaleMovementSystem();
   private readonly damageSystem = new DamageSystem();
   private readonly shipAiSystem = new ShipAISystem();
@@ -174,7 +185,10 @@ export class OceanScene {
   private readonly tempImpactPoint = new THREE.Vector3();
   private readonly tempBoundaryVector = new THREE.Vector3();
   private readonly tempRevealPoint = new THREE.Vector3();
+  private readonly tempSpawnDirection = new THREE.Vector3();
+  private readonly tempLaunchDirection = new THREE.Vector3();
   private readonly breachLaunchShipIds = new Set<string>();
+  private readonly capitalBreachedThisArc = new Set<string>();
   private readonly oceanLanternInfluences: ShipLanternInfluence[] = [];
   private readonly oceanRevealWindows: PainterlyOceanSubsurfaceRevealWindow[] = [];
   private readonly topsideRevealTargets: TopsideSubsurfaceRevealTarget[] = [];
@@ -187,10 +201,13 @@ export class OceanScene {
   private breachCameraBlend = 0;
   private breachCameraTransitionActive = false;
   private breachCameraHeading = 0;
-  private flagshipBreachedThisArc = false;
   private phase: ArenaPhase = 'playing';
   private score = 0;
   private activeTethers = 0;
+  private corporateArrivalState: CorporateArrivalState = 'pending';
+  private corporateRowboatsLaunched = false;
+  private corporateShip: Ship | null = null;
+  private nextCorporateRowboatIndex = 0;
 
   constructor(
     private readonly input: Input,
@@ -252,9 +269,15 @@ export class OceanScene {
     this.breachCameraBlend = 0;
     this.breachCameraTransitionActive = false;
     this.breachCameraHeading = 0;
-    this.flagshipBreachedThisArc = false;
     this.activeTethers = 0;
+    this.corporateArrivalState = 'pending';
+    this.corporateRowboatsLaunched = false;
+    this.corporateShip = null;
+    this.nextCorporateRowboatIndex = 0;
     this.breachLaunchShipIds.clear();
+    this.capitalBreachedThisArc.clear();
+
+    this.removeDynamicShipsForReset();
 
     this.whale.reset();
 
@@ -293,7 +316,14 @@ export class OceanScene {
       this.syncShipTetherPulls();
     }
 
+    if (this.phase === 'playing') {
+      this.maybeSpawnCorporateWhalerByTimer();
+    }
+
     this.updateShips(deltaSeconds);
+    if (this.phase === 'playing') {
+      this.maybeLaunchCorporateRowboats();
+    }
     this.updateHarpoons(deltaSeconds);
     this.updateCannonballs(deltaSeconds);
     this.clampArenaBodies();
@@ -655,7 +685,7 @@ export class OceanScene {
         }
       }
 
-      const pauseWaterShove = ship.role === 'flagship' && this.whale.actionState === 'breach';
+      const pauseWaterShove = ship.isCapitalShip && this.whale.actionState === 'breach';
       ship.update(deltaSeconds, this.elapsedSeconds, this.sampleOceanHeight, pauseWaterShove);
 
       if (this.phase === 'playing' && this.whale.actionState === 'swim') {
@@ -793,7 +823,7 @@ export class OceanScene {
       this.breachCameraTransitionActive = true;
       this.breachCameraHeading = Math.atan2(this.whaleForward.x, this.whaleForward.z);
       this.impactShake = Math.max(this.impactShake, 0.12);
-      this.flagshipBreachedThisArc = false;
+      this.capitalBreachedThisArc.clear();
       this.breachLaunchShipIds.clear();
       this.tempImpactPoint.set(
         this.whale.breachOrigin.x,
@@ -811,7 +841,7 @@ export class OceanScene {
       this.breachSplashFx.spawnReentry(result.breachImpact.position, this.getBreachSplashIntensity());
 
       for (const ship of this.ships) {
-        if (ship.role === 'flagship' && this.flagshipBreachedThisArc) {
+        if (ship.isCapitalShip && this.capitalBreachedThisArc.has(ship.id)) {
           continue;
         }
 
@@ -831,7 +861,7 @@ export class OceanScene {
         if (ship.role === 'rowboat') {
           this.removeHarpoonByShipId(ship.id);
         } else {
-          this.flagshipBreachedThisArc = true;
+          this.capitalBreachedThisArc.add(ship.id);
         }
       }
 
@@ -862,7 +892,7 @@ export class OceanScene {
     }
 
     if (this.whale.actionState !== 'breach') {
-      this.flagshipBreachedThisArc = false;
+      this.capitalBreachedThisArc.clear();
       this.breachLaunchShipIds.clear();
     }
   }
@@ -877,7 +907,7 @@ export class OceanScene {
         continue;
       }
 
-      if (ship.role === 'flagship' && this.flagshipBreachedThisArc) {
+      if (ship.isCapitalShip && this.capitalBreachedThisArc.has(ship.id)) {
         continue;
       }
 
@@ -893,7 +923,7 @@ export class OceanScene {
         this.breachLaunchShipIds.add(ship.id);
         this.removeHarpoonByShipId(ship.id);
       } else {
-        this.flagshipBreachedThisArc = true;
+        this.capitalBreachedThisArc.add(ship.id);
       }
     }
   }
@@ -1081,8 +1111,119 @@ export class OceanScene {
     ship.travelSpeed *= 0.58;
   }
 
+  private addShip(ship: Ship): void {
+    this.ships.push(ship);
+    this.shipById.set(ship.id, ship);
+    ship.setSubmergedReadabilityCue(0);
+    ship.setTetherPull(0);
+    this.scene.add(ship.root);
+  }
+
+  private removeDynamicShipsForReset(): void {
+    for (let index = this.ships.length - 1; index >= 0; index -= 1) {
+      const ship = this.ships[index];
+
+      if (this.initialShipIds.has(ship.id)) {
+        continue;
+      }
+
+      this.removeHarpoonByShipId(ship.id);
+      ship.root.removeFromParent();
+      this.shipById.delete(ship.id);
+      this.ships.splice(index, 1);
+    }
+  }
+
+  private getInitialFleetRemaining(): number {
+    return this.ships.filter((ship) => this.initialShipIds.has(ship.id) && !ship.sinking).length;
+  }
+
   private getRowboatsRemaining(): number {
     return this.ships.filter((ship) => ship.role === 'rowboat' && !ship.sinking).length;
+  }
+
+  private maybeSpawnCorporateWhalerByTimer(): void {
+    if (this.corporateArrivalState !== 'pending' || this.elapsedSeconds < CORPORATE_ARRIVAL_TIME) {
+      return;
+    }
+
+    this.spawnCorporateWhaler();
+  }
+
+  private spawnCorporateWhaler(): void {
+    if (this.corporateArrivalState !== 'pending') {
+      return;
+    }
+
+    this.tempSpawnDirection.set(this.whale.position.x, 0, this.whale.position.z);
+
+    if (this.tempSpawnDirection.lengthSq() <= 4) {
+      this.tempSpawnDirection.set(0, 0, -1);
+    } else {
+      this.tempSpawnDirection.normalize().multiplyScalar(-1);
+    }
+
+    const spawnRadius = ARENA_RADIUS * 0.82;
+    const spawnPosition = new THREE.Vector3(
+      this.tempSpawnDirection.x * spawnRadius,
+      0.8,
+      this.tempSpawnDirection.z * spawnRadius,
+    );
+    const initialHeading = Math.atan2(-spawnPosition.x, -spawnPosition.z);
+    const ship = new Ship({
+      id: CORPORATE_SHIP_ID,
+      role: 'corporate_whaler',
+      position: spawnPosition,
+      initialHeading,
+    });
+
+    this.addShip(ship);
+    this.corporateShip = ship;
+    this.corporateArrivalState = 'active';
+  }
+
+  private maybeLaunchCorporateRowboats(): void {
+    if (
+      this.corporateArrivalState !== 'active' ||
+      this.corporateRowboatsLaunched ||
+      !this.corporateShip ||
+      this.corporateShip.sinking ||
+      this.corporateShip.sunk
+    ) {
+      return;
+    }
+
+    if (this.corporateShip.root.position.distanceTo(this.whale.position) > CORPORATE_PROXIMITY_TRIGGER) {
+      return;
+    }
+
+    this.spawnCorporateRowboats(this.corporateShip);
+    this.corporateRowboatsLaunched = true;
+  }
+
+  private spawnCorporateRowboats(source: Ship): void {
+    const launchOrigins = source.getReinforcementLaunchOrigins();
+
+    for (const origin of launchOrigins) {
+      const id = `${CORPORATE_ROWBOAT_ID_PREFIX}-${this.nextCorporateRowboatIndex}`;
+      this.nextCorporateRowboatIndex += 1;
+      this.tempLaunchDirection.copy(origin).sub(source.root.position).setY(0);
+
+      if (this.tempLaunchDirection.lengthSq() <= 0.0001) {
+        this.tempLaunchDirection.set(Math.sin(source.heading), 0, Math.cos(source.heading));
+      } else {
+        this.tempLaunchDirection.normalize();
+      }
+
+      const ship = new Ship({
+        id,
+        role: 'rowboat',
+        position: new THREE.Vector3(origin.x, 0.8, origin.z),
+        initialHeading: Math.atan2(this.tempLaunchDirection.x, this.tempLaunchDirection.z),
+      });
+
+      this.addShip(ship);
+    }
   }
 
   private resolveArenaOutcome(): void {
@@ -1091,9 +1232,18 @@ export class OceanScene {
       return;
     }
 
+    if (this.corporateArrivalState === 'pending' && this.getInitialFleetRemaining() <= 0) {
+      this.spawnCorporateWhaler();
+      return;
+    }
+
+    if (this.corporateShip && this.corporateShip.sinking) {
+      this.corporateArrivalState = 'defeated';
+    }
+
     const fleetRemaining = this.ships.filter((ship) => !ship.sinking).length;
 
-    if (fleetRemaining <= 0) {
+    if (fleetRemaining <= 0 && this.corporateArrivalState !== 'pending') {
       this.phase = 'victory';
     }
   }
@@ -1285,10 +1435,10 @@ export class OceanScene {
     const livingShips = this.ships.filter((ship) => !ship.sinking);
     const fleetRemaining = livingShips.length;
     const rowboatsRemaining = livingShips.filter((ship) => ship.role === 'rowboat').length;
-    const flagship = this.ships.find((ship) => ship.role === 'flagship' && !ship.sinking) ?? null;
-    const focusShip =
-      (rowboatsRemaining <= 0 && flagship) ||
-      livingShips.reduce<Ship | null>((nearest, ship) => {
+    const livingCapitals = livingShips.filter((ship) => ship.isCapitalShip);
+    const corporateActive = this.corporateArrivalState === 'active' && this.corporateShip && !this.corporateShip.sinking;
+    const focusCandidates = rowboatsRemaining > 0 ? livingShips : livingCapitals;
+    const focusShip = focusCandidates.reduce<Ship | null>((nearest, ship) => {
         if (!nearest) {
           return ship;
         }
@@ -1298,15 +1448,31 @@ export class OceanScene {
         return nextDistance < currentDistance ? ship : nearest;
       }, null);
 
-    let objective = 'Break the harpoon crews first. Dive to drown tethered rowboats, then turn on the flagship.';
-    let shipStatus = `${rowboatsRemaining} rowboats swarming / flagship armed`;
+    let objective = 'Break the harpoon crews first. Dive to drown tethered rowboats, then turn on the flagships.';
+    let shipStatus = `${rowboatsRemaining} rowboats swarming / ${livingCapitals.length} capital ship${livingCapitals.length === 1 ? '' : 's'} armed`;
     let overlayTitle: string | undefined;
     let overlayCopy: string | undefined;
     const airPercent = this.whale.air / this.whale.maxAir;
 
-    if (rowboatsRemaining <= 0 && flagship) {
-      objective = 'The rowboats are gone. Finish the flagship before the guns walk you down.';
-      shipStatus = flagship.aiState === 'flee' ? 'Flagship breaking for open water' : 'Flagship alone / broadside batteries live';
+    if (corporateActive && !this.corporateRowboatsLaunched) {
+      objective = 'A corporate whaler is pushing in from the fog. Close before it opens the full battery and launches more crews.';
+      shipStatus = `${rowboatsRemaining} rowboats still screening / corporate batteries sighted`;
+    } else if (this.corporateRowboatsLaunched && this.corporateShip && !this.corporateShip.sinking) {
+      objective = 'The corporate whaler has launched fresh crews. Cut through the rowboats, then drag both capital ships under.';
+      shipStatus = `${rowboatsRemaining} rowboats in the water / ${livingCapitals.length} capital ship${livingCapitals.length === 1 ? '' : 's'} armed`;
+    }
+
+    if (rowboatsRemaining <= 0 && livingCapitals.length > 0) {
+      if (livingCapitals.length === 1 && focusShip) {
+        objective = `The crews are gone. Finish the ${focusShip.displayName.toLowerCase()} before the guns walk you down.`;
+        shipStatus =
+          focusShip.aiState === 'flee'
+            ? `${focusShip.displayName} breaking for open water`
+            : `${focusShip.displayName} alone / broadside batteries live`;
+      } else {
+        objective = 'The rowboats are gone. Only the capital ships remain. Stay moving and break the batteries apart.';
+        shipStatus = 'Dual capital pressure / broadside batteries live';
+      }
     }
 
     if (this.phase === 'playing' && this.activeTethers > 0) {
@@ -1329,7 +1495,10 @@ export class OceanScene {
       objective = 'The sea is yours. Press R to call the hunt back up from the deep.';
       shipStatus = 'Fleet destroyed';
       overlayTitle = 'Fleet Broken';
-      overlayCopy = 'The rowboats vanish first. Then the flagship follows them into the black. Press R to hunt again.';
+      overlayCopy =
+        this.corporateArrivalState === 'pending'
+          ? 'The rowboats vanish first. Then the flagships follow them into the black. Press R to hunt again.'
+          : 'The escorting crews vanish first. Then the capital ships follow them into the black. Press R to hunt again.';
     } else if (this.phase === 'defeat') {
       objective = 'They bought a moment with iron. Press R to rise again.';
       shipStatus = 'Whale driven off';

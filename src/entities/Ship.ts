@@ -2,7 +2,7 @@ import * as THREE from 'three';
 
 import { createCelMaterial } from '../fx/createCelMaterial';
 
-export type ShipRole = 'rowboat' | 'flagship';
+export type ShipRole = 'rowboat' | 'flagship' | 'corporate_whaler';
 export type ShipAIState = 'patrol' | 'close' | 'throw' | 'tethered' | 'engage' | 'flee' | 'sinking';
 export type BroadsideSide = 'port' | 'starboard';
 
@@ -39,6 +39,13 @@ interface ShipRoleConfig {
   halfExtents: THREE.Vector3;
   surfaceShadowScale: THREE.Vector2;
   subsurfaceRevealHalfExtents: THREE.Vector2;
+  isCapitalShip: boolean;
+  fleeWhenRowboatsGone: boolean;
+  broadsideRangeMin: number;
+  broadsideRangeMax: number;
+  broadsideLocalForwardLimit: number;
+  broadsideLocalSideMin: number;
+  broadsideTelegraphDuration: number;
 }
 
 const AIRBORNE_GRAVITY = 26;
@@ -47,7 +54,7 @@ const WATER_SHOVE_YAW_DAMPING = 1.3;
 const WATER_SLIDE_ROLL_DAMPING = 2.4;
 const WATER_SLIDE_ROLL_LIMIT = 0.06;
 
-type ShipDamageReactionProfile = 'default' | 'flagship_ram' | 'flagship_breach';
+type ShipDamageReactionProfile = 'default' | 'capital_ram' | 'capital_breach';
 
 const SHIP_ROLE_CONFIGS: Record<ShipRole, ShipRoleConfig> = {
   rowboat: {
@@ -71,9 +78,16 @@ const SHIP_ROLE_CONFIGS: Record<ShipRole, ShipRoleConfig> = {
     halfExtents: new THREE.Vector3(1.24, 0.78, 2.9),
     surfaceShadowScale: new THREE.Vector2(3.6, 8.6),
     subsurfaceRevealHalfExtents: new THREE.Vector2(1.2, 3.2),
+    isCapitalShip: false,
+    fleeWhenRowboatsGone: false,
+    broadsideRangeMin: 0,
+    broadsideRangeMax: 0,
+    broadsideLocalForwardLimit: 0,
+    broadsideLocalSideMin: 0,
+    broadsideTelegraphDuration: 0,
   },
   flagship: {
-    maxHealth: 360,
+    maxHealth: 450,
     scoreValue: 500,
     fireInterval: 5.2,
     attackDamage: 10,
@@ -93,6 +107,42 @@ const SHIP_ROLE_CONFIGS: Record<ShipRole, ShipRoleConfig> = {
     halfExtents: new THREE.Vector3(7.8, 4.1, 18.8),
     surfaceShadowScale: new THREE.Vector2(24, 58),
     subsurfaceRevealHalfExtents: new THREE.Vector2(5.8, 14.8),
+    isCapitalShip: true,
+    fleeWhenRowboatsGone: true,
+    broadsideRangeMin: 20,
+    broadsideRangeMax: 72,
+    broadsideLocalForwardLimit: 18,
+    broadsideLocalSideMin: 8,
+    broadsideTelegraphDuration: 0.6,
+  },
+  corporate_whaler: {
+    maxHealth: 1200,
+    scoreValue: 1500,
+    fireInterval: 6.8,
+    attackDamage: 9,
+    moveSpeed: 5.2,
+    fleeSpeed: 6.0,
+    turnRate: 0.42,
+    patrolRadius: 26,
+    holdRangeMin: 48,
+    holdRangeMax: 66,
+    orbitOffset: 38,
+    scale: 2.9,
+    lanternIntensity: 3.8,
+    floatHeight: 1.12,
+    visualDraftOffset: -1.55,
+    subsurfaceRevealOffsetY: -1.18,
+    sinkDepth: 13.5,
+    halfExtents: new THREE.Vector3(15.6, 7.8, 37.6),
+    surfaceShadowScale: new THREE.Vector2(48, 116),
+    subsurfaceRevealHalfExtents: new THREE.Vector2(11.8, 29.6),
+    isCapitalShip: true,
+    fleeWhenRowboatsGone: false,
+    broadsideRangeMin: 28,
+    broadsideRangeMax: 96,
+    broadsideLocalForwardLimit: 30,
+    broadsideLocalSideMin: 12,
+    broadsideTelegraphDuration: 0.72,
   },
 };
 
@@ -146,6 +196,7 @@ export class Ship {
   private readonly starboardCannonOffsets: THREE.Vector3[] = [];
   private readonly wakeOriginLocal = new THREE.Vector3();
   private readonly harpoonOriginLocal = new THREE.Vector3();
+  private readonly reinforcementLaunchOffsets: THREE.Vector3[] = [];
   private readonly subsurfaceRevealLocal = new THREE.Vector3();
   private readonly visualSurfaceShadowScale = new THREE.Vector2();
   private readonly visualSubsurfaceRevealHalfExtents = new THREE.Vector2();
@@ -196,19 +247,34 @@ export class Ship {
     this.subsurfaceRevealLocal.set(0, this.roleConfig.subsurfaceRevealOffsetY, 0);
 
     this.hullMaterial = createCelMaterial({
-      color: this.role === 'flagship' ? '#5a4130' : '#4d3a2c',
+      color:
+        this.role === 'corporate_whaler'
+          ? '#4a372b'
+          : this.role === 'flagship'
+            ? '#5a4130'
+            : '#4d3a2c',
       emissive: '#101620',
       emissiveIntensity: 0.04,
     });
 
     this.mastMaterial = createCelMaterial({
-      color: this.role === 'flagship' ? '#8d6a52' : '#82624d',
+      color:
+        this.role === 'corporate_whaler'
+          ? '#6f5c4c'
+          : this.role === 'flagship'
+            ? '#8d6a52'
+            : '#82624d',
       emissive: '#0d1318',
       emissiveIntensity: 0.02,
     });
 
     this.sailMaterial = createCelMaterial({
-      color: this.role === 'flagship' ? '#c8b28d' : '#9f8a6b',
+      color:
+        this.role === 'corporate_whaler'
+          ? '#8f816c'
+          : this.role === 'flagship'
+            ? '#c8b28d'
+            : '#9f8a6b',
       emissive: '#161922',
       emissiveIntensity: 0.01,
     });
@@ -216,7 +282,9 @@ export class Ship {
     this.mastTintMaterials.push(this.mastMaterial);
     this.sailTintMaterials.push(this.sailMaterial);
 
-    if (this.role === 'flagship') {
+    if (this.role === 'corporate_whaler') {
+      this.buildCorporateWhaler();
+    } else if (this.role === 'flagship') {
       this.buildFlagship();
     } else {
       this.buildRowboat();
@@ -247,6 +315,10 @@ export class Ship {
   }
 
   get displayName(): string {
+    if (this.role === 'corporate_whaler') {
+      return 'Corporate Whaler';
+    }
+
     return this.role === 'flagship' ? 'Flagship' : 'Rowboat';
   }
 
@@ -256,6 +328,30 @@ export class Ship {
 
   get subsurfaceRevealHalfExtents(): THREE.Vector2 {
     return this.visualSubsurfaceRevealHalfExtents;
+  }
+
+  get isCapitalShip(): boolean {
+    return this.roleConfig.isCapitalShip;
+  }
+
+  get capitalFleesWhenRowboatsGone(): boolean {
+    return this.roleConfig.fleeWhenRowboatsGone;
+  }
+
+  get broadsideRangeMin(): number {
+    return this.roleConfig.broadsideRangeMin;
+  }
+
+  get broadsideRangeMax(): number {
+    return this.roleConfig.broadsideRangeMax;
+  }
+
+  get broadsideLocalForwardLimit(): number {
+    return this.roleConfig.broadsideLocalForwardLimit;
+  }
+
+  get broadsideLocalSideMin(): number {
+    return this.roleConfig.broadsideLocalSideMin;
   }
 
   get isBroadsideTelegraphing(): boolean {
@@ -303,9 +399,9 @@ export class Ship {
 
     this.health = Math.max(0, this.health - amount);
 
-    if (reactionProfile === 'flagship_ram') {
+    if (reactionProfile === 'capital_ram') {
       this.impactRoll += THREE.MathUtils.clamp(amount / 520, 0.008, 0.04);
-    } else if (reactionProfile === 'flagship_breach') {
+    } else if (reactionProfile === 'capital_breach') {
       this.impactRoll += THREE.MathUtils.clamp(amount / 1400, 0.004, 0.014);
     } else {
       this.impactRoll += THREE.MathUtils.clamp(amount / 180, 0.02, 0.28);
@@ -392,15 +488,21 @@ export class Ship {
     oceanHeightAt: (x: number, z: number) => number,
     pauseWaterShove = false,
   ): void {
+    const isCapital = this.isCapitalShip;
+    const isCorporate = this.role === 'corporate_whaler';
     const damageRatio = 1 - this.healthPercent;
-    const bobAmplitude = this.role === 'flagship' ? 0.22 : 0.14;
+    const bobAmplitude = isCorporate ? 0.26 : isCapital ? 0.22 : 0.14;
     const bob = Math.sin(elapsedSeconds * 1.1 + this.bobOffset) * bobAmplitude;
-    const pitchWave = Math.cos(elapsedSeconds * 0.9 + this.bobOffset * 0.7) * (this.role === 'flagship' ? 0.03 : 0.02);
-    const rollWave = Math.sin(elapsedSeconds * 1.2 + this.bobOffset) * (this.role === 'flagship' ? 0.04 : 0.05);
+    const pitchWave = Math.cos(elapsedSeconds * 0.9 + this.bobOffset * 0.7) * (isCorporate ? 0.035 : isCapital ? 0.03 : 0.02);
+    const rollWave = Math.sin(elapsedSeconds * 1.2 + this.bobOffset) * (isCorporate ? 0.05 : isCapital ? 0.04 : 0.05);
     const speedRatio = THREE.MathUtils.clamp(this.travelSpeed / this.fleeSpeed, 0, 1);
     const cue = this.sinking ? 0 : this.readabilityCue;
     const telegraphAlpha =
-      this.broadsideTelegraphRemaining > 0 ? 1 - this.broadsideTelegraphRemaining / 0.6 : 0;
+      this.broadsideTelegraphRemaining > 0
+        ? 1 -
+          this.broadsideTelegraphRemaining /
+            Math.max(this.roleConfig.broadsideTelegraphDuration, 0.0001)
+        : 0;
 
     this.impactRoll = THREE.MathUtils.damp(this.impactRoll, damageRatio * 0.11, 2.8, deltaSeconds);
     this.impactPitch = THREE.MathUtils.damp(this.impactPitch, damageRatio * 0.05, 2.4, deltaSeconds);
@@ -414,10 +516,11 @@ export class Ship {
       this.waterShoveVelocity.z = THREE.MathUtils.damp(this.waterShoveVelocity.z, 0, WATER_SHOVE_DAMPING, deltaSeconds);
       this.waterShoveYawVelocity = THREE.MathUtils.damp(this.waterShoveYawVelocity, 0, WATER_SHOVE_YAW_DAMPING, deltaSeconds);
 
-      if (this.role === 'flagship') {
+      if (isCapital) {
         this.waterShoveDirection.set(Math.cos(this.heading), 0, -Math.sin(this.heading));
         const lateralSlideSpeed = this.waterShoveVelocity.dot(this.waterShoveDirection);
-        const slideRollTarget = THREE.MathUtils.clamp(-lateralSlideSpeed * 0.02, -WATER_SLIDE_ROLL_LIMIT, WATER_SLIDE_ROLL_LIMIT);
+        const slideRollScale = isCorporate ? 0.014 : 0.02;
+        const slideRollTarget = THREE.MathUtils.clamp(-lateralSlideSpeed * slideRollScale, -WATER_SLIDE_ROLL_LIMIT, WATER_SLIDE_ROLL_LIMIT);
         this.waterSlideRoll = THREE.MathUtils.damp(this.waterSlideRoll, slideRollTarget, WATER_SLIDE_ROLL_DAMPING, deltaSeconds);
       } else {
         this.waterSlideRoll = THREE.MathUtils.damp(this.waterSlideRoll, 0, WATER_SLIDE_ROLL_DAMPING, deltaSeconds);
@@ -437,7 +540,7 @@ export class Ship {
     }
 
     if (this.sinking) {
-      this.sinkProgress = Math.min(1, this.sinkProgress + deltaSeconds * (this.role === 'flagship' ? 0.18 : 0.42));
+      this.sinkProgress = Math.min(1, this.sinkProgress + deltaSeconds * (isCorporate ? 0.12 : isCapital ? 0.18 : 0.42));
       this.aiState = 'sinking';
       this.travelSpeed = THREE.MathUtils.damp(this.travelSpeed, 0, 4.2, deltaSeconds);
     }
@@ -478,7 +581,7 @@ export class Ship {
 
     for (const material of this.hullTintMaterials) {
       material.emissive.set('#8fb7df');
-      material.emissiveIntensity = cue * (this.role === 'flagship' ? 0.028 : 0.036);
+      material.emissiveIntensity = cue * (isCorporate ? 0.024 : isCapital ? 0.028 : 0.036);
     }
 
     for (const material of this.mastTintMaterials) {
@@ -527,12 +630,12 @@ export class Ship {
   }
 
   startBroadsideTelegraph(side: BroadsideSide): void {
-    if (this.role !== 'flagship' || this.broadsideTelegraphSide !== null || this.sinking) {
+    if (!this.isCapitalShip || this.broadsideTelegraphSide !== null || this.sinking) {
       return;
     }
 
     this.broadsideTelegraphSide = side;
-    this.broadsideTelegraphRemaining = 0.6;
+    this.broadsideTelegraphRemaining = this.roleConfig.broadsideTelegraphDuration;
     this.fireCooldown = this.fireInterval;
   }
 
@@ -549,6 +652,10 @@ export class Ship {
   getBroadsideOrigins(side: BroadsideSide): THREE.Vector3[] {
     const offsets = side === 'port' ? this.portCannonOffsets : this.starboardCannonOffsets;
     return offsets.map((offset) => this.root.localToWorld(offset.clone()));
+  }
+
+  getReinforcementLaunchOrigins(): THREE.Vector3[] {
+    return this.reinforcementLaunchOffsets.map((offset) => this.root.localToWorld(offset.clone()));
   }
 
   getForward(target = new THREE.Vector3()): THREE.Vector3 {
@@ -675,6 +782,100 @@ export class Ship {
     this.addLantern(new THREE.Vector3(0, 2.5, -6.1));
   }
 
+  private buildCorporateWhaler(): void {
+    this.harpoonOriginLocal.set(0, 3.8 + this.roleConfig.visualDraftOffset, 14.8);
+    this.wakeOriginLocal.set(0, 1.12 + this.roleConfig.visualDraftOffset, -18.4);
+
+    const hullBottom = new THREE.Mesh(new THREE.CapsuleGeometry(2.8, 13.8, 7, 14), this.hullMaterial);
+    hullBottom.rotation.x = Math.PI / 2;
+    hullBottom.scale.set(1.22, 0.94, 1.12);
+    hullBottom.position.set(0, 0.3, 0.45);
+
+    const hullTop = new THREE.Mesh(new THREE.BoxGeometry(7.2, 1.4, 18.2), this.hullMaterial);
+    hullTop.position.y = 1.78;
+
+    const deckRail = new THREE.Mesh(new THREE.BoxGeometry(7.8, 0.2, 19.2), this.mastMaterial);
+    deckRail.position.set(0, 2.72, -0.16);
+
+    const bow = new THREE.Mesh(new THREE.ConeGeometry(3.1, 6.2, 7), this.hullMaterial);
+    bow.rotation.x = Math.PI / 2;
+    bow.position.set(0, 1.02, 11.2);
+
+    const sternBlock = new THREE.Mesh(new THREE.BoxGeometry(6.6, 3, 6.8), this.hullMaterial);
+    sternBlock.position.set(0, 2.96, -7.2);
+
+    const midSuperstructure = new THREE.Mesh(new THREE.BoxGeometry(4.8, 4.0, 5.6), this.mastMaterial);
+    midSuperstructure.position.set(0, 4.9, 1.7);
+
+    const aftSuperstructure = new THREE.Mesh(new THREE.BoxGeometry(4.2, 4.4, 4.8), this.mastMaterial);
+    aftSuperstructure.position.set(0, 5.36, -6.4);
+
+    const foreMast = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.38, 11, 6), this.mastMaterial);
+    foreMast.position.set(0, 7.72, 2.6);
+
+    const aftMast = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.34, 9.4, 6), this.mastMaterial);
+    aftMast.position.set(0, 7.12, -7.2);
+
+    const foreCanvas = new THREE.Mesh(new THREE.BoxGeometry(0.14, 4.8, 5.4), this.sailMaterial);
+    foreCanvas.position.set(0, 7.96, 3.2);
+
+    const aftCanvas = new THREE.Mesh(new THREE.BoxGeometry(0.12, 4.0, 4.6), this.sailMaterial);
+    aftCanvas.position.set(0, 7.26, -7.6);
+
+    const funnel = new THREE.Mesh(new THREE.CylinderGeometry(0.62, 0.78, 3.6, 6), this.mastMaterial);
+    funnel.position.set(0, 7.3, -0.7);
+
+    this.fallbackVisualRoot.add(
+      hullBottom,
+      hullTop,
+      deckRail,
+      bow,
+      sternBlock,
+      midSuperstructure,
+      aftSuperstructure,
+      foreMast,
+      aftMast,
+      foreCanvas,
+      aftCanvas,
+      funnel,
+    );
+
+    const cannonDepths = [10, 6, 2, -2, -6, -10];
+
+    for (const depth of cannonDepths) {
+      const portOffset = new THREE.Vector3(-4.8, 2.1, depth);
+      const starboardOffset = new THREE.Vector3(4.8, 2.1, depth);
+      this.portCannonOffsets.push(portOffset.clone());
+      this.starboardCannonOffsets.push(starboardOffset.clone());
+      this.addCannon(portOffset, 'port');
+      this.addCannon(starboardOffset, 'starboard');
+    }
+
+    const launchOffsets = [
+      new THREE.Vector3(-4.9, 1.72, 9),
+      new THREE.Vector3(-4.9, 1.72, 4),
+      new THREE.Vector3(-4.9, 1.72, -1),
+      new THREE.Vector3(-4.9, 1.72, -6),
+      new THREE.Vector3(4.9, 1.72, 9),
+      new THREE.Vector3(4.9, 1.72, 4),
+      new THREE.Vector3(4.9, 1.72, -1),
+      new THREE.Vector3(4.9, 1.72, -6),
+      new THREE.Vector3(-2.2, 1.58, -11.8),
+      new THREE.Vector3(2.2, 1.58, -11.8),
+    ];
+
+    for (const offset of launchOffsets) {
+      this.reinforcementLaunchOffsets.push(offset);
+    }
+
+    this.addLantern(new THREE.Vector3(0, 4.7, 6.8));
+    this.addLantern(new THREE.Vector3(-2.2, 5.1, 1.8));
+    this.addLantern(new THREE.Vector3(2.2, 5.1, 1.8));
+    this.addLantern(new THREE.Vector3(-2.8, 5.7, -6.4));
+    this.addLantern(new THREE.Vector3(2.8, 5.7, -6.4));
+    this.addLantern(new THREE.Vector3(0, 6, -9.8));
+  }
+
   private addCannon(offset: THREE.Vector3, side: BroadsideSide): void {
     const cannonMaterial = createCelMaterial({
       color: '#2b313b',
@@ -705,8 +906,13 @@ export class Ship {
       emissiveIntensity: 0.9,
     });
 
+    const lanternRadius = this.role === 'corporate_whaler' ? 0.34 : this.role === 'flagship' ? 0.28 : 0.22;
+    const haloRadius = this.role === 'corporate_whaler' ? 1.5 : this.role === 'flagship' ? 1.2 : 0.9;
+    const lightIntensity = this.role === 'corporate_whaler' ? 3.2 : this.role === 'flagship' ? 2.6 : 1.5;
+    const lightDistance = this.role === 'corporate_whaler' ? 30 : this.role === 'flagship' ? 24 : 16;
+
     const lantern = new THREE.Mesh(
-      new THREE.SphereGeometry(this.role === 'flagship' ? 0.28 : 0.22, 8, 8),
+      new THREE.SphereGeometry(lanternRadius, 8, 8),
       lanternMaterial,
     );
     lantern.position.copy(offset);
@@ -721,12 +927,12 @@ export class Ship {
     lanternHaloMaterial.toneMapped = false;
 
     const lanternHalo = new THREE.Mesh(
-      new THREE.SphereGeometry(this.role === 'flagship' ? 1.2 : 0.9, 10, 10),
+      new THREE.SphereGeometry(haloRadius, 10, 10),
       lanternHaloMaterial,
     );
     lanternHalo.position.copy(offset);
 
-    const lanternLight = new THREE.PointLight('#ffb25a', this.role === 'flagship' ? 2.6 : 1.5, this.role === 'flagship' ? 24 : 16, 2);
+    const lanternLight = new THREE.PointLight('#ffb25a', lightIntensity, lightDistance, 2);
     lanternLight.position.copy(offset);
 
     this.lanternMaterials.push(lanternMaterial);
@@ -755,12 +961,42 @@ export class Ship {
 
   private updateDamageLook(): void {
     const damageRatio = 1 - this.healthPercent;
-    const hullBase = this.role === 'flagship' ? new THREE.Color('#5e4330') : new THREE.Color('#4c3828');
-    const hullDamage = this.role === 'flagship' ? new THREE.Color('#23150f') : new THREE.Color('#1e1410');
-    const mastBase = this.role === 'flagship' ? new THREE.Color('#8c674d') : new THREE.Color('#81614a');
-    const mastDamage = this.role === 'flagship' ? new THREE.Color('#403127') : new THREE.Color('#3c2e24');
-    const sailBase = this.role === 'flagship' ? new THREE.Color('#ccb996') : new THREE.Color('#9e8a6a');
-    const sailDamage = this.role === 'flagship' ? new THREE.Color('#6f6351') : new THREE.Color('#56493a');
+    const hullBase =
+      this.role === 'corporate_whaler'
+        ? new THREE.Color('#4a372b')
+        : this.role === 'flagship'
+          ? new THREE.Color('#5e4330')
+          : new THREE.Color('#4c3828');
+    const hullDamage =
+      this.role === 'corporate_whaler'
+        ? new THREE.Color('#1b1411')
+        : this.role === 'flagship'
+          ? new THREE.Color('#23150f')
+          : new THREE.Color('#1e1410');
+    const mastBase =
+      this.role === 'corporate_whaler'
+        ? new THREE.Color('#6f5c4c')
+        : this.role === 'flagship'
+          ? new THREE.Color('#8c674d')
+          : new THREE.Color('#81614a');
+    const mastDamage =
+      this.role === 'corporate_whaler'
+        ? new THREE.Color('#332922')
+        : this.role === 'flagship'
+          ? new THREE.Color('#403127')
+          : new THREE.Color('#3c2e24');
+    const sailBase =
+      this.role === 'corporate_whaler'
+        ? new THREE.Color('#8f816c')
+        : this.role === 'flagship'
+          ? new THREE.Color('#ccb996')
+          : new THREE.Color('#9e8a6a');
+    const sailDamage =
+      this.role === 'corporate_whaler'
+        ? new THREE.Color('#4b4439')
+        : this.role === 'flagship'
+          ? new THREE.Color('#6f6351')
+          : new THREE.Color('#56493a');
 
     for (const material of this.hullTintMaterials) {
       material.color.copy(hullBase).lerp(hullDamage, damageRatio * 0.75);

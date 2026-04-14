@@ -87,6 +87,13 @@ const SHIP_FOAM_CONFIGS: Record<ShipRole, ShipFoamConfig> = {
     spread: 0.32,
     opacity: 0.2,
   },
+  corporate_whaler: {
+    churnScale: new THREE.Vector2(6.2, 9.4),
+    fanWidth: 5.1,
+    fanLength: 18.8,
+    spread: 0.24,
+    opacity: 0.18,
+  },
 };
 
 interface WorldPatchSlot {

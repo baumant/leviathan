@@ -44,7 +44,7 @@ export class ShipAISystem {
       return this.updateRowboat(ship, context, distanceToWhale);
     }
 
-    return this.updateFlagship(ship, context, distanceToWhale);
+    return this.updateCapitalShip(ship, context, distanceToWhale);
   }
 
   private updateRowboat(ship: Ship, context: ShipAIContext, distanceToWhale: number): ShipAIResult {
@@ -101,8 +101,8 @@ export class ShipAISystem {
     return { wantsHarpoonThrow: false, broadsideTelegraphSide: null };
   }
 
-  private updateFlagship(ship: Ship, context: ShipAIContext, distanceToWhale: number): ShipAIResult {
-    ship.aiState = context.rowboatsRemaining <= 0 ? 'flee' : 'engage';
+  private updateCapitalShip(ship: Ship, context: ShipAIContext, distanceToWhale: number): ShipAIResult {
+    ship.aiState = context.rowboatsRemaining <= 0 && ship.capitalFleesWhenRowboatsGone ? 'flee' : 'engage';
 
     if (ship.aiState === 'flee') {
       this.desiredPosition
@@ -130,13 +130,21 @@ export class ShipAISystem {
     whalePosition: THREE.Vector3,
     distanceToWhale: number,
   ): BroadsideSide | null {
-    if (ship.fireCooldown > 0 || ship.isBroadsideTelegraphing || distanceToWhale < 20 || distanceToWhale > 72) {
+    if (
+      ship.fireCooldown > 0 ||
+      ship.isBroadsideTelegraphing ||
+      distanceToWhale < ship.broadsideRangeMin ||
+      distanceToWhale > ship.broadsideRangeMax
+    ) {
       return null;
     }
 
     ship.worldToLocalPoint(whalePosition, this.localWhale);
 
-    if (Math.abs(this.localWhale.z) > 18 || Math.abs(this.localWhale.x) < 8) {
+    if (
+      Math.abs(this.localWhale.z) > ship.broadsideLocalForwardLimit ||
+      Math.abs(this.localWhale.x) < ship.broadsideLocalSideMin
+    ) {
       return null;
     }
 

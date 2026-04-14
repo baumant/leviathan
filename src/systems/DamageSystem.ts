@@ -6,6 +6,7 @@ import { Ship } from '../entities/Ship';
 const MIN_RAM_SPEED_BY_ROLE = {
   rowboat: 9.5,
   flagship: 11.5,
+  corporate_whaler: 13.5,
 } as const;
 
 export interface RamResult {
@@ -35,6 +36,8 @@ export class DamageSystem {
     }
 
     const localWhalePosition = ship.worldToLocalPoint(whale.position, this.tempLocalPoint);
+    const capitalMassScale = ship.role === 'corporate_whaler' ? 0.72 : 1;
+    const capitalRockScale = ship.role === 'corporate_whaler' ? 1.08 : 1;
 
     if (ship.role === 'rowboat') {
       const intersects =
@@ -89,13 +92,13 @@ export class DamageSystem {
     const impactSide = localWhalePosition.x < -0.001 ? -1 : localWhalePosition.x > 0.001 ? 1 : 0;
     const damage = 40;
 
-    ship.applyDamage(damage, 'flagship_breach');
+    ship.applyDamage(damage, 'capital_breach');
     ship.applyBlastRock(
       this.tempToShip,
-      THREE.MathUtils.lerp(1.2, 1.8, lateralAlpha),
-      impactSide * THREE.MathUtils.lerp(0.04, 0.08, lateralAlpha),
-      THREE.MathUtils.lerp(0.18, 0.28, 1 - lateralAlpha * 0.4),
-      THREE.MathUtils.lerp(0.1, 0.16, 1 - lateralAlpha * 0.3),
+      THREE.MathUtils.lerp(1.2, 1.8, lateralAlpha) * capitalMassScale,
+      impactSide * THREE.MathUtils.lerp(0.04, 0.08, lateralAlpha) * capitalMassScale,
+      THREE.MathUtils.lerp(0.18, 0.28, 1 - lateralAlpha * 0.4) * capitalRockScale,
+      THREE.MathUtils.lerp(0.1, 0.16, 1 - lateralAlpha * 0.3) * capitalRockScale,
     );
 
     return {
@@ -140,7 +143,8 @@ export class DamageSystem {
     this.tempToShip.copy(ship.root.position).sub(whale.position).setY(0);
     let intensity = THREE.MathUtils.clamp(damage / 95, 0.16, 0.7);
 
-    if (ship.role === 'flagship') {
+    if (ship.isCapitalShip) {
+      const capitalMassScale = ship.role === 'corporate_whaler' ? 0.72 : 1;
       const lateralContactAlpha = THREE.MathUtils.clamp(
         Math.abs(localWhalePosition.x) / Math.max(ship.halfExtents.x + whale.radius, 0.001),
         0,
@@ -150,7 +154,7 @@ export class DamageSystem {
       const deflectionAlpha = THREE.MathUtils.clamp(lateralContactAlpha * 0.7 + obliqueAlpha * 0.5, 0, 1);
       const impactSide = localWhalePosition.x < -0.001 ? -1 : localWhalePosition.x > 0.001 ? 1 : 0;
 
-      ship.applyDamage(damage, 'flagship_ram');
+      ship.applyDamage(damage, 'capital_ram');
 
       this.tempGlideDirection.copy(this.tempToShip);
       if (this.tempGlideDirection.lengthSq() <= 0.0001) {
@@ -164,7 +168,10 @@ export class DamageSystem {
       }
 
       whale.position.addScaledVector(this.tempGlideDirection, -THREE.MathUtils.lerp(1.6, 2.2, deflectionAlpha));
-      ship.root.position.addScaledVector(this.tempGlideDirection, THREE.MathUtils.lerp(0.8, 1.1, deflectionAlpha));
+      ship.root.position.addScaledVector(
+        this.tempGlideDirection,
+        THREE.MathUtils.lerp(0.8, 1.1, deflectionAlpha) * capitalMassScale,
+      );
       whale.root.updateMatrixWorld();
       ship.root.updateMatrixWorld();
 
@@ -175,8 +182,8 @@ export class DamageSystem {
       );
       ship.applyWaterShove(
         this.tempGlideDirection,
-        THREE.MathUtils.lerp(1.8, 4.2, deflectionAlpha),
-        -impactSide * THREE.MathUtils.lerp(0.01, 0.05, deflectionAlpha),
+        THREE.MathUtils.lerp(1.8, 4.2, deflectionAlpha) * capitalMassScale,
+        -impactSide * THREE.MathUtils.lerp(0.01, 0.05, deflectionAlpha) * capitalMassScale,
       );
 
       if (impactSide !== 0 && deflectionAlpha >= 0.12) {
@@ -237,16 +244,18 @@ export class DamageSystem {
     }
 
     const localImpactPoint = ship.worldToLocalPoint(impactPoint, this.tempLocalPoint);
+    const capitalMassScale = ship.role === 'corporate_whaler' ? 0.72 : 1;
+    const capitalRockScale = ship.role === 'corporate_whaler' ? 1.08 : 1;
     const impactSide = localImpactPoint.x < -0.001 ? 1 : localImpactPoint.x > 0.001 ? -1 : 0;
     const damage = 55;
 
-    ship.applyDamage(damage, 'flagship_breach');
+    ship.applyDamage(damage, 'capital_breach');
     ship.applyBlastRock(
       this.tempToShip,
-      THREE.MathUtils.lerp(1.6, 2.4, falloff),
-      impactSide * THREE.MathUtils.lerp(0.06, 0.12, falloff),
-      THREE.MathUtils.lerp(0.16, 0.24, falloff),
-      THREE.MathUtils.lerp(0.1, 0.18, falloff),
+      THREE.MathUtils.lerp(1.6, 2.4, falloff) * capitalMassScale,
+      impactSide * THREE.MathUtils.lerp(0.06, 0.12, falloff) * capitalMassScale,
+      THREE.MathUtils.lerp(0.16, 0.24, falloff) * capitalRockScale,
+      THREE.MathUtils.lerp(0.1, 0.18, falloff) * capitalRockScale,
     );
 
     return {
