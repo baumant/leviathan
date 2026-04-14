@@ -6,6 +6,15 @@ const SURFACED_START_DEPTH = -0.18;
 const MAX_AIR = 12;
 const WHALE_VISUAL_SCALE = 1.22;
 const WHALE_COLLISION_RADIUS = 3.1;
+const TAIL_VISUAL_WINDUP_TIME = 0.06;
+const TAIL_VISUAL_SWEEP_TIME = 0.16;
+const TAIL_VISUAL_ACTION_DURATION = 0.42;
+const TAIL_VISUAL_RECOVERY = 0.18;
+const TAIL_VISUAL_IMPACT_FLASH = 0.12;
+const TAIL_VISUAL_WINDUP_ANGLE = THREE.MathUtils.degToRad(14);
+const TAIL_VISUAL_SWEEP_ANGLE = THREE.MathUtils.degToRad(34);
+const TAIL_VISUAL_IMPACT_OVEREXTENSION = THREE.MathUtils.degToRad(8);
+const TAIL_VISUAL_FLUKE_ROLL = THREE.MathUtils.degToRad(8);
 
 export type WhaleActionState = 'swim' | 'breach' | 'tail_slap' | 'recovery';
 
@@ -56,7 +65,14 @@ export class PlayerWhale {
   ramYawVelocity = 0;
 
   private readonly fallbackVisualRoot = new THREE.Group();
+  private readonly tailVisualPivot = new THREE.Group();
+  private readonly flukeVisualPivot = new THREE.Group();
   private readonly tetherAttachLocal = new THREE.Vector3(0, 0.16, 1.95);
+  private readonly tailSlapAnchorLocal = new THREE.Vector3(0, -0.02, -5.85);
+  private tailVisualRecoveryTimer = 0;
+  private tailVisualImpactTimer = 0;
+  private tailVisualRecoveryStartYaw = 0;
+  private tailVisualRecoveryStartRoll = 0;
 
   constructor() {
     const whaleMaterial = createCelMaterial({
@@ -89,13 +105,13 @@ export class PlayerWhale {
 
     const tail = new THREE.Mesh(new THREE.CylinderGeometry(0.62, 1.08, 2.8, 8), whaleMaterial);
     tail.rotation.x = Math.PI / 2;
-    tail.position.set(0, 0.12, -4.65);
+    tail.position.set(0, 0.04, -1.07);
 
     const flukeBase = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.18, 0.88), whaleMaterial);
-    flukeBase.position.set(0, 0.02, -6.02);
+    flukeBase.position.set(0, -0.06, -2.44);
 
     const leftFluke = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.2, 0.92), whaleMaterial);
-    leftFluke.position.set(-1.25, 0, -6.18);
+    leftFluke.position.set(-1.25, -0.08, -2.6);
     leftFluke.rotation.z = -0.16;
 
     const rightFluke = leftFluke.clone();
@@ -115,7 +131,11 @@ export class PlayerWhale {
     rightFin.position.x *= -1;
     rightFin.rotation.z *= -1;
 
-    this.fallbackVisualRoot.add(body, head, brow, belly, tail, flukeBase, leftFluke, rightFluke, dorsalFin, leftFin, rightFin);
+    this.tailVisualPivot.position.set(0, 0.08, -3.58);
+    this.flukeVisualPivot.add(flukeBase, leftFluke, rightFluke);
+    this.tailVisualPivot.add(tail, this.flukeVisualPivot);
+
+    this.fallbackVisualRoot.add(body, head, brow, belly, this.tailVisualPivot, dorsalFin, leftFin, rightFin);
     this.visualRoot.add(this.fallbackVisualRoot);
     this.root.add(this.visualRoot);
     this.root.scale.setScalar(WHALE_VISUAL_SCALE);
@@ -161,6 +181,7 @@ export class PlayerWhale {
     this.breachOrigin.set(0, SURFACED_START_DEPTH, 0);
     this.root.position.set(0, SURFACED_START_DEPTH, 0);
     this.root.rotation.set(0, 0, 0, 'YXZ');
+    this.clearTailSlapVisual();
     this.root.updateMatrixWorld();
   }
 
@@ -190,5 +211,77 @@ export class PlayerWhale {
 
   getTetherAttachPoint(target = new THREE.Vector3()): THREE.Vector3 {
     return this.root.localToWorld(target.copy(this.tetherAttachLocal));
+  }
+
+  getTailSlapAnchor(target = new THREE.Vector3()): THREE.Vector3 {
+    return this.root.localToWorld(target.copy(this.tailSlapAnchorLocal));
+  }
+
+  startTailSlapVisual(): void {
+    this.tailVisualRecoveryTimer = 0;
+    this.tailVisualImpactTimer = 0;
+  }
+
+  resolveTailSlapVisual(): void {
+    this.tailVisualImpactTimer = TAIL_VISUAL_IMPACT_FLASH;
+  }
+
+  beginTailSlapVisualRecovery(): void {
+    this.tailVisualRecoveryTimer = TAIL_VISUAL_RECOVERY;
+    this.tailVisualRecoveryStartYaw = this.tailVisualPivot.rotation.y;
+    this.tailVisualRecoveryStartRoll = this.flukeVisualPivot.rotation.z;
+  }
+
+  clearTailSlapVisual(): void {
+    this.tailVisualRecoveryTimer = 0;
+    this.tailVisualImpactTimer = 0;
+    this.tailVisualRecoveryStartYaw = 0;
+    this.tailVisualRecoveryStartRoll = 0;
+    this.tailVisualPivot.rotation.set(0, 0, 0);
+    this.flukeVisualPivot.rotation.set(0, 0, 0);
+  }
+
+  updateVisual(deltaSeconds: number): void {
+    if (this.tailVisualImpactTimer > 0) {
+      this.tailVisualImpactTimer = Math.max(0, this.tailVisualImpactTimer - deltaSeconds);
+    }
+
+    let tailYaw = 0;
+    let flukeRoll = 0;
+
+    if (this.actionState === 'tail_slap') {
+      if (this.tailSlapTime < TAIL_VISUAL_WINDUP_TIME) {
+        const alpha = THREE.MathUtils.clamp(this.tailSlapTime / TAIL_VISUAL_WINDUP_TIME, 0, 1);
+        tailYaw = THREE.MathUtils.lerp(0, -TAIL_VISUAL_WINDUP_ANGLE, alpha);
+      } else if (this.tailSlapTime < TAIL_VISUAL_SWEEP_TIME) {
+        const alpha = THREE.MathUtils.clamp(
+          (this.tailSlapTime - TAIL_VISUAL_WINDUP_TIME) / (TAIL_VISUAL_SWEEP_TIME - TAIL_VISUAL_WINDUP_TIME),
+          0,
+          1,
+        );
+        tailYaw = THREE.MathUtils.lerp(-TAIL_VISUAL_WINDUP_ANGLE, TAIL_VISUAL_SWEEP_ANGLE, alpha);
+        flukeRoll = THREE.MathUtils.lerp(0, TAIL_VISUAL_FLUKE_ROLL * 0.35, alpha);
+      } else {
+        const alpha = THREE.MathUtils.clamp(
+          (this.tailSlapTime - TAIL_VISUAL_SWEEP_TIME) / (TAIL_VISUAL_ACTION_DURATION - TAIL_VISUAL_SWEEP_TIME),
+          0,
+          1,
+        );
+        tailYaw = THREE.MathUtils.lerp(TAIL_VISUAL_SWEEP_ANGLE, TAIL_VISUAL_SWEEP_ANGLE * 0.18, alpha);
+        flukeRoll = THREE.MathUtils.lerp(TAIL_VISUAL_FLUKE_ROLL * 0.35, 0, alpha);
+      }
+    } else if (this.tailVisualRecoveryTimer > 0) {
+      this.tailVisualRecoveryTimer = Math.max(0, this.tailVisualRecoveryTimer - deltaSeconds);
+      const alpha = this.tailVisualRecoveryTimer / TAIL_VISUAL_RECOVERY;
+      tailYaw = this.tailVisualRecoveryStartYaw * alpha;
+      flukeRoll = this.tailVisualRecoveryStartRoll * alpha;
+    }
+
+    const impactAlpha = this.tailVisualImpactTimer > 0 ? this.tailVisualImpactTimer / TAIL_VISUAL_IMPACT_FLASH : 0;
+    tailYaw += impactAlpha * TAIL_VISUAL_IMPACT_OVEREXTENSION;
+    flukeRoll += impactAlpha * TAIL_VISUAL_FLUKE_ROLL;
+
+    this.tailVisualPivot.rotation.set(0, tailYaw, 0);
+    this.flukeVisualPivot.rotation.set(0, 0, flukeRoll);
   }
 }

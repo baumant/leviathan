@@ -267,7 +267,7 @@ export class DamageSystem {
   resolveTailSlap(
     ship: Ship,
     origin: THREE.Vector3,
-    preFacing: THREE.Vector3,
+    direction: THREE.Vector3,
     innerRadius: number,
     outerRadius: number,
     halfAngle: number,
@@ -284,7 +284,7 @@ export class DamageSystem {
     }
 
     this.tempToShip.normalize();
-    this.tempRearForward.copy(preFacing).setY(0).normalize().multiplyScalar(-1);
+    this.tempRearForward.copy(direction).setY(0).normalize();
 
     if (this.tempRearForward.dot(this.tempToShip) < Math.cos(halfAngle)) {
       return null;

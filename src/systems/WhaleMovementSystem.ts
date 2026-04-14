@@ -39,10 +39,12 @@ const TAIL_SLAP_DURATION = 0.42;
 const TAIL_SLAP_TURN_DURATION = 0.16;
 const TAIL_SLAP_RECOVERY = 0.18;
 const TAIL_SLAP_COOLDOWN = 2.2;
-const TAIL_SLAP_DEPTH_LIMIT = -2.5;
-const TAIL_SLAP_INNER_RADIUS = 9;
-const TAIL_SLAP_OUTER_RADIUS = 16;
-const TAIL_SLAP_HALF_ANGLE = THREE.MathUtils.degToRad(65);
+const TAIL_SLAP_DEPTH_LIMIT = -3.5;
+const TAIL_SLAP_INNER_RADIUS = 10;
+const TAIL_SLAP_OUTER_RADIUS = 18;
+const TAIL_SLAP_HALF_ANGLE = THREE.MathUtils.degToRad(78);
+const TAIL_SLAP_TRAVEL_SPEED = 8.6;
+const TAIL_SLAP_SURFACE_TARGET_DEPTH = -0.18;
 const RAM_RESPONSE_DAMPING = 4.8;
 
 export interface WhaleBreachImpactEvent {
@@ -53,7 +55,7 @@ export interface WhaleBreachImpactEvent {
 
 export interface WhaleTailSlapEvent {
   origin: THREE.Vector3;
-  forward: THREE.Vector3;
+  direction: THREE.Vector3;
   innerRadius: number;
   outerRadius: number;
   halfAngle: number;
@@ -70,6 +72,7 @@ export interface WhaleMovementResult {
 
 export class WhaleMovementSystem {
   private readonly forward = new THREE.Vector3();
+  private readonly tailSlapOrigin = new THREE.Vector3();
 
   update(
     whale: PlayerWhale,
@@ -301,23 +304,17 @@ export class WhaleMovementSystem {
     const easedTurn = turnAlpha * turnAlpha * (3 - 2 * turnAlpha);
 
     whale.yaw = whale.tailSlapStartYaw + Math.PI * easedTurn;
-    whale.depth = THREE.MathUtils.damp(whale.depth, Math.max(whale.depth, -0.35), 5.6, deltaSeconds);
+    whale.depth = THREE.MathUtils.damp(
+      whale.depth,
+      Math.max(whale.depth, TAIL_SLAP_SURFACE_TARGET_DEPTH),
+      5.6,
+      deltaSeconds,
+    );
     whale.verticalSpeed = THREE.MathUtils.damp(whale.verticalSpeed, 0, 6.2, deltaSeconds);
     whale.pitch = THREE.MathUtils.damp(whale.pitch, -0.08, 5.4, deltaSeconds);
-    whale.roll = THREE.MathUtils.damp(whale.roll, Math.sin(turnAlpha * Math.PI) * 0.34, 6.2, deltaSeconds);
+    whale.roll = THREE.MathUtils.damp(whale.roll, Math.sin(turnAlpha * Math.PI) * 0.4, 6.2, deltaSeconds);
+    whale.speed = THREE.MathUtils.damp(whale.speed, TAIL_SLAP_TRAVEL_SPEED, 6.8, deltaSeconds);
     whale.root.rotation.set(whale.pitch, whale.yaw, whale.roll, 'YXZ');
-
-    if (!whale.tailSlapResolved && previousTime < TAIL_SLAP_TURN_DURATION && whale.tailSlapTime >= TAIL_SLAP_TURN_DURATION) {
-      whale.tailSlapResolved = true;
-      whale.strokeVisual = Math.max(whale.strokeVisual, 0.9);
-      result.tailSlap = {
-        origin: whale.position.clone(),
-        forward: new THREE.Vector3(Math.sin(whale.tailSlapStartYaw), 0, Math.cos(whale.tailSlapStartYaw)),
-        innerRadius: TAIL_SLAP_INNER_RADIUS,
-        outerRadius: TAIL_SLAP_OUTER_RADIUS,
-        halfAngle: TAIL_SLAP_HALF_ANGLE,
-      };
-    }
 
     whale.getForward(this.forward);
     whale.position.addScaledVector(this.forward, whale.speed * deltaSeconds);
@@ -327,10 +324,22 @@ export class WhaleMovementSystem {
     whale.submerged = whale.depth < -0.45;
     whale.root.updateMatrixWorld();
 
+    if (!whale.tailSlapResolved && previousTime < TAIL_SLAP_TURN_DURATION && whale.tailSlapTime >= TAIL_SLAP_TURN_DURATION) {
+      whale.tailSlapResolved = true;
+      whale.strokeVisual = Math.max(whale.strokeVisual, 0.9);
+      result.tailSlap = {
+        origin: whale.getTailSlapAnchor(this.tailSlapOrigin).clone(),
+        direction: whale.getForward(new THREE.Vector3()).setY(0).normalize(),
+        innerRadius: TAIL_SLAP_INNER_RADIUS,
+        outerRadius: TAIL_SLAP_OUTER_RADIUS,
+        halfAngle: TAIL_SLAP_HALF_ANGLE,
+      };
+    }
+
     if (whale.tailSlapTime >= TAIL_SLAP_DURATION) {
       whale.actionState = 'recovery';
       whale.recoveryTimer = TAIL_SLAP_RECOVERY;
-      whale.speed = Math.max(whale.speed * 0.7, 9);
+      whale.speed = Math.max(whale.speed * 0.92, 7.2);
       whale.tailSlapTime = 0;
     }
 

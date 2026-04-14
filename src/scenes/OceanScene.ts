@@ -15,6 +15,7 @@ import {
 } from '../fx/createPainterlyOceanMaterial';
 import { createPainterlySkyMaterial } from '../fx/createPainterlySkyMaterial';
 import { ShipWakeFX } from '../fx/ShipWakeFX';
+import { TailSlapShockwaveFX } from '../fx/TailSlapShockwaveFX';
 import { TopsideSubsurfaceRevealFX, TopsideSubsurfaceRevealTarget } from '../fx/TopsideSubsurfaceRevealFX';
 import { createOceanUndersideMaterial, UnderwaterReadabilityFX } from '../fx/UnderwaterReadabilityFX';
 import { Input } from '../game/Input';
@@ -60,6 +61,9 @@ const CORPORATE_ARRIVAL_TIME = 75;
 const CORPORATE_PROXIMITY_TRIGGER = 90;
 const CORPORATE_SHIP_ID = 'corporate-whaler';
 const CORPORATE_ROWBOAT_ID_PREFIX = 'corporate-rowboat';
+const TAIL_SLAP_CAMERA_BLEND_IN = 0.08;
+const TAIL_SLAP_CAMERA_POST_HOLD = 0.18;
+const TAIL_SLAP_CAMERA_BLEND_OUT = 0.22;
 
 interface OceanSwellLayer {
   direction: THREE.Vector2;
@@ -156,11 +160,16 @@ export class OceanScene {
   private readonly whaleRight = new THREE.Vector3();
   private readonly breachCameraForward = new THREE.Vector3();
   private readonly breachCameraRight = new THREE.Vector3();
+  private readonly tailSlapCameraForward = new THREE.Vector3();
+  private readonly tailSlapCameraRight = new THREE.Vector3();
+  private readonly cameraBasisForward = new THREE.Vector3();
+  private readonly cameraBasisRight = new THREE.Vector3();
   private readonly moonDirection = new THREE.Vector3(0.3, -0.94, 0.14);
   private readonly worldUp = new THREE.Vector3(0, 1, 0);
   private readonly cameraOffset = new THREE.Vector3();
   private readonly atmosphereColor = SURFACE_FOG.clone();
   private readonly breachSplashFx: BreachSplashFX;
+  private readonly tailSlapShockwaveFx: TailSlapShockwaveFX;
   private readonly shipWakeFx: ShipWakeFX;
   private readonly topsideSubsurfaceRevealFx: TopsideSubsurfaceRevealFX;
   private readonly readabilityFx: UnderwaterReadabilityFX;
@@ -183,6 +192,7 @@ export class OceanScene {
   private readonly tempCannonVelocity = new THREE.Vector3();
   private readonly tempShipForward = new THREE.Vector3();
   private readonly tempImpactPoint = new THREE.Vector3();
+  private readonly tempTailSlapAnchor = new THREE.Vector3();
   private readonly tempBoundaryVector = new THREE.Vector3();
   private readonly tempRevealPoint = new THREE.Vector3();
   private readonly tempSpawnDirection = new THREE.Vector3();
@@ -201,6 +211,12 @@ export class OceanScene {
   private breachCameraBlend = 0;
   private breachCameraTransitionActive = false;
   private breachCameraHeading = 0;
+  private tailSlapCameraHeading = 0;
+  private tailSlapCameraHoldTimer = 0;
+  private tailSlapCameraBlend = 0;
+  private tailSlapCameraActive = false;
+  private tailSlapCameraWasActive = false;
+  private tailSlapPresentationActive = false;
   private phase: ArenaPhase = 'playing';
   private score = 0;
   private activeTethers = 0;
@@ -225,6 +241,7 @@ export class OceanScene {
     this.baseWaveCoordinates = this.captureWaveCoordinates();
     this.oceanUndersideMesh = this.createOceanUnderside();
     this.breachSplashFx = new BreachSplashFX(this.scene);
+    this.tailSlapShockwaveFx = new TailSlapShockwaveFX(this.scene);
     this.shipWakeFx = new ShipWakeFX(this.scene, this.ships);
     this.topsideSubsurfaceRevealFx = new TopsideSubsurfaceRevealFX(this.scene);
     this.readabilityFx = new UnderwaterReadabilityFX(this.scene, this.camera);
@@ -269,6 +286,12 @@ export class OceanScene {
     this.breachCameraBlend = 0;
     this.breachCameraTransitionActive = false;
     this.breachCameraHeading = 0;
+    this.tailSlapCameraHeading = 0;
+    this.tailSlapCameraHoldTimer = 0;
+    this.tailSlapCameraBlend = 0;
+    this.tailSlapCameraActive = false;
+    this.tailSlapCameraWasActive = false;
+    this.tailSlapPresentationActive = false;
     this.activeTethers = 0;
     this.corporateArrivalState = 'pending';
     this.corporateRowboatsLaunched = false;
@@ -290,8 +313,10 @@ export class OceanScene {
     this.clearHarpoons();
     this.clearCannonballs();
     this.breachSplashFx.reset();
+    this.tailSlapShockwaveFx.reset();
     this.shipWakeFx.reset();
     this.topsideSubsurfaceRevealFx.reset();
+    this.whale.clearTailSlapVisual();
     this.syncTetherDragState();
   }
 
@@ -315,6 +340,8 @@ export class OceanScene {
       this.syncTetherDragState();
       this.syncShipTetherPulls();
     }
+
+    this.updateTailSlapPresentation(deltaSeconds);
 
     if (this.phase === 'playing') {
       this.maybeSpawnCorporateWhalerByTimer();
@@ -342,6 +369,7 @@ export class OceanScene {
     this.updateArenaFogBanks(underwaterRatio);
     this.updateOceanMaterial(underwaterRatio);
     this.breachSplashFx.update(deltaSeconds, this.sampleOceanHeight);
+    this.tailSlapShockwaveFx.update(deltaSeconds, underwaterRatio, this.sampleOceanHeight);
     this.shipWakeFx.update({
       deltaSeconds,
       underwaterRatio,
@@ -377,6 +405,7 @@ export class OceanScene {
 
   dispose(): void {
     this.breachSplashFx.dispose();
+    this.tailSlapShockwaveFx.dispose();
     this.shipWakeFx.dispose();
     this.topsideSubsurfaceRevealFx.dispose();
     this.readabilityFx.dispose();
@@ -820,6 +849,7 @@ export class OceanScene {
 
   private resolveWhaleActionResult(result: WhaleMovementResult): void {
     if (result.breachStarted) {
+      this.clearTailSlapPresentation();
       this.breachCameraTransitionActive = true;
       this.breachCameraHeading = Math.atan2(this.whaleForward.x, this.whaleForward.z);
       this.impactShake = Math.max(this.impactShake, 0.12);
@@ -869,11 +899,21 @@ export class OceanScene {
     }
 
     if (result.tailSlap) {
+      this.whale.resolveTailSlapVisual();
+      this.tailSlapShockwaveFx.spawnImpact(
+        result.tailSlap.origin,
+        result.tailSlap.direction,
+        result.tailSlap.innerRadius,
+        result.tailSlap.outerRadius,
+        result.tailSlap.halfAngle,
+      );
+      this.impactShake = Math.max(this.impactShake, 0.14);
+
       for (const ship of this.ships) {
         const hitResult = this.damageSystem.resolveTailSlap(
           ship,
           result.tailSlap.origin,
-          result.tailSlap.forward,
+          result.tailSlap.direction,
           result.tailSlap.innerRadius,
           result.tailSlap.outerRadius,
           result.tailSlap.halfAngle,
@@ -895,6 +935,43 @@ export class OceanScene {
       this.capitalBreachedThisArc.clear();
       this.breachLaunchShipIds.clear();
     }
+  }
+
+  private updateTailSlapPresentation(deltaSeconds: number): void {
+    if (this.whale.actionState === 'breach') {
+      this.clearTailSlapPresentation();
+      this.whale.updateVisual(deltaSeconds);
+      return;
+    }
+
+    const tailSlapActive = this.whale.actionState === 'tail_slap';
+
+    if (tailSlapActive) {
+      this.whale.getTailSlapAnchor(this.tempTailSlapAnchor);
+
+      if (!this.tailSlapPresentationActive) {
+        this.tailSlapPresentationActive = true;
+        this.whale.startTailSlapVisual();
+        this.tailSlapShockwaveFx.startTelegraph(this.tempTailSlapAnchor, this.whaleForward);
+      } else {
+        this.tailSlapShockwaveFx.updateTelegraph(this.tempTailSlapAnchor, this.whaleForward);
+      }
+    } else if (this.tailSlapPresentationActive) {
+      this.tailSlapPresentationActive = false;
+      this.tailSlapShockwaveFx.clearTelegraph();
+      this.whale.beginTailSlapVisualRecovery();
+    }
+
+    this.whale.updateVisual(deltaSeconds);
+  }
+
+  private clearTailSlapPresentation(): void {
+    if (this.tailSlapPresentationActive) {
+      this.tailSlapPresentationActive = false;
+      this.tailSlapShockwaveFx.clearTelegraph();
+    }
+
+    this.whale.clearTailSlapVisual();
   }
 
   private getBreachSplashIntensity(): number {
@@ -1272,6 +1349,7 @@ export class OceanScene {
       this.whale.actionState === 'breach'
         ? Math.sin(THREE.MathUtils.clamp(this.whale.breachTime / 1.45, 0, 1) * Math.PI)
         : 0;
+    const tailSlapActive = this.whale.actionState === 'tail_slap';
 
     if (this.whale.actionState === 'breach') {
       this.breachCameraTransitionActive = true;
@@ -1285,9 +1363,41 @@ export class OceanScene {
       }
     }
 
+    if (this.whale.actionState === 'breach') {
+      this.tailSlapCameraHoldTimer = 0;
+      this.tailSlapCameraBlend = 0;
+      this.tailSlapCameraActive = false;
+    } else {
+      if (tailSlapActive && !this.tailSlapCameraWasActive) {
+        this.captureTailSlapCameraHeading();
+        this.tailSlapCameraActive = true;
+        this.tailSlapCameraHoldTimer = TAIL_SLAP_CAMERA_POST_HOLD;
+      }
+
+      if (this.tailSlapCameraActive) {
+        if (tailSlapActive) {
+          this.tailSlapCameraHoldTimer = TAIL_SLAP_CAMERA_POST_HOLD;
+          this.tailSlapCameraBlend = Math.min(1, this.tailSlapCameraBlend + deltaSeconds / TAIL_SLAP_CAMERA_BLEND_IN);
+        } else if (this.tailSlapCameraHoldTimer > 0) {
+          this.tailSlapCameraHoldTimer = Math.max(0, this.tailSlapCameraHoldTimer - deltaSeconds);
+          this.tailSlapCameraBlend = 1;
+        } else {
+          this.tailSlapCameraBlend = Math.max(0, this.tailSlapCameraBlend - deltaSeconds / TAIL_SLAP_CAMERA_BLEND_OUT);
+
+          if (this.tailSlapCameraBlend <= 0.0001) {
+            this.tailSlapCameraBlend = 0;
+            this.tailSlapCameraActive = false;
+          }
+        }
+      }
+    }
+
+    this.tailSlapCameraWasActive = tailSlapActive;
+
     const breachViewAlpha = this.breachCameraBlend;
+    const tailSlapViewAlpha = this.tailSlapCameraActive ? this.tailSlapCameraBlend : 0;
     const tailSlapAlpha =
-      this.whale.actionState === 'tail_slap'
+      tailSlapActive
         ? 1 - THREE.MathUtils.clamp(this.whale.tailSlapTime / 0.42, 0, 1)
         : 0;
     const strokeHeave = this.whale.strokeVisual * (1 - underwaterRatio * 0.3);
@@ -1303,10 +1413,15 @@ export class OceanScene {
 
     this.shoulderOffset = THREE.MathUtils.damp(this.shoulderOffset, shoulderTarget, 3.2, deltaSeconds);
 
+    this.tailSlapCameraForward.set(0, 0, 1).applyAxisAngle(this.worldUp, this.tailSlapCameraHeading).normalize();
+    this.tailSlapCameraRight.crossVectors(this.worldUp, this.tailSlapCameraForward).normalize();
+    this.cameraBasisForward.copy(this.whaleForward).lerp(this.tailSlapCameraForward, tailSlapViewAlpha).normalize();
+    this.cameraBasisRight.copy(this.whaleRight).lerp(this.tailSlapCameraRight, tailSlapViewAlpha).normalize();
+
     this.cameraTarget
       .copy(this.whale.position)
-      .addScaledVector(this.whaleForward, -cameraDistance)
-      .addScaledVector(this.whaleRight, this.shoulderOffset);
+      .addScaledVector(this.cameraBasisForward, -cameraDistance)
+      .addScaledVector(this.cameraBasisRight, this.shoulderOffset);
 
     this.cameraOffset.set(0, cameraHeight, 0);
     this.cameraTarget.add(this.cameraOffset);
@@ -1367,8 +1482,8 @@ export class OceanScene {
 
     this.lookTarget
       .copy(this.whale.position)
-      .addScaledVector(this.whaleForward, lookDistance)
-      .addScaledVector(this.whaleRight, this.shoulderOffset * 0.18);
+      .addScaledVector(this.cameraBasisForward, lookDistance)
+      .addScaledVector(this.cameraBasisRight, this.shoulderOffset * 0.18);
     this.lookTarget.y += THREE.MathUtils.lerp(0.8, 0.15, underwaterRatio) + strokeHeave * 0.16;
 
     if (breachViewAlpha > 0) {
@@ -1411,6 +1526,17 @@ export class OceanScene {
       (this.whale.boostActive ? 4.8 : 0);
     this.camera.fov = THREE.MathUtils.damp(this.camera.fov, targetFov, 4.4, deltaSeconds);
     this.camera.updateProjectionMatrix();
+  }
+
+  private captureTailSlapCameraHeading(): void {
+    this.cameraBasisForward.copy(this.lookTargetCurrent).sub(this.camera.position).setY(0);
+
+    if (this.cameraBasisForward.lengthSq() <= 0.0001) {
+      this.cameraBasisForward.copy(this.whaleForward).setY(0);
+    }
+
+    this.cameraBasisForward.normalize();
+    this.tailSlapCameraHeading = Math.atan2(this.cameraBasisForward.x, this.cameraBasisForward.z);
   }
 
   private updateAtmosphere(deltaSeconds: number, underwaterRatio: number): void {
