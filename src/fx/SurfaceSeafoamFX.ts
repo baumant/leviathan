@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 
+import { createSpermWhaleSilhouetteGeometry } from '../entities/createSpermWhaleVisual';
 import { PlayerWhale } from '../entities/PlayerWhale';
 import { Ship, ShipRole } from '../entities/Ship';
 
@@ -171,7 +172,7 @@ export class SurfaceSeafoamFX {
   private readonly worldPatchGeometry = this.createFoamPatchGeometry();
   private readonly wakeFanGeometry = this.createWakeFanGeometry();
   private readonly shipSilhouetteGeometry = this.createShipSilhouetteGeometry();
-  private readonly whaleSilhouetteGeometry = this.createWhaleSilhouetteGeometry();
+  private readonly whaleSilhouetteGeometry = createSpermWhaleSilhouetteGeometry();
   private readonly shipFoamSlots = new Map<string, ShipFoamSlot>();
   private readonly worldPatchSlots: WorldPatchSlot[] = [];
   private readonly breachBursts: BreachBurstSlot[] = [];
@@ -869,39 +870,6 @@ export class SurfaceSeafoamFX {
     shape.absarc(0, -halfLength, radius, Math.PI, Math.PI * 2, false);
 
     const geometry = new THREE.ShapeGeometry(shape, 24);
-    geometry.rotateX(-Math.PI / 2);
-    return geometry;
-  }
-
-  private createWhaleSilhouetteGeometry(): THREE.ShapeGeometry {
-    const shape = new THREE.Shape();
-
-    shape.moveTo(0.24, -1.68);
-    shape.bezierCurveTo(0.62, -1.62, 0.94, -1.28, 1.02, -0.74);
-    shape.bezierCurveTo(1.12, -0.2, 1.08, 0.54, 0.84, 1.04);
-    shape.bezierCurveTo(0.72, 1.36, 0.54, 1.7, 0.36, 1.96);
-    shape.lineTo(0.24, 2.78);
-    shape.lineTo(0.62, 3.32);
-    shape.lineTo(0.42, 3.54);
-    shape.lineTo(0.08, 3.08);
-    shape.lineTo(0.02, 3.86);
-    shape.lineTo(-0.02, 3.86);
-    shape.lineTo(-0.08, 3.08);
-    shape.lineTo(-0.42, 3.54);
-    shape.lineTo(-0.62, 3.32);
-    shape.lineTo(-0.24, 2.78);
-    shape.lineTo(-0.36, 1.96);
-    shape.bezierCurveTo(-0.54, 1.7, -0.72, 1.36, -0.84, 1.04);
-    shape.bezierCurveTo(-1.08, 0.54, -1.12, -0.2, -1.02, -0.74);
-    shape.bezierCurveTo(-0.94, -1.28, -0.62, -1.62, -0.24, -1.68);
-    shape.bezierCurveTo(-0.8, -1.28, -1.06, -0.8, -1.04, -0.14);
-    shape.bezierCurveTo(-1.02, 0.46, -0.66, 0.94, -0.24, 1.16);
-    shape.bezierCurveTo(-0.08, 1.54, -0.02, 1.94, 0.0, 2.36);
-    shape.bezierCurveTo(0.02, 1.94, 0.08, 1.54, 0.24, 1.16);
-    shape.bezierCurveTo(0.66, 0.94, 1.02, 0.46, 1.04, -0.14);
-    shape.bezierCurveTo(1.06, -0.8, 0.8, -1.28, 0.24, -1.68);
-
-    const geometry = new THREE.ShapeGeometry(shape, 32);
     geometry.rotateX(-Math.PI / 2);
     return geometry;
   }

@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 
-import { createCelMaterial } from '../fx/createCelMaterial';
+import { createWhaleHeroRig } from './WhaleHeroAsset';
+import { createSpermWhaleVisual } from './createSpermWhaleVisual';
 
 const SURFACED_START_DEPTH = -0.18;
 const MAX_AIR = 12;
@@ -25,8 +26,8 @@ export class PlayerWhale {
   readonly maxAir = MAX_AIR;
   readonly radius = WHALE_COLLISION_RADIUS;
   readonly visualRoot = new THREE.Group();
-  readonly surfaceSilhouetteScale = new THREE.Vector2(5.6, 15.4);
-  readonly subsurfaceRevealHalfExtents = new THREE.Vector2(3.3, 8.1);
+  readonly surfaceSilhouetteScale = new THREE.Vector2(6.4, 17.8);
+  readonly subsurfaceRevealHalfExtents = new THREE.Vector2(3.9, 9.4);
   readonly breachDirection = new THREE.Vector3();
   readonly breachOrigin = new THREE.Vector3();
   readonly ramDriftVelocity = new THREE.Vector3();
@@ -64,83 +65,46 @@ export class PlayerWhale {
   breachPrimed = false;
   ramYawVelocity = 0;
 
-  private readonly fallbackVisualRoot = new THREE.Group();
-  private readonly tailVisualPivot = new THREE.Group();
-  private readonly flukeVisualPivot = new THREE.Group();
-  private readonly tetherAttachLocal = new THREE.Vector3(0, 0.16, 1.95);
-  private readonly tailSlapAnchorLocal = new THREE.Vector3(0, -0.02, -5.85);
+  private readonly fallbackVisualRoot: THREE.Group;
+  private tailVisualPivot: THREE.Object3D;
+  private flukeVisualPivot: THREE.Object3D;
+  private leftFinPivot: THREE.Object3D | null = null;
+  private rightFinPivot: THREE.Object3D | null = null;
+  private tetherAttachNode: THREE.Object3D | null = null;
+  private tailSlapAnchorNode: THREE.Object3D | null = null;
+  private readonly tetherAttachLocal = new THREE.Vector3(0, 0.28, 2.34);
+  private readonly tailSlapAnchorLocal = new THREE.Vector3(0, 0.02, -7.26);
   private tailVisualRecoveryTimer = 0;
   private tailVisualImpactTimer = 0;
   private tailVisualRecoveryStartYaw = 0;
   private tailVisualRecoveryStartRoll = 0;
 
   constructor() {
-    const whaleMaterial = createCelMaterial({
-      color: '#edf3ff',
-      emissive: '#587093',
-      emissiveIntensity: 0.12,
+    const fallbackRig = createSpermWhaleVisual({
+      palette: {
+        bodyColor: '#edf3ff',
+        bodyEmissive: '#587093',
+        bodyEmissiveIntensity: 0.12,
+        bellyColor: '#d8e2f1',
+        bellyEmissive: '#4d627f',
+        bellyEmissiveIntensity: 0.08,
+      },
+      lengthScale: 1.04,
+      girthScale: 1.06,
+      finScale: 1,
     });
 
-    const bellyMaterial = createCelMaterial({
-      color: '#d8e2f1',
-      emissive: '#4d627f',
-      emissiveIntensity: 0.08,
-    });
+    this.fallbackVisualRoot = fallbackRig.root;
+    this.tailVisualPivot = fallbackRig.tailPivot;
+    this.flukeVisualPivot = fallbackRig.flukePivot;
 
-    const body = new THREE.Mesh(new THREE.CapsuleGeometry(1.9, 5.4, 6, 12), whaleMaterial);
-    body.rotation.x = Math.PI / 2;
-    body.scale.set(1.22, 0.84, 1.46);
-
-    const head = new THREE.Mesh(new THREE.SphereGeometry(1.65, 12, 10), whaleMaterial);
-    head.scale.set(1.12, 0.92, 1.26);
-    head.position.set(0, -0.04, 4.1);
-
-    const brow = new THREE.Mesh(new THREE.SphereGeometry(1.26, 10, 8), whaleMaterial);
-    brow.scale.set(1.18, 0.7, 1.06);
-    brow.position.set(0, 0.32, 3.25);
-
-    const belly = new THREE.Mesh(new THREE.SphereGeometry(1.8, 12, 10), bellyMaterial);
-    belly.scale.set(0.92, 0.46, 1.9);
-    belly.position.set(0, -0.96, 1.4);
-
-    const tail = new THREE.Mesh(new THREE.CylinderGeometry(0.62, 1.08, 2.8, 8), whaleMaterial);
-    tail.rotation.x = Math.PI / 2;
-    tail.position.set(0, 0.04, -1.07);
-
-    const flukeBase = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.18, 0.88), whaleMaterial);
-    flukeBase.position.set(0, -0.06, -2.44);
-
-    const leftFluke = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.2, 0.92), whaleMaterial);
-    leftFluke.position.set(-1.25, -0.08, -2.6);
-    leftFluke.rotation.z = -0.16;
-
-    const rightFluke = leftFluke.clone();
-    rightFluke.position.x *= -1;
-    rightFluke.rotation.z *= -1;
-
-    const dorsalFin = new THREE.Mesh(new THREE.ConeGeometry(0.44, 1.26, 5), whaleMaterial);
-    dorsalFin.position.set(0, 1.05, -0.55);
-    dorsalFin.rotation.x = Math.PI / 2;
-
-    const leftFin = new THREE.Mesh(new THREE.BoxGeometry(1.84, 0.22, 1.02), whaleMaterial);
-    leftFin.position.set(-1.55, -0.35, 0.9);
-    leftFin.rotation.z = Math.PI / 8;
-    leftFin.rotation.x = -Math.PI / 4;
-
-    const rightFin = leftFin.clone();
-    rightFin.position.x *= -1;
-    rightFin.rotation.z *= -1;
-
-    this.tailVisualPivot.position.set(0, 0.08, -3.58);
-    this.flukeVisualPivot.add(flukeBase, leftFluke, rightFluke);
-    this.tailVisualPivot.add(tail, this.flukeVisualPivot);
-
-    this.fallbackVisualRoot.add(body, head, brow, belly, this.tailVisualPivot, dorsalFin, leftFin, rightFin);
     this.visualRoot.add(this.fallbackVisualRoot);
     this.root.add(this.visualRoot);
     this.root.scale.setScalar(WHALE_VISUAL_SCALE);
     this.root.position.set(0, SURFACED_START_DEPTH, 0);
     this.root.rotation.order = 'YXZ';
+
+    void this.loadHeroVisual();
   }
 
   reset(): void {
@@ -210,10 +174,18 @@ export class PlayerWhale {
   }
 
   getTetherAttachPoint(target = new THREE.Vector3()): THREE.Vector3 {
+    if (this.tetherAttachNode) {
+      return this.tetherAttachNode.getWorldPosition(target);
+    }
+
     return this.root.localToWorld(target.copy(this.tetherAttachLocal));
   }
 
   getTailSlapAnchor(target = new THREE.Vector3()): THREE.Vector3 {
+    if (this.tailSlapAnchorNode) {
+      return this.tailSlapAnchorNode.getWorldPosition(target);
+    }
+
     return this.root.localToWorld(target.copy(this.tailSlapAnchorLocal));
   }
 
@@ -239,6 +211,11 @@ export class PlayerWhale {
     this.tailVisualRecoveryStartRoll = 0;
     this.tailVisualPivot.rotation.set(0, 0, 0);
     this.flukeVisualPivot.rotation.set(0, 0, 0);
+
+    if (this.leftFinPivot && this.rightFinPivot) {
+      this.leftFinPivot.rotation.set(-0.28, 0.08, 0.42);
+      this.rightFinPivot.rotation.set(-0.28, -0.08, -0.42);
+    }
   }
 
   updateVisual(deltaSeconds: number): void {
@@ -283,5 +260,48 @@ export class PlayerWhale {
 
     this.tailVisualPivot.rotation.set(0, tailYaw, 0);
     this.flukeVisualPivot.rotation.set(0, 0, flukeRoll);
+
+    if (this.leftFinPivot && this.rightFinPivot) {
+      const strokeAlpha = THREE.MathUtils.clamp(this.strokeVisual, 0, 1);
+      const finPitch =
+        this.actionState === 'tail_slap'
+          ? THREE.MathUtils.lerp(-0.32, -0.56, Math.min(this.tailSlapTime / TAIL_VISUAL_SWEEP_TIME, 1))
+          : -0.28 - strokeAlpha * 0.12;
+      const finRoll =
+        this.actionState === 'tail_slap'
+          ? 0.34 - strokeAlpha * 0.04
+          : 0.42 - strokeAlpha * 0.08;
+
+      this.leftFinPivot.rotation.set(finPitch, 0.08, finRoll);
+      this.rightFinPivot.rotation.set(finPitch, -0.08, -finRoll);
+    }
+  }
+
+  private async loadHeroVisual(): Promise<void> {
+    try {
+      const tailRotation = this.tailVisualPivot.rotation.clone();
+      const flukeRotation = this.flukeVisualPivot.rotation.clone();
+      const heroRig = await createWhaleHeroRig('player');
+
+      this.visualRoot.add(heroRig.root);
+      this.fallbackVisualRoot.visible = false;
+
+      this.tailVisualPivot = heroRig.tailPivot;
+      this.flukeVisualPivot = heroRig.flukePivot;
+      this.leftFinPivot = heroRig.leftFinPivot;
+      this.rightFinPivot = heroRig.rightFinPivot;
+      this.tetherAttachNode = heroRig.tetherAttach;
+      this.tailSlapAnchorNode = heroRig.tailSlapAnchor;
+
+      this.tailVisualPivot.rotation.copy(tailRotation);
+      this.flukeVisualPivot.rotation.copy(flukeRotation);
+
+      if (this.leftFinPivot && this.rightFinPivot) {
+        this.leftFinPivot.rotation.set(-0.28, 0.08, 0.42);
+        this.rightFinPivot.rotation.set(-0.28, -0.08, -0.42);
+      }
+    } catch (error) {
+      console.warn('Failed to load whale hero asset, keeping procedural fallback.', error);
+    }
   }
 }

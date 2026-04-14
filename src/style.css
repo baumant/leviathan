@@ -180,7 +180,7 @@ canvas {
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
-  width: min(540px, calc(100vw - 48px));
+  width: min(540px, calc(100% - 48px));
   padding: 22px 24px;
   border: 1px solid rgba(149, 169, 188, 0.14);
   background: linear-gradient(180deg, rgba(3, 8, 14, 0.86), rgba(3, 8, 14, 0.56));

@@ -10,6 +10,8 @@ const KEY_BINDINGS = {
   skip: ['Enter'],
 } as const;
 
+const BOUND_CODES = new Set<string>(Object.values(KEY_BINDINGS).flat());
+
 export class Input {
   private readonly heldKeys = new Set<string>();
   private restartRequested = false;
@@ -76,6 +78,14 @@ export class Input {
   }
 
   private readonly handleKeyDown = (event: KeyboardEvent): void => {
+    if (this.isEditableTarget(event.target)) {
+      return;
+    }
+
+    if (BOUND_CODES.has(event.code)) {
+      event.preventDefault();
+    }
+
     this.heldKeys.add(event.code);
 
     if (!event.repeat && KEY_BINDINGS.restart.includes(event.code as (typeof KEY_BINDINGS.restart)[number])) {
@@ -92,6 +102,14 @@ export class Input {
   };
 
   private readonly handleKeyUp = (event: KeyboardEvent): void => {
+    if (this.isEditableTarget(event.target)) {
+      return;
+    }
+
+    if (BOUND_CODES.has(event.code)) {
+      event.preventDefault();
+    }
+
     this.heldKeys.delete(event.code);
   };
 
@@ -100,4 +118,17 @@ export class Input {
     this.skipRequested = false;
     this.tailSlapRequested = false;
   };
+
+  private isEditableTarget(target: EventTarget | null): boolean {
+    if (!(target instanceof HTMLElement)) {
+      return false;
+    }
+
+    return (
+      target.isContentEditable ||
+      target.tagName === 'INPUT' ||
+      target.tagName === 'TEXTAREA' ||
+      target.tagName === 'SELECT'
+    );
+  }
 }

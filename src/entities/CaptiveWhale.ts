@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 
 import { createCelMaterial } from '../fx/createCelMaterial';
+import { createWhaleHeroRig } from './WhaleHeroAsset';
+import { createSpermWhaleVisual } from './createSpermWhaleVisual';
 
 export type CaptiveWhaleState = 'inactive' | 'towed' | 'escaping' | 'captured' | 'gone';
 
@@ -30,10 +32,11 @@ export class CaptiveWhale {
 
   state: CaptiveWhaleState = 'inactive';
 
+  private readonly fallbackVisualRoot: THREE.Group;
   private readonly towAttachLocals = [
-    new THREE.Vector3(-0.92, 0.08, 1.56),
-    new THREE.Vector3(0, 0.14, 1.88),
-    new THREE.Vector3(0.92, 0.08, 1.56),
+    new THREE.Vector3(-1.18, 0.18, 1.9),
+    new THREE.Vector3(0, 0.26, 2.34),
+    new THREE.Vector3(1.18, 0.18, 1.9),
   ] as const;
   private readonly towMidpoint = new THREE.Vector3();
   private readonly towTarget = new THREE.Vector3();
@@ -70,65 +73,31 @@ export class CaptiveWhale {
   private escapeDepth = 0;
   private towInitialized = false;
   private yaw = 0;
+  private towAttachNodes: readonly THREE.Object3D[] = [];
 
   constructor() {
-    const whaleMaterial = createCelMaterial({
-      color: '#d5dde8',
-      emissive: '#405768',
-      emissiveIntensity: 0.08,
-    });
-    const bellyMaterial = createCelMaterial({
-      color: '#b5c0cb',
-      emissive: '#324753',
-      emissiveIntensity: 0.06,
-    });
     const harpoonMaterial = createCelMaterial({
       color: '#9eafbf',
       emissive: '#5e7d95',
       emissiveIntensity: 0.1,
     });
+    const fallbackRig = createSpermWhaleVisual({
+      palette: {
+        bodyColor: '#6d7f8b',
+        bodyEmissive: '#334551',
+        bodyEmissiveIntensity: 0.05,
+        bellyColor: '#8da0ad',
+        bellyEmissive: '#425560',
+        bellyEmissiveIntensity: 0.04,
+      },
+      lengthScale: 0.94,
+      girthScale: 0.9,
+      finScale: 0.88,
+    });
 
     // Keep the captive whale broad and restrained so it reads through fog and
     // supports the mythic scale of the encounter without overtaking the player whale.
-    const body = new THREE.Mesh(new THREE.CapsuleGeometry(1.65, 4.7, 6, 12), whaleMaterial);
-    body.rotation.x = Math.PI / 2;
-    body.scale.set(1.12, 0.76, 1.34);
-
-    const head = new THREE.Mesh(new THREE.SphereGeometry(1.4, 12, 10), whaleMaterial);
-    head.scale.set(1.08, 0.88, 1.18);
-    head.position.set(0, -0.08, 3.48);
-
-    const brow = new THREE.Mesh(new THREE.SphereGeometry(1.02, 10, 8), whaleMaterial);
-    brow.scale.set(1.1, 0.64, 0.98);
-    brow.position.set(0, 0.22, 2.68);
-
-    const belly = new THREE.Mesh(new THREE.SphereGeometry(1.58, 12, 10), bellyMaterial);
-    belly.scale.set(0.9, 0.42, 1.72);
-    belly.position.set(0, -0.78, 1.18);
-
-    const tail = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.94, 2.4, 8), whaleMaterial);
-    tail.rotation.x = Math.PI / 2;
-    tail.position.set(0, 0.08, -4.05);
-
-    const flukeBase = new THREE.Mesh(new THREE.BoxGeometry(1.02, 0.16, 0.78), whaleMaterial);
-    flukeBase.position.set(0, 0.02, -5.22);
-
-    const leftFluke = new THREE.Mesh(new THREE.BoxGeometry(1.58, 0.18, 0.76), whaleMaterial);
-    leftFluke.position.set(-1.04, 0, -5.34);
-    leftFluke.rotation.z = -0.14;
-
-    const rightFluke = leftFluke.clone();
-    rightFluke.position.x *= -1;
-    rightFluke.rotation.z *= -1;
-
-    const leftFin = new THREE.Mesh(new THREE.BoxGeometry(1.52, 0.2, 0.84), whaleMaterial);
-    leftFin.position.set(-1.28, -0.3, 0.62);
-    leftFin.rotation.z = Math.PI / 7;
-    leftFin.rotation.x = -Math.PI / 5;
-
-    const rightFin = leftFin.clone();
-    rightFin.position.x *= -1;
-    rightFin.rotation.z *= -1;
+    this.fallbackVisualRoot = fallbackRig.root;
 
     for (const attachLocal of this.towAttachLocals) {
       const harpoon = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.9, 5), harpoonMaterial);
@@ -138,8 +107,8 @@ export class CaptiveWhale {
       this.visualRoot.add(harpoon);
     }
 
-    this.visualRoot.add(body, head, brow, belly, tail, flukeBase, leftFluke, rightFluke, leftFin, rightFin);
-    this.visualRoot.scale.setScalar(1.04);
+    this.visualRoot.add(this.fallbackVisualRoot);
+    this.visualRoot.scale.setScalar(1.02);
     this.visualRoot.rotation.order = 'YXZ';
 
     for (let index = 0; index < MAX_TOW_LINES; index += 1) {
@@ -154,6 +123,8 @@ export class CaptiveWhale {
     this.root.add(this.visualRoot);
     this.root.visible = false;
     this.hideTowLines();
+
+    void this.loadHeroVisual();
   }
 
   get active(): boolean {
@@ -253,7 +224,8 @@ export class CaptiveWhale {
       towOriginCount === 1 ? [1] : towOriginCount === 2 ? [0, 2] : [0, 1, 2];
 
     for (let index = 0; index < towOriginCount; index += 1) {
-      this.updateTowLine(this.towLines[index], params.towOrigins[index], this.towAttachLocals[attachIndices[index]]);
+      const attach = this.towAttachNodes[attachIndices[index]] ?? this.towAttachLocals[attachIndices[index]];
+      this.updateTowLine(this.towLines[index], params.towOrigins[index], attach);
     }
   }
 
@@ -384,9 +356,12 @@ export class CaptiveWhale {
   private updateTowLine(
     slot: { core: THREE.Mesh<THREE.CylinderGeometry, THREE.Material>; glow: THREE.Mesh<THREE.CylinderGeometry, THREE.Material> },
     towOrigin: THREE.Vector3,
-    attachLocal: THREE.Vector3,
+    attach: THREE.Vector3 | THREE.Object3D,
   ): void {
-    const attachPoint = this.visualRoot.localToWorld(this.tempAttach.copy(attachLocal));
+    const attachPoint =
+      attach instanceof THREE.Object3D
+        ? attach.getWorldPosition(this.tempAttach)
+        : this.visualRoot.localToWorld(this.tempAttach.copy(attach));
     this.lineDirection.copy(attachPoint).sub(towOrigin);
     const length = Math.max(0.001, this.lineDirection.length());
     this.lineDirection.multiplyScalar(1 / length);
@@ -414,6 +389,17 @@ export class CaptiveWhale {
       const visible = index < count;
       this.towLines[index].core.visible = visible;
       this.towLines[index].glow.visible = visible;
+    }
+  }
+
+  private async loadHeroVisual(): Promise<void> {
+    try {
+      const heroRig = await createWhaleHeroRig('captive');
+      this.visualRoot.add(heroRig.root);
+      this.fallbackVisualRoot.visible = false;
+      this.towAttachNodes = heroRig.towAttach;
+    } catch (error) {
+      console.warn('Failed to load captive whale hero asset, keeping procedural fallback.', error);
     }
   }
 }
