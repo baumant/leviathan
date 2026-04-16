@@ -561,7 +561,6 @@ export class IntroScene {
       fleetRemaining: 0,
       activeTethers: 0,
       presentation: 'intro',
-      controlsText: 'W/S row or brake  A/D steer  Enter skip',
       eyebrowText: this.phase === 'breach_cut' || this.phase === 'fade_out' ? 'Ambush' : 'Prologue',
       fadeAlpha: this.fadeAlpha,
     });

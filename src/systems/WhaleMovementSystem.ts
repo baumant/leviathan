@@ -3,9 +3,9 @@ import * as THREE from 'three';
 import { PlayerWhale, WhaleActionState } from '../entities/PlayerWhale';
 import { Input } from '../game/Input';
 
-const SURFACE_SPEED = 26;
-const SUBMERGED_SPEED = 27;
-const BURST_SPEED = 38;
+const SURFACE_SPEED = 29;
+const SUBMERGED_SPEED = 30;
+const BURST_SPEED = 42;
 const SURFACE_TURN_RATE = 1.3;
 const SUBMERGED_TURN_RATE = 1.95;
 const MAX_DEPTH = -100;

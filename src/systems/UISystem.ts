@@ -1,5 +1,9 @@
 import * as THREE from 'three';
 
+interface ControlTile {
+  root: HTMLElement;
+}
+
 export interface HUDSnapshot {
   objective: string;
   whaleHealth: number;
@@ -17,7 +21,7 @@ export interface HUDSnapshot {
   overlayTitle?: string;
   overlayCopy?: string;
   presentation?: 'combat' | 'intro';
-  controlsText?: string;
+  showActionControls?: boolean;
   eyebrowText?: string;
   fadeAlpha?: number;
 }
@@ -29,7 +33,8 @@ export class UISystem {
   private readonly introCard = document.createElement('section');
   private readonly metricsCard = document.createElement('section');
   private readonly objectiveEl = document.createElement('p');
-  private readonly controlsEl = document.createElement('p');
+  private readonly introHintEl = document.createElement('p');
+  private readonly controlsStrip = document.createElement('div');
   private readonly eyebrowEl = document.createElement('p');
   private readonly whaleFill = document.createElement('div');
   private readonly airFill = document.createElement('div');
@@ -47,6 +52,10 @@ export class UISystem {
   private readonly overlayTitle = document.createElement('h2');
   private readonly overlayCopy = document.createElement('p');
   private readonly fadeEl = document.createElement('div');
+  private readonly movementTile: ControlTile;
+  private readonly diveTile: ControlTile;
+  private readonly riseTile: ControlTile;
+  private readonly tailSlapTile: ControlTile;
 
   constructor(parent: HTMLElement) {
     this.root.className = 'hud';
@@ -64,11 +73,10 @@ export class UISystem {
 
     this.objectiveEl.className = 'hud__copy';
 
-    this.controlsEl.className = 'hud__copy';
-    this.controlsEl.textContent =
-      'W/S accelerate or brake  A/D turn  Shift dive and burst  Space rise / breach auto  F tail slap  R restart';
+    this.introHintEl.className = 'hud__subtle hud__hint';
+    this.introHintEl.textContent = 'Enter skip';
 
-    this.introCard.append(this.eyebrowEl, title, this.objectiveEl, this.controlsEl);
+    this.introCard.append(this.eyebrowEl, title, this.objectiveEl, this.introHintEl);
 
     this.metricsCard.className = 'hud__card';
 
@@ -98,6 +106,30 @@ export class UISystem {
     );
     this.bottomRow.append(scoreCard);
 
+    this.controlsStrip.className = 'hud__controls';
+    this.movementTile = this.createControlTile({
+      icon: this.createMovementIcon(),
+      modifierClassName: 'hud__control--movement',
+    });
+    this.diveTile = this.createControlTile({
+      keyset: this.createSingleKeyset('Shift', 'wide'),
+      icon: this.createDiveIcon(),
+    });
+    this.riseTile = this.createControlTile({
+      keyset: this.createSingleKeyset('Space', 'space'),
+      icon: this.createRiseIcon(),
+    });
+    this.tailSlapTile = this.createControlTile({
+      keyset: this.createSingleKeyset('F'),
+      icon: this.createTailSlapIcon(),
+    });
+    this.controlsStrip.append(
+      this.movementTile.root,
+      this.diveTile.root,
+      this.riseTile.root,
+      this.tailSlapTile.root,
+    );
+
     this.overlayCard.className = 'hud__overlay';
     this.overlayCard.hidden = true;
 
@@ -113,18 +145,21 @@ export class UISystem {
     this.fadeEl.className = 'hud__fade';
     this.fadeEl.hidden = true;
 
-    this.root.append(this.topRow, this.bottomRow, this.overlayCard, this.fadeEl);
+    this.root.append(this.topRow, this.bottomRow, this.controlsStrip, this.overlayCard, this.fadeEl);
     parent.append(this.root);
   }
 
   update(snapshot: HUDSnapshot): void {
     const presentation = snapshot.presentation ?? 'combat';
     const isIntro = presentation === 'intro';
+    const showActionControls = snapshot.showActionControls ?? !isIntro;
     this.objectiveEl.textContent = snapshot.objective;
-    this.controlsEl.textContent =
-      snapshot.controlsText ??
-      'W/S accelerate or brake  A/D turn  Shift dive and burst  Space rise / breach auto  F tail slap  R restart';
     this.eyebrowEl.textContent = snapshot.eyebrowText ?? 'First playable';
+    this.introHintEl.hidden = !isIntro;
+    this.controlsStrip.classList.toggle('hud__controls--intro', isIntro);
+    this.diveTile.root.hidden = !showActionControls;
+    this.riseTile.root.hidden = !showActionControls;
+    this.tailSlapTile.root.hidden = !showActionControls;
     this.setBar(this.whaleFill, this.whaleValue, snapshot.whaleHealth);
     this.setBar(this.airFill, this.airValue, snapshot.whaleAir);
     this.setBar(this.shipFill, this.shipValue, snapshot.targetHealth);
@@ -219,5 +254,82 @@ export class UISystem {
 
     row.append(labelEl, valueEl);
     return row;
+  }
+
+  private createControlTile(options: {
+    keyset?: HTMLElement;
+    icon?: HTMLElement;
+    modifierClassName?: string;
+  }): ControlTile {
+    const tile = document.createElement('section');
+    tile.className = 'hud__control';
+
+    if (options.modifierClassName) {
+      tile.classList.add(options.modifierClassName);
+    }
+
+    const visual = document.createElement('div');
+    visual.className = 'hud__control-visual';
+
+    if (options.keyset) {
+      visual.append(options.keyset);
+    }
+
+    if (options.icon) {
+      const iconFrame = document.createElement('div');
+      iconFrame.className = 'hud__control-icon-frame';
+      iconFrame.append(options.icon);
+      visual.append(iconFrame);
+    }
+
+    tile.append(visual);
+
+    return { root: tile };
+  }
+
+  private createSingleKeyset(label: string, width: 'standard' | 'wide' | 'space' = 'standard'): HTMLElement {
+    const keyset = document.createElement('div');
+    keyset.className = 'hud__control-keyset';
+    keyset.append(this.createKeycap(label, width));
+    return keyset;
+  }
+
+  private createKeycap(label: string, width: 'standard' | 'wide' | 'space' = 'standard'): HTMLElement {
+    const keycap = document.createElement('span');
+    keycap.className = 'hud__keycap';
+
+    if (width !== 'standard') {
+      keycap.classList.add(`hud__keycap--${width}`);
+    }
+
+    keycap.textContent = label;
+    return keycap;
+  }
+
+  private createMovementIcon(): HTMLElement {
+    return this.createImageIcon('/control-icons/wsad.png');
+  }
+
+  private createDiveIcon(): HTMLElement {
+    return this.createImageIcon('/control-icons/dive.png');
+  }
+
+  private createRiseIcon(): HTMLElement {
+    return this.createImageIcon('/control-icons/rise.png');
+  }
+
+  private createTailSlapIcon(): HTMLElement {
+    return this.createImageIcon('/control-icons/tailslap.png');
+  }
+
+  private createImageIcon(src: string): HTMLImageElement {
+    const image = document.createElement('img');
+    image.className = 'hud__control-icon';
+    image.src = src;
+    image.alt = '';
+    image.decoding = 'async';
+    image.draggable = false;
+    image.setAttribute('aria-hidden', 'true');
+    return image;
   }
 }

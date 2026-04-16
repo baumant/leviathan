@@ -4,9 +4,9 @@ import { PlayerWhale } from '../entities/PlayerWhale';
 import { Ship } from '../entities/Ship';
 
 const MIN_RAM_SPEED_BY_ROLE = {
-  rowboat: 9.5,
-  flagship: 11.5,
-  corporate_whaler: 13.5,
+  rowboat: 10.5,
+  flagship: 14.0,
+  corporate_whaler: 16.0,
 } as const;
 
 export interface RamResult {
@@ -21,6 +21,7 @@ export interface DamageHitResult {
 
 export class DamageSystem {
   private readonly lastRamAt = new WeakMap<Ship, number>();
+  private readonly capitalRamLatched = new WeakMap<Ship, boolean>();
   private readonly dragUnderTimers = new WeakMap<Ship, number>();
   private readonly tempWhaleForward = new THREE.Vector3();
   private readonly tempShipForward = new THREE.Vector3();
@@ -29,6 +30,37 @@ export class DamageSystem {
   private readonly tempLocalPoint = new THREE.Vector3();
   private readonly tempToShip = new THREE.Vector3();
   private readonly tempRearForward = new THREE.Vector3();
+  private readonly tempCapitalRamHullLimits = new THREE.Vector3();
+
+  private getCapitalRamCooldown(ship: Ship): number {
+    return ship.role === 'corporate_whaler' ? 1.1 : 0.95;
+  }
+
+  private getCapitalRamHullLimits(ship: Ship, releasePad = 0): THREE.Vector3 {
+    if (ship.role === 'corporate_whaler') {
+      return this.tempCapitalRamHullLimits.set(
+        ship.halfExtents.x * 0.8 + 0.7 + releasePad,
+        ship.halfExtents.y * 0.74 + 0.5 + releasePad,
+        ship.halfExtents.z * 0.84 + 0.9 + releasePad,
+      );
+    }
+
+    return this.tempCapitalRamHullLimits.set(
+      ship.halfExtents.x * 0.76 + 0.6 + releasePad,
+      ship.halfExtents.y * 0.72 + 0.45 + releasePad,
+      ship.halfExtents.z * 0.82 + 0.75 + releasePad,
+    );
+  }
+
+  private intersectsCapitalRamHull(ship: Ship, localWhalePosition: THREE.Vector3, releasePad = 0): boolean {
+    const limits = this.getCapitalRamHullLimits(ship, releasePad);
+
+    return (
+      Math.abs(localWhalePosition.x) <= limits.x &&
+      Math.abs(localWhalePosition.y) <= limits.y &&
+      Math.abs(localWhalePosition.z) <= limits.z
+    );
+  }
 
   resolveBreachLaunch(whale: PlayerWhale, ship: Ship): DamageHitResult | null {
     if (ship.sinking || ship.sunk) {
@@ -112,18 +144,35 @@ export class DamageSystem {
       return null;
     }
 
-    const lastHitAt = this.lastRamAt.get(ship) ?? -Infinity;
-    if (elapsedSeconds - lastHitAt < 0.7) {
-      return null;
-    }
-
     const localWhalePosition = ship.worldToLocalPoint(whale.position, this.tempLocalPoint);
-    const intersects =
-      Math.abs(localWhalePosition.x) <= ship.halfExtents.x + whale.radius &&
-      Math.abs(localWhalePosition.y) <= ship.halfExtents.y + whale.radius &&
-      Math.abs(localWhalePosition.z) <= ship.halfExtents.z + whale.radius;
-
     const minimumRamSpeed = MIN_RAM_SPEED_BY_ROLE[ship.role];
+    const lastHitAt = this.lastRamAt.get(ship) ?? -Infinity;
+    let intersects = false;
+
+    if (ship.isCapitalShip) {
+      const latched = this.capitalRamLatched.get(ship) ?? false;
+      const cooldownElapsed = elapsedSeconds - lastHitAt >= this.getCapitalRamCooldown(ship);
+      const separated = !this.intersectsCapitalRamHull(ship, localWhalePosition, 0.9);
+
+      if (latched) {
+        if (!separated || !cooldownElapsed) {
+          return null;
+        }
+
+        this.capitalRamLatched.delete(ship);
+      }
+
+      intersects = this.intersectsCapitalRamHull(ship, localWhalePosition);
+    } else {
+      if (elapsedSeconds - lastHitAt < 0.7) {
+        return null;
+      }
+
+      intersects =
+        Math.abs(localWhalePosition.x) <= ship.halfExtents.x + whale.radius &&
+        Math.abs(localWhalePosition.y) <= ship.halfExtents.y + whale.radius &&
+        Math.abs(localWhalePosition.z) <= ship.halfExtents.z + whale.radius;
+    }
 
     if (!intersects || whale.speed < minimumRamSpeed) {
       return null;
@@ -145,8 +194,9 @@ export class DamageSystem {
 
     if (ship.isCapitalShip) {
       const capitalMassScale = ship.role === 'corporate_whaler' ? 0.72 : 1;
+      const contactHullLimits = this.getCapitalRamHullLimits(ship);
       const lateralContactAlpha = THREE.MathUtils.clamp(
-        Math.abs(localWhalePosition.x) / Math.max(ship.halfExtents.x + whale.radius, 0.001),
+        Math.abs(localWhalePosition.x) / Math.max(contactHullLimits.x, 0.001),
         0,
         1,
       );
@@ -191,6 +241,7 @@ export class DamageSystem {
       }
 
       intensity = THREE.MathUtils.clamp(intensity + deflectionAlpha * 0.05, 0.18, 0.74);
+      this.capitalRamLatched.set(ship, true);
     } else {
       ship.applyDamage(damage);
       whale.speed *= 0.76;

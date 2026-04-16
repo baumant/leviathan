@@ -1977,6 +1977,7 @@ export class OceanScene {
       activeTethers: this.activeTethers,
       overlayTitle,
       overlayCopy,
+      showActionControls: this.phase === 'playing',
     });
   }
 }
