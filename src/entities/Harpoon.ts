@@ -1,14 +1,27 @@
 import * as THREE from 'three';
 
+import {
+  INACTIVE_WATERLINE_PASSTHROUGH_STATE,
+  WaterlinePassthroughState,
+} from '../fx/calculateWhaleTopsideRevealState';
 import { createCelMaterial } from '../fx/createCelMaterial';
+import {
+  cloneUniqueObjectRoot,
+  createWaterlineOverlay,
+  WaterlineOverlayController,
+} from '../fx/createWaterlineOverlay';
 
 export type HarpoonMode = 'flying' | 'tethered';
 
 const TETHER_AXIS = new THREE.Vector3(0, 1, 0);
+const HARPOON_WATERLINE_COLOR = new THREE.Color('#94adba');
+const HARPOON_WATERLINE_OPACITY_MIN = 0.08;
+const HARPOON_WATERLINE_OPACITY_MAX = 0.32;
 
 export class Harpoon {
   readonly root = new THREE.Group();
   readonly ownerShipId: string;
+  readonly waterlinePassthroughKind = 'object' as const;
   readonly radius = 0.7;
   readonly maxTetherLength = 24;
   readonly position: THREE.Vector3;
@@ -27,6 +40,10 @@ export class Harpoon {
   private readonly tetherCoreMaterial: THREE.MeshToonMaterial;
   private readonly tetherGlowMaterial: THREE.MeshBasicMaterial;
   private readonly tetherMidpoint = new THREE.Vector3();
+  private readonly waterlineOverlayController: WaterlineOverlayController;
+  private readonly overlayProjectile: THREE.Group;
+  private readonly overlayImpactMarker: THREE.Group;
+  private readonly overlayTetherCore: THREE.Mesh;
 
   constructor(ownerShipId: string) {
     this.ownerShipId = ownerShipId;
@@ -67,6 +84,7 @@ export class Harpoon {
     rightBarb.rotation.z *= -1;
 
     this.projectile = new THREE.Group();
+    this.projectile.name = 'projectile';
     this.projectile.add(shaft, grip, tip, leftBarb, rightBarb);
     this.position = this.projectile.position;
 
@@ -90,6 +108,7 @@ export class Harpoon {
     impactFinCross.rotation.z = Math.PI / 2;
 
     this.impactMarker = new THREE.Group();
+    this.impactMarker.name = 'impact_marker';
     this.impactMarker.add(impactCore, impactFin, impactFinCross);
     this.impactMarker.visible = false;
 
@@ -108,14 +127,56 @@ export class Harpoon {
     this.tetherGlowMaterial.depthWrite = false;
 
     this.tetherCore = new THREE.Mesh(tetherGeometry, this.tetherCoreMaterial);
+    this.tetherCore.name = 'tether_core';
     this.tetherGlow = new THREE.Mesh(tetherGeometry, this.tetherGlowMaterial);
     this.tetherGlow.scale.set(2.4, 1, 2.4);
     this.tetherCore.visible = false;
     this.tetherGlow.visible = false;
     this.tetherGlow.renderOrder = 2;
 
-    this.root.add(this.projectile, this.impactMarker, this.tetherCore, this.tetherGlow);
+    const overlaySource = new THREE.Group();
+    overlaySource.add(
+      cloneUniqueObjectRoot(this.projectile),
+      cloneUniqueObjectRoot(this.impactMarker),
+      cloneUniqueObjectRoot(new THREE.Group().add(this.tetherCore.clone())),
+    );
+    this.waterlineOverlayController = createWaterlineOverlay(overlaySource, {
+      color: HARPOON_WATERLINE_COLOR,
+      opacityMin: HARPOON_WATERLINE_OPACITY_MIN,
+      opacityMax: HARPOON_WATERLINE_OPACITY_MAX,
+    });
+    this.overlayProjectile = this.waterlineOverlayController.root.getObjectByName('projectile') as THREE.Group;
+    this.overlayImpactMarker = this.waterlineOverlayController.root.getObjectByName('impact_marker') as THREE.Group;
+    this.overlayTetherCore = this.waterlineOverlayController.root.getObjectByName('tether_core') as THREE.Mesh;
+
+    this.root.add(this.projectile, this.impactMarker, this.tetherCore, this.tetherGlow, this.waterlineOverlayController.root);
     this.root.visible = false;
+  }
+
+  getWaterlinePassthroughAnchor(target = new THREE.Vector3()): THREE.Vector3 {
+    return this.projectile.getWorldPosition(target);
+  }
+
+  getWaterlinePassthroughBounds(target: THREE.Box3): THREE.Box3 {
+    target.makeEmpty();
+
+    if (this.projectile.visible) {
+      target.expandByObject(this.projectile, true);
+    }
+
+    if (this.impactMarker.visible) {
+      target.expandByObject(this.impactMarker, true);
+    }
+
+    if (this.tetherCore.visible) {
+      target.expandByObject(this.tetherCore, true);
+    }
+
+    return target;
+  }
+
+  setWaterlinePassthrough(state: WaterlinePassthroughState): void {
+    this.waterlineOverlayController.setState(state);
   }
 
   launch(origin: THREE.Vector3, direction: THREE.Vector3, speed: number): void {
@@ -128,8 +189,10 @@ export class Harpoon {
     this.impactMarker.visible = false;
     this.tetherCore.visible = false;
     this.tetherGlow.visible = false;
+    this.setWaterlinePassthrough(INACTIVE_WATERLINE_PASSTHROUGH_STATE);
     this.root.visible = true;
     this.alignToVelocity();
+    this.syncWaterlineOverlayTransforms();
     this.root.updateMatrixWorld();
   }
 
@@ -145,6 +208,7 @@ export class Harpoon {
     this.tetherGlowMaterial.opacity = 0.28;
     this.root.visible = true;
     this.impactMarker.position.copy(this.tipAnchor);
+    this.syncWaterlineOverlayTransforms();
     this.root.updateMatrixWorld();
   }
 
@@ -160,6 +224,7 @@ export class Harpoon {
       this.alignToVelocity();
     }
 
+    this.syncWaterlineOverlayTransforms();
     this.root.updateMatrixWorld();
   }
 
@@ -188,6 +253,7 @@ export class Harpoon {
     this.direction.copy(shipOrigin).sub(this.tipAnchor).normalize();
     this.projectile.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), this.direction);
     this.impactMarker.quaternion.copy(this.projectile.quaternion);
+    this.syncWaterlineOverlayTransforms();
     this.root.updateMatrixWorld();
   }
 
@@ -198,6 +264,7 @@ export class Harpoon {
   deactivate(): void {
     this.active = false;
     this.mode = 'flying';
+    this.setWaterlinePassthrough(INACTIVE_WATERLINE_PASSTHROUGH_STATE);
     this.root.visible = false;
     this.projectile.visible = false;
     this.impactMarker.visible = false;
@@ -209,5 +276,22 @@ export class Harpoon {
   private alignToVelocity(): void {
     this.direction.copy(this.velocity).normalize();
     this.projectile.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), this.direction);
+  }
+
+  private syncWaterlineOverlayTransforms(): void {
+    this.overlayProjectile.position.copy(this.projectile.position);
+    this.overlayProjectile.quaternion.copy(this.projectile.quaternion);
+    this.overlayProjectile.scale.copy(this.projectile.scale);
+    this.overlayProjectile.visible = this.projectile.visible;
+
+    this.overlayImpactMarker.position.copy(this.impactMarker.position);
+    this.overlayImpactMarker.quaternion.copy(this.impactMarker.quaternion);
+    this.overlayImpactMarker.scale.copy(this.impactMarker.scale);
+    this.overlayImpactMarker.visible = this.impactMarker.visible;
+
+    this.overlayTetherCore.position.copy(this.tetherCore.position);
+    this.overlayTetherCore.quaternion.copy(this.tetherCore.quaternion);
+    this.overlayTetherCore.scale.copy(this.tetherCore.scale);
+    this.overlayTetherCore.visible = this.tetherCore.visible;
   }
 }

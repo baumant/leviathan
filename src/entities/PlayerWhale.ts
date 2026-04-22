@@ -1,5 +1,10 @@
 import * as THREE from 'three';
 
+import {
+  INACTIVE_WATERLINE_PASSTHROUGH_STATE,
+  WaterlinePassthroughState,
+} from '../fx/calculateWhaleTopsideRevealState';
+import { createWaterlineOverlay, WaterlineOverlayController } from '../fx/createWaterlineOverlay';
 import { WHALE_SPEED_PROFILE } from '../tuning/whaleSpeedProfile';
 import { createWhaleHeroRig } from './WhaleHeroAsset';
 import {
@@ -31,13 +36,14 @@ const SWIM_PULSE_AMPLITUDE_FALL = 5.2;
 const SWIM_PULSE_FREQUENCY_MIN = 1.18;
 const SWIM_PULSE_FREQUENCY_MAX = 1.9;
 const SWIM_PULSE_RECOVERY_SUPPRESSION = 0.42;
-const TOPSIDE_SUBSURFACE_COLOR = new THREE.Color('#6f8690');
-const TOPSIDE_SUBSURFACE_EMISSIVE = new THREE.Color('#182932');
+const TOPSIDE_SUBSURFACE_COLOR = new THREE.Color('#7f98a2');
+const TOPSIDE_SUBSURFACE_EMISSIVE = new THREE.Color('#1c2e37');
 const TOPSIDE_SUBSURFACE_OPACITY_MIN = 0.1;
-const TOPSIDE_SUBSURFACE_OPACITY_MAX = 0.44;
-const TOPSIDE_SUBSURFACE_EYE_OPACITY_MAX = 0.14;
-const TOPSIDE_SUBSURFACE_TINT = 0.78;
-const TOPSIDE_SUBSURFACE_EMISSIVE_INTENSITY = 0.032;
+const TOPSIDE_SUBSURFACE_OPACITY_MAX = 0.52;
+const TOPSIDE_SUBSURFACE_EYE_OPACITY_MAX = 0.18;
+const TOPSIDE_SUBSURFACE_TINT = 0.84;
+const TOPSIDE_SUBSURFACE_EMISSIVE_INTENSITY = 0.036;
+const TOPSIDE_SUBSURFACE_RENDER_ORDER = 24;
 
 export type WhaleActionState = 'swim' | 'breach' | 'tail_slap' | 'recovery';
 export type WhaleVisualPresentation = 'surface' | 'topside_subsurface';
@@ -54,9 +60,14 @@ interface WhalePresentationMaterialState {
   depthWrite: boolean;
 }
 
+interface WhalePresentationMeshState {
+  renderOrder: number;
+}
+
 export class PlayerWhale {
   readonly root = new THREE.Group();
   readonly position = this.root.position;
+  readonly waterlinePassthroughKind = 'whale' as const;
   readonly maxHealth = 100;
   readonly maxAir = MAX_AIR;
   readonly radius = WHALE_COLLISION_RADIUS;
@@ -102,6 +113,14 @@ export class PlayerWhale {
   ramYawVelocity = 0;
 
   private readonly fallbackVisualRoot: THREE.Group;
+  private activeVisualRoot: THREE.Group;
+  private readonly waterlineOverlayRoot = new THREE.Group();
+  private waterlineOverlayController: WaterlineOverlayController;
+  private overlayBodyVisualRoot: THREE.Object3D;
+  private overlayTailVisualPivot: THREE.Object3D;
+  private overlayFlukeVisualPivot: THREE.Object3D;
+  private overlayLeftFinPivot: THREE.Object3D;
+  private overlayRightFinPivot: THREE.Object3D;
   private bodyVisualRoot: THREE.Object3D;
   private tailVisualPivot: THREE.Object3D;
   private flukeVisualPivot: THREE.Object3D;
@@ -120,8 +139,10 @@ export class PlayerWhale {
   private swimPulseAmplitude = 0;
   private previousStrokeVisual = 0;
   private readonly presentationMaterials = new Map<WhalePresentationMaterial, WhalePresentationMaterialState>();
+  private readonly presentationMeshes = new Map<THREE.Mesh, WhalePresentationMeshState>();
   private visualPresentation: WhaleVisualPresentation = 'surface';
   private visualPresentationStrength = 0;
+  private waterlinePassthroughState: WaterlinePassthroughState = INACTIVE_WATERLINE_PASSTHROUGH_STATE;
 
   constructor() {
     const fallbackRig = createSpermWhaleVisual({
@@ -137,15 +158,41 @@ export class PlayerWhale {
       girthScale: 1.06,
       finScale: 1,
     });
+    const overlayFallbackRig = createSpermWhaleVisual({
+      palette: {
+        bodyColor: '#edf3ff',
+        bodyEmissive: '#587093',
+        bodyEmissiveIntensity: 0.12,
+        bellyColor: '#d8e2f1',
+        bellyEmissive: '#4d627f',
+        bellyEmissiveIntensity: 0.08,
+      },
+      lengthScale: 1.04,
+      girthScale: 1.06,
+      finScale: 1,
+    });
 
     this.fallbackVisualRoot = fallbackRig.root;
+    this.activeVisualRoot = fallbackRig.root;
     this.bodyVisualRoot = fallbackRig.bodyRoot;
     this.tailVisualPivot = fallbackRig.tailPivot;
     this.flukeVisualPivot = fallbackRig.flukePivot;
     this.leftFinPivot = fallbackRig.leftFinPivot;
     this.rightFinPivot = fallbackRig.rightFinPivot;
+    this.waterlineOverlayController = createWaterlineOverlay(overlayFallbackRig.root, {
+      color: TOPSIDE_SUBSURFACE_COLOR,
+      opacityMin: TOPSIDE_SUBSURFACE_OPACITY_MIN,
+      opacityMax: TOPSIDE_SUBSURFACE_OPACITY_MAX,
+      renderOrder: TOPSIDE_SUBSURFACE_RENDER_ORDER,
+    });
+    this.overlayBodyVisualRoot = overlayFallbackRig.bodyRoot;
+    this.overlayTailVisualPivot = overlayFallbackRig.tailPivot;
+    this.overlayFlukeVisualPivot = overlayFallbackRig.flukePivot;
+    this.overlayLeftFinPivot = overlayFallbackRig.leftFinPivot;
+    this.overlayRightFinPivot = overlayFallbackRig.rightFinPivot;
 
-    this.visualRoot.add(this.fallbackVisualRoot);
+    this.waterlineOverlayRoot.add(this.waterlineOverlayController.root);
+    this.visualRoot.add(this.fallbackVisualRoot, this.waterlineOverlayRoot);
     this.root.add(this.visualRoot);
     this.root.scale.setScalar(WHALE_VISUAL_SCALE);
     this.root.position.set(0, SURFACED_START_DEPTH, 0);
@@ -205,7 +252,7 @@ export class PlayerWhale {
     this.root.position.set(0, SURFACED_START_DEPTH, 0);
     this.root.rotation.set(0, 0, 0, 'YXZ');
     this.clearTailSlapVisual();
-    this.setVisualPresentation('surface');
+    this.setWaterlinePassthrough(INACTIVE_WATERLINE_PASSTHROUGH_STATE);
     this.root.updateMatrixWorld();
   }
 
@@ -231,6 +278,19 @@ export class PlayerWhale {
 
   getForward(target = new THREE.Vector3()): THREE.Vector3 {
     return target.set(0, 0, 1).applyQuaternion(this.root.quaternion).normalize();
+  }
+
+  getWaterlinePassthroughAnchor(target = new THREE.Vector3()): THREE.Vector3 {
+    return this.root.getWorldPosition(target);
+  }
+
+  getWaterlinePassthroughBounds(target: THREE.Box3): THREE.Box3 {
+    return target.makeEmpty().expandByObject(this.activeVisualRoot, true);
+  }
+
+  setWaterlinePassthrough(state: WaterlinePassthroughState): void {
+    this.waterlinePassthroughState = state;
+    this.waterlineOverlayController.setState(state);
   }
 
   syncTravelState(): void {
@@ -295,6 +355,13 @@ export class PlayerWhale {
       this.flukeVisualPivot,
       this.leftFinPivot,
       this.rightFinPivot,
+    );
+    resetWhaleVisualPose(
+      this.overlayBodyVisualRoot,
+      this.overlayTailVisualPivot,
+      this.overlayFlukeVisualPivot,
+      this.overlayLeftFinPivot,
+      this.overlayRightFinPivot,
     );
   }
 
@@ -367,6 +434,20 @@ export class PlayerWhale {
         finRoll: finRollOffset,
       },
     );
+    applyWhaleVisualPose(
+      this.overlayBodyVisualRoot,
+      this.overlayTailVisualPivot,
+      this.overlayFlukeVisualPivot,
+      this.overlayLeftFinPivot,
+      this.overlayRightFinPivot,
+      swimPose,
+      {
+        tailYaw,
+        flukeRoll,
+        finPitch: finPitchOffset,
+        finRoll: finRollOffset,
+      },
+    );
   }
 
   private updateSwimPulse(deltaSeconds: number) {
@@ -414,11 +495,23 @@ export class PlayerWhale {
       const flukeRotation = this.flukeVisualPivot.rotation.clone();
       const leftFinRotation = this.leftFinPivot.rotation.clone();
       const rightFinRotation = this.rightFinPivot.rotation.clone();
-      const heroRig = await createWhaleHeroRig('player');
+      const [heroRig, overlayHeroRig] = await Promise.all([
+        createWhaleHeroRig('player'),
+        createWhaleHeroRig('player'),
+      ]);
 
       this.visualRoot.add(heroRig.root);
       this.registerPresentationMaterials(heroRig.root);
       this.fallbackVisualRoot.visible = false;
+      this.activeVisualRoot = heroRig.root;
+      this.waterlineOverlayRoot.clear();
+      this.waterlineOverlayController = createWaterlineOverlay(overlayHeroRig.root, {
+        color: TOPSIDE_SUBSURFACE_COLOR,
+        opacityMin: TOPSIDE_SUBSURFACE_OPACITY_MIN,
+        opacityMax: TOPSIDE_SUBSURFACE_OPACITY_MAX,
+        renderOrder: TOPSIDE_SUBSURFACE_RENDER_ORDER,
+      });
+      this.waterlineOverlayRoot.add(this.waterlineOverlayController.root);
 
       this.bodyVisualRoot = heroRig.bodyRoot;
       this.tailVisualPivot = heroRig.tailPivot;
@@ -433,6 +526,17 @@ export class PlayerWhale {
       this.flukeVisualPivot.rotation.copy(flukeRotation);
       this.leftFinPivot.rotation.copy(leftFinRotation);
       this.rightFinPivot.rotation.copy(rightFinRotation);
+      this.overlayBodyVisualRoot = overlayHeroRig.bodyRoot;
+      this.overlayTailVisualPivot = overlayHeroRig.tailPivot;
+      this.overlayFlukeVisualPivot = overlayHeroRig.flukePivot;
+      this.overlayLeftFinPivot = overlayHeroRig.leftFinPivot;
+      this.overlayRightFinPivot = overlayHeroRig.rightFinPivot;
+      this.overlayBodyVisualRoot.rotation.copy(bodyRotation);
+      this.overlayTailVisualPivot.rotation.copy(tailRotation);
+      this.overlayFlukeVisualPivot.rotation.copy(flukeRotation);
+      this.overlayLeftFinPivot.rotation.copy(leftFinRotation);
+      this.overlayRightFinPivot.rotation.copy(rightFinRotation);
+      this.waterlineOverlayController.setState(this.waterlinePassthroughState);
       this.applyVisualPresentation();
     } catch (error) {
       console.warn('Failed to load whale hero asset, keeping procedural fallback.', error);
@@ -443,6 +547,12 @@ export class PlayerWhale {
     root.traverse((object) => {
       if (!(object instanceof THREE.Mesh)) {
         return;
+      }
+
+      if (!this.presentationMeshes.has(object)) {
+        this.presentationMeshes.set(object, {
+          renderOrder: object.renderOrder,
+        });
       }
 
       const materials = Array.isArray(object.material) ? object.material : [object.material];
@@ -515,6 +625,11 @@ export class PlayerWhale {
       }
 
       material.needsUpdate = true;
+    }
+
+    for (const [mesh, state] of this.presentationMeshes) {
+      mesh.renderOrder =
+        this.visualPresentation === 'topside_subsurface' ? TOPSIDE_SUBSURFACE_RENDER_ORDER : state.renderOrder;
     }
   }
 }

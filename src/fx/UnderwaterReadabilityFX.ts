@@ -157,6 +157,7 @@ export interface UnderwaterReadabilitySnapshot {
   elapsedSeconds: number;
   approxWaterDepth: number;
   camera: THREE.PerspectiveCamera;
+  cameraUnderwater: boolean;
   whalePosition: THREE.Vector3;
   whaleSpeed: number;
   underwaterRatio: number;
@@ -310,7 +311,9 @@ export class UnderwaterReadabilityFX {
   }
 
   update(snapshot: UnderwaterReadabilitySnapshot): void {
-    const targetAlpha = snapshot.submerged ? THREE.MathUtils.smoothstep(snapshot.underwaterRatio, 0.08, 0.82) : 0;
+    const targetAlpha = snapshot.cameraUnderwater
+      ? THREE.MathUtils.smoothstep(snapshot.underwaterRatio, 0.08, 0.82)
+      : 0;
     this.underwaterAlpha = THREE.MathUtils.damp(this.underwaterAlpha, targetAlpha, 2.4, snapshot.deltaSeconds);
 
     this.root.position.copy(snapshot.camera.position);

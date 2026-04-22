@@ -1,6 +1,11 @@
 import * as THREE from 'three';
 
+import {
+  INACTIVE_WATERLINE_PASSTHROUGH_STATE,
+  WaterlinePassthroughState,
+} from '../fx/calculateWhaleTopsideRevealState';
 import { createCelMaterial } from '../fx/createCelMaterial';
+import { createWaterlineOverlay, WaterlineOverlayController } from '../fx/createWaterlineOverlay';
 import { WHALE_SPEED_PROFILE } from '../tuning/whaleSpeedProfile';
 import { createWhaleHeroRig } from './WhaleHeroAsset';
 import { applyWhaleVisualPose, resetWhaleVisualPose, sampleWhaleSwimPose } from './WhaleVisualMotion';
@@ -26,15 +31,28 @@ const ESCAPE_FINAL_SPEED = 7.2;
 const ESCAPE_MAX_DEPTH = 7.4;
 const CAPTURE_DURATION = 1.5;
 const CAPTURE_TARGET_DEPTH = 0.9;
+const CAPTIVE_TOPSIDE_SUBSURFACE_COLOR = new THREE.Color('#71868f');
+const CAPTIVE_TOPSIDE_SUBSURFACE_OPACITY_MIN = 0.08;
+const CAPTIVE_TOPSIDE_SUBSURFACE_OPACITY_MAX = 0.34;
+const CAPTIVE_TOPSIDE_SUBSURFACE_RENDER_ORDER = 24;
 
 export class CaptiveWhale {
   readonly root = new THREE.Group();
   readonly visualRoot = new THREE.Group();
   readonly position = this.visualRoot.position;
+  readonly waterlinePassthroughKind = 'whale' as const;
 
   state: CaptiveWhaleState = 'inactive';
 
   private readonly fallbackVisualRoot: THREE.Group;
+  private activeVisualRoot: THREE.Group;
+  private readonly waterlineOverlayRoot = new THREE.Group();
+  private waterlineOverlayController: WaterlineOverlayController;
+  private overlayBodyVisualRoot: THREE.Object3D;
+  private overlayTailVisualPivot: THREE.Object3D;
+  private overlayFlukeVisualPivot: THREE.Object3D;
+  private overlayLeftFinPivot: THREE.Object3D;
+  private overlayRightFinPivot: THREE.Object3D;
   private readonly towAttachLocals = [
     new THREE.Vector3(-1.18, 0.18, 1.9),
     new THREE.Vector3(0, 0.26, 2.34),
@@ -84,6 +102,7 @@ export class CaptiveWhale {
   private readonly previousVisualPosition = new THREE.Vector3();
   private swimPhase = 0;
   private swimAmplitude = 0;
+  private waterlinePassthroughState: WaterlinePassthroughState = INACTIVE_WATERLINE_PASSTHROUGH_STATE;
 
   constructor() {
     const harpoonMaterial = createCelMaterial({
@@ -104,15 +123,40 @@ export class CaptiveWhale {
       girthScale: 0.9,
       finScale: 0.88,
     });
+    const overlayFallbackRig = createSpermWhaleVisual({
+      palette: {
+        bodyColor: '#6d7f8b',
+        bodyEmissive: '#334551',
+        bodyEmissiveIntensity: 0.05,
+        bellyColor: '#8da0ad',
+        bellyEmissive: '#425560',
+        bellyEmissiveIntensity: 0.04,
+      },
+      lengthScale: 0.94,
+      girthScale: 0.9,
+      finScale: 0.88,
+    });
 
     // Keep the captive whale broad and restrained so it reads through fog and
     // supports the mythic scale of the encounter without overtaking the player whale.
     this.fallbackVisualRoot = fallbackRig.root;
+    this.activeVisualRoot = fallbackRig.root;
     this.bodyVisualRoot = fallbackRig.bodyRoot;
     this.tailVisualPivot = fallbackRig.tailPivot;
     this.flukeVisualPivot = fallbackRig.flukePivot;
     this.leftFinPivot = fallbackRig.leftFinPivot;
     this.rightFinPivot = fallbackRig.rightFinPivot;
+    this.waterlineOverlayController = createWaterlineOverlay(overlayFallbackRig.root, {
+      color: CAPTIVE_TOPSIDE_SUBSURFACE_COLOR,
+      opacityMin: CAPTIVE_TOPSIDE_SUBSURFACE_OPACITY_MIN,
+      opacityMax: CAPTIVE_TOPSIDE_SUBSURFACE_OPACITY_MAX,
+      renderOrder: CAPTIVE_TOPSIDE_SUBSURFACE_RENDER_ORDER,
+    });
+    this.overlayBodyVisualRoot = overlayFallbackRig.bodyRoot;
+    this.overlayTailVisualPivot = overlayFallbackRig.tailPivot;
+    this.overlayFlukeVisualPivot = overlayFallbackRig.flukePivot;
+    this.overlayLeftFinPivot = overlayFallbackRig.leftFinPivot;
+    this.overlayRightFinPivot = overlayFallbackRig.rightFinPivot;
 
     for (const attachLocal of this.towAttachLocals) {
       const harpoon = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.9, 5), harpoonMaterial);
@@ -122,7 +166,8 @@ export class CaptiveWhale {
       this.visualRoot.add(harpoon);
     }
 
-    this.visualRoot.add(this.fallbackVisualRoot);
+    this.waterlineOverlayRoot.add(this.waterlineOverlayController.root);
+    this.visualRoot.add(this.fallbackVisualRoot, this.waterlineOverlayRoot);
     this.visualRoot.scale.setScalar(1.02);
     this.visualRoot.rotation.order = 'YXZ';
 
@@ -144,6 +189,13 @@ export class CaptiveWhale {
       this.flukeVisualPivot,
       this.leftFinPivot,
       this.rightFinPivot,
+    );
+    resetWhaleVisualPose(
+      this.overlayBodyVisualRoot,
+      this.overlayTailVisualPivot,
+      this.overlayFlukeVisualPivot,
+      this.overlayLeftFinPivot,
+      this.overlayRightFinPivot,
     );
 
     void this.loadHeroVisual();
@@ -173,6 +225,14 @@ export class CaptiveWhale {
       this.leftFinPivot,
       this.rightFinPivot,
     );
+    resetWhaleVisualPose(
+      this.overlayBodyVisualRoot,
+      this.overlayTailVisualPivot,
+      this.overlayFlukeVisualPivot,
+      this.overlayLeftFinPivot,
+      this.overlayRightFinPivot,
+    );
+    this.setWaterlinePassthrough(INACTIVE_WATERLINE_PASSTHROUGH_STATE);
     this.root.updateMatrixWorld(true);
   }
 
@@ -183,6 +243,19 @@ export class CaptiveWhale {
     this.escapeDepth = 0;
     this.towInitialized = false;
     this.root.visible = true;
+  }
+
+  getWaterlinePassthroughAnchor(target = new THREE.Vector3()): THREE.Vector3 {
+    return this.visualRoot.getWorldPosition(target);
+  }
+
+  getWaterlinePassthroughBounds(target: THREE.Box3): THREE.Box3 {
+    return target.makeEmpty().expandByObject(this.activeVisualRoot, true);
+  }
+
+  setWaterlinePassthrough(state: WaterlinePassthroughState): void {
+    this.waterlinePassthroughState = state;
+    this.waterlineOverlayController.setState(state);
   }
 
   updateTow(params: CaptiveWhaleTowUpdate): void {
@@ -470,6 +543,14 @@ export class CaptiveWhale {
       this.rightFinPivot,
       sampleWhaleSwimPose(this.swimPhase, this.swimAmplitude),
     );
+    applyWhaleVisualPose(
+      this.overlayBodyVisualRoot,
+      this.overlayTailVisualPivot,
+      this.overlayFlukeVisualPivot,
+      this.overlayLeftFinPivot,
+      this.overlayRightFinPivot,
+      sampleWhaleSwimPose(this.swimPhase, this.swimAmplitude),
+    );
   }
 
   private async loadHeroVisual(): Promise<void> {
@@ -479,9 +560,21 @@ export class CaptiveWhale {
       const flukeRotation = this.flukeVisualPivot.rotation.clone();
       const leftFinRotation = this.leftFinPivot.rotation.clone();
       const rightFinRotation = this.rightFinPivot.rotation.clone();
-      const heroRig = await createWhaleHeroRig('captive');
+      const [heroRig, overlayHeroRig] = await Promise.all([
+        createWhaleHeroRig('captive'),
+        createWhaleHeroRig('captive'),
+      ]);
       this.visualRoot.add(heroRig.root);
       this.fallbackVisualRoot.visible = false;
+      this.activeVisualRoot = heroRig.root;
+      this.waterlineOverlayRoot.clear();
+      this.waterlineOverlayController = createWaterlineOverlay(overlayHeroRig.root, {
+        color: CAPTIVE_TOPSIDE_SUBSURFACE_COLOR,
+        opacityMin: CAPTIVE_TOPSIDE_SUBSURFACE_OPACITY_MIN,
+        opacityMax: CAPTIVE_TOPSIDE_SUBSURFACE_OPACITY_MAX,
+        renderOrder: CAPTIVE_TOPSIDE_SUBSURFACE_RENDER_ORDER,
+      });
+      this.waterlineOverlayRoot.add(this.waterlineOverlayController.root);
       this.bodyVisualRoot = heroRig.bodyRoot;
       this.tailVisualPivot = heroRig.tailPivot;
       this.flukeVisualPivot = heroRig.flukePivot;
@@ -492,6 +585,17 @@ export class CaptiveWhale {
       this.flukeVisualPivot.rotation.copy(flukeRotation);
       this.leftFinPivot.rotation.copy(leftFinRotation);
       this.rightFinPivot.rotation.copy(rightFinRotation);
+      this.overlayBodyVisualRoot = overlayHeroRig.bodyRoot;
+      this.overlayTailVisualPivot = overlayHeroRig.tailPivot;
+      this.overlayFlukeVisualPivot = overlayHeroRig.flukePivot;
+      this.overlayLeftFinPivot = overlayHeroRig.leftFinPivot;
+      this.overlayRightFinPivot = overlayHeroRig.rightFinPivot;
+      this.overlayBodyVisualRoot.rotation.copy(bodyRotation);
+      this.overlayTailVisualPivot.rotation.copy(tailRotation);
+      this.overlayFlukeVisualPivot.rotation.copy(flukeRotation);
+      this.overlayLeftFinPivot.rotation.copy(leftFinRotation);
+      this.overlayRightFinPivot.rotation.copy(rightFinRotation);
+      this.waterlineOverlayController.setState(this.waterlinePassthroughState);
       this.towAttachNodes = heroRig.towAttach;
     } catch (error) {
       console.warn('Failed to load captive whale hero asset, keeping procedural fallback.', error);

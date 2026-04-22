@@ -26,6 +26,7 @@ export class Game {
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.08;
+    this.renderer.localClippingEnabled = true;
 
     this.mount.append(this.renderer.domElement);
     this.ui = new UISystem(document.body);

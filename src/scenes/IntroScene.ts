@@ -6,10 +6,14 @@ import { preloadWhaleHeroAsset } from '../entities/WhaleHeroAsset';
 import { Ship, ShipLanternInfluence, ShipSpawnConfig } from '../entities/Ship';
 import { createArenaFogBankMaterial, updateArenaFogBankMaterial } from '../fx/createArenaFogBankMaterial';
 import { BreachSplashFX } from '../fx/BreachSplashFX';
-import { calculateWhaleTopsideRevealState, WhaleTopsideRevealState } from '../fx/calculateWhaleTopsideRevealState';
+import {
+  ActorTopsideRevealState,
+  calculateActorTopsideRevealState,
+  INACTIVE_WATERLINE_PASSTHROUGH_STATE,
+  WaterlinePassthroughSubject,
+} from '../fx/calculateWhaleTopsideRevealState';
 import {
   createPainterlyOceanMaterial,
-  OCEAN_SUBSURFACE_REVEAL_TUNING,
   PainterlyOceanSubsurfaceRevealWindow,
   updatePainterlyOceanMaterial,
 } from '../fx/createPainterlyOceanMaterial';
@@ -136,17 +140,15 @@ export class IntroScene {
   private readonly introStartPosition = new THREE.Vector3();
   private readonly tempLanternInfluences: ShipLanternInfluence[] = [];
   private readonly tempRevealPoint = new THREE.Vector3();
+  private readonly tempActorAnchor = new THREE.Vector3();
+  private readonly tempActorBounds = new THREE.Box3();
   private readonly oceanRevealWindows: PainterlyOceanSubsurfaceRevealWindow[] = [];
   private readonly topsideRevealTargets: TopsideSubsurfaceRevealTarget[] = [];
   private readonly breachSplashFx: BreachSplashFX;
   private readonly shipWakeFx: ShipWakeFX;
   private readonly topsideSubsurfaceRevealFx: TopsideSubsurfaceRevealFX;
-  private whaleTopsideRevealState: WhaleTopsideRevealState = {
-    strength: 0,
-    depthBelowSurface: 0,
-    cameraAboveWater: true,
-    whaleSubmerged: false,
-  };
+  private whaleTopsideRevealState: ActorTopsideRevealState = { ...INACTIVE_WATERLINE_PASSTHROUGH_STATE, cameraAboveWater: true };
+  private readonly shipTopsideRevealStates = new Map<string, ActorTopsideRevealState>();
 
   private elapsedSeconds = 0;
   private phase: IntroScenePhase = 'rowing';
@@ -209,11 +211,12 @@ export class IntroScene {
     this.launchSplashSpawned = false;
     this.breachImpactResolved = false;
     this.skipStarted = false;
+    this.shipTopsideRevealStates.clear();
     this.rowboatMovement.reset();
     this.rowboat.reset();
     this.flagship.reset();
     this.whale.reset();
-    this.whale.setVisualPresentation('surface');
+    this.whale.setWaterlinePassthrough(INACTIVE_WATERLINE_PASSTHROUGH_STATE);
     this.breachSplashFx.reset();
     this.shipWakeFx.reset();
     this.topsideSubsurfaceRevealFx.reset();
@@ -283,7 +286,7 @@ export class IntroScene {
 
     this.updateShips(deltaSeconds);
     this.updateCamera(deltaSeconds);
-    this.updateWhaleTopsidePresentation();
+    this.updateTopsidePassthroughPresentation();
     this.updateAtmosphere(deltaSeconds);
     this.updateArenaFogBanks();
     this.updateOceanMaterial();
@@ -607,19 +610,30 @@ export class IntroScene {
     return this.topsideRevealTargets;
   }
 
-  private updateWhaleTopsidePresentation(): void {
-    this.whaleTopsideRevealState = calculateWhaleTopsideRevealState({
+  private updateTopsidePassthroughPresentation(): void {
+    this.whaleTopsideRevealState = this.evaluateWaterlinePassthrough(this.whale);
+    this.whale.setWaterlinePassthrough(
+      this.whale.root.visible ? this.whaleTopsideRevealState : INACTIVE_WATERLINE_PASSTHROUGH_STATE,
+    );
+
+    for (const ship of this.ships) {
+      const revealState = this.evaluateWaterlinePassthrough(ship);
+      this.shipTopsideRevealStates.set(ship.id, revealState);
+      ship.setWaterlinePassthrough(revealState);
+    }
+  }
+
+  private evaluateWaterlinePassthrough(subject: WaterlinePassthroughSubject): ActorTopsideRevealState {
+    const actorPosition = subject.getWaterlinePassthroughAnchor(this.tempActorAnchor);
+    const actorBounds = subject.getWaterlinePassthroughBounds(this.tempActorBounds);
+
+    return calculateActorTopsideRevealState({
+      kind: subject.waterlinePassthroughKind,
       cameraPosition: this.camera.position,
-      whalePosition: this.whale.position,
+      actorPosition,
+      actorBounds,
       sampleSurfaceHeight: this.sampleOceanHeight,
     });
-
-    if (this.phase === 'underpass' && this.underpassVisible && this.whaleTopsideRevealState.strength > 0.001) {
-      this.whale.setVisualPresentation('topside_subsurface', this.whaleTopsideRevealState.strength);
-      return;
-    }
-
-    this.whale.setVisualPresentation('surface');
   }
 
   private collectOceanSubsurfaceRevealWindows(): readonly PainterlyOceanSubsurfaceRevealWindow[] {
@@ -658,21 +672,9 @@ export class IntroScene {
 
   private appendShipRevealTarget(ship: Ship): void {
     ship.getSubsurfaceRevealPoint(this.tempRevealPoint);
-    const surfaceHeight = this.sampleOceanHeight(this.tempRevealPoint.x, this.tempRevealPoint.z);
-    const depthBelowSurface = surfaceHeight - this.tempRevealPoint.y;
-    const tuning = OCEAN_SUBSURFACE_REVEAL_TUNING.ship;
-    const depthFadeIn = THREE.MathUtils.smoothstep(depthBelowSurface, tuning.minDepth, tuning.strongStart);
-    const depthFadeOut = 1 - THREE.MathUtils.smoothstep(depthBelowSurface, tuning.strongEnd, tuning.maxDepth);
-    const distanceFade =
-      1 -
-      THREE.MathUtils.smoothstep(
-        this.camera.position.distanceTo(this.tempRevealPoint),
-        tuning.fadeDistanceStart,
-        tuning.fadeDistanceEnd,
-      );
-    const strength = THREE.MathUtils.clamp(depthFadeIn * depthFadeOut * distanceFade * tuning.maxStrength, 0, 1);
+    const revealState = this.shipTopsideRevealStates.get(ship.id);
 
-    if (strength <= 0.01) {
+    if (!revealState || revealState.strength <= 0.01) {
       return;
     }
 
@@ -680,10 +682,11 @@ export class IntroScene {
       kind: 'ship',
       position: this.tempRevealPoint.clone(),
       yaw: ship.heading,
-      depthBelowSurface,
+      depthBelowSurface: revealState.depthBelowSurface,
       halfWidth: ship.subsurfaceRevealHalfExtents.x,
       halfLength: ship.subsurfaceRevealHalfExtents.y,
-      strength,
+      strength: revealState.strength,
+      drawProxy: false,
     });
   }
 

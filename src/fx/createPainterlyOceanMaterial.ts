@@ -84,6 +84,24 @@ export const OCEAN_SUBSURFACE_REVEAL_TUNING = {
     fadeDistanceEnd: 36,
     maxStrength: 0.44,
   },
+  capital_ship: {
+    minDepth: 0.35,
+    strongStart: 0.9,
+    strongEnd: 4.5,
+    maxDepth: 9.0,
+    fadeDistanceStart: 12,
+    fadeDistanceEnd: 56,
+    maxStrength: 0.56,
+  },
+  object: {
+    minDepth: 0.05,
+    strongStart: 0.18,
+    strongEnd: 0.82,
+    maxDepth: 1.8,
+    fadeDistanceStart: 6,
+    fadeDistanceEnd: 26,
+    maxStrength: 0.36,
+  },
 } as const;
 
 export interface PainterlyOceanLanternInfluence {

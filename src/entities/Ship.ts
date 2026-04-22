@@ -1,5 +1,10 @@
 import * as THREE from 'three';
 
+import {
+  INACTIVE_WATERLINE_PASSTHROUGH_STATE,
+  TopsideRevealKind,
+  WaterlinePassthroughState,
+} from '../fx/calculateWhaleTopsideRevealState';
 import { createCelMaterial } from '../fx/createCelMaterial';
 
 export type ShipRole = 'rowboat' | 'flagship' | 'corporate_whaler';
@@ -55,6 +60,14 @@ const WATER_SHOVE_DAMPING = 0.95;
 const WATER_SHOVE_YAW_DAMPING = 1.3;
 const WATER_SLIDE_ROLL_DAMPING = 2.4;
 const WATER_SLIDE_ROLL_LIMIT = 0.06;
+const TOPSIDE_SUBSURFACE_RENDER_ORDER = 24;
+const TOPSIDE_SUBSURFACE_HULL_COLOR = new THREE.Color('#86a4b3');
+const TOPSIDE_SUBSURFACE_OPACITY_MIN = 0.08;
+const TOPSIDE_SUBSURFACE_OPACITY_MAX = 0.46;
+const CAPITAL_TOPSIDE_SUBSURFACE_OPACITY_MIN = 0.14;
+const CAPITAL_TOPSIDE_SUBSURFACE_OPACITY_MAX = 0.62;
+const CAPITAL_TOPSIDE_SUBSURFACE_HULL_BLEND = 0.08;
+const ROWBOAT_TOPSIDE_SUBSURFACE_HULL_BLEND = 0.18;
 
 type ShipDamageReactionProfile = 'default' | 'capital_ram' | 'capital_breach';
 
@@ -188,6 +201,9 @@ export class Ship {
   private readonly mastMaterial: THREE.MeshToonMaterial;
   private readonly sailMaterial: THREE.MeshToonMaterial;
   private readonly fallbackVisualRoot = new THREE.Group();
+  private readonly topsideSubsurfaceRoot = new THREE.Group();
+  private readonly topsideSubsurfacePlane = new THREE.Plane(new THREE.Vector3(0, -1, 0), 0);
+  private readonly topsideSubsurfaceMaterial: THREE.MeshBasicMaterial;
   private readonly hullTintMaterials: THREE.MeshToonMaterial[] = [];
   private readonly mastTintMaterials: THREE.MeshToonMaterial[] = [];
   private readonly sailTintMaterials: THREE.MeshToonMaterial[] = [];
@@ -295,6 +311,16 @@ export class Ship {
     this.hullTintMaterials.push(this.hullMaterial);
     this.mastTintMaterials.push(this.mastMaterial);
     this.sailTintMaterials.push(this.sailMaterial);
+    this.topsideSubsurfaceMaterial = new THREE.MeshBasicMaterial({
+      color: TOPSIDE_SUBSURFACE_HULL_COLOR,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      clippingPlanes: [this.topsideSubsurfacePlane],
+    });
+    this.topsideSubsurfaceMaterial.fog = true;
+    this.topsideSubsurfaceMaterial.toneMapped = false;
 
     if (this.role === 'corporate_whaler') {
       this.buildCorporateWhaler();
@@ -304,7 +330,9 @@ export class Ship {
       this.buildRowboat();
     }
 
+    this.buildTopsideSubsurfaceOverlay();
     this.visualRoot.add(this.fallbackVisualRoot);
+    this.visualRoot.add(this.topsideSubsurfaceRoot);
     this.root.add(this.visualRoot);
     this.root.scale.setScalar(this.roleConfig.scale);
     this.visualRoot.position.y = this.roleConfig.visualDraftOffset;
@@ -346,6 +374,10 @@ export class Ship {
 
   get isCapitalShip(): boolean {
     return this.roleConfig.isCapitalShip;
+  }
+
+  get waterlinePassthroughKind(): TopsideRevealKind {
+    return this.isCapitalShip ? 'capital_ship' : 'ship';
   }
 
   get capitalFleesWhenRowboatsGone(): boolean {
@@ -402,6 +434,7 @@ export class Ship {
     this.root.position.copy(this.anchor);
     this.root.position.y = this.roleConfig.floatHeight;
     this.root.rotation.set(0, this.heading, 0, 'YXZ');
+    this.setWaterlinePassthrough(INACTIVE_WATERLINE_PASSTHROUGH_STATE);
     this.updateDamageLook();
     this.root.updateMatrixWorld();
   }
@@ -635,6 +668,35 @@ export class Ship {
     this.readabilityCue = THREE.MathUtils.clamp(amount, 0, 1);
   }
 
+  getWaterlinePassthroughAnchor(target = new THREE.Vector3()): THREE.Vector3 {
+    return this.getSubsurfaceRevealPoint(target);
+  }
+
+  getWaterlinePassthroughBounds(target: THREE.Box3): THREE.Box3 {
+    // Use the authored hull/contact envelope here instead of the full ship height.
+    // Capital-ship masts and sails dramatically inflate the vertical span, which
+    // suppresses the submerged-fraction logic and makes the below-water hull stop
+    // reading through the fogged topside pass.
+    target.min.copy(this.capitalContactBoundsMinLocal);
+    target.max.copy(this.capitalContactBoundsMaxLocal);
+    return target.applyMatrix4(this.root.matrixWorld);
+  }
+
+  setWaterlinePassthrough(state: WaterlinePassthroughState): void {
+    this.topsideSubsurfaceRoot.visible =
+      state.cameraAboveWater && state.actorSubmerged && state.submergedFraction > 0.01 && state.strength > 0.01;
+    const opacityMin = this.isCapitalShip ? CAPITAL_TOPSIDE_SUBSURFACE_OPACITY_MIN : TOPSIDE_SUBSURFACE_OPACITY_MIN;
+    const opacityMax = this.isCapitalShip ? CAPITAL_TOPSIDE_SUBSURFACE_OPACITY_MAX : TOPSIDE_SUBSURFACE_OPACITY_MAX;
+    const hullBlend = this.isCapitalShip
+      ? CAPITAL_TOPSIDE_SUBSURFACE_HULL_BLEND
+      : ROWBOAT_TOPSIDE_SUBSURFACE_HULL_BLEND;
+    this.topsideSubsurfaceMaterial.opacity = this.topsideSubsurfaceRoot.visible
+      ? THREE.MathUtils.lerp(opacityMin, opacityMax, state.strength)
+      : 0;
+    this.topsideSubsurfaceMaterial.color.copy(TOPSIDE_SUBSURFACE_HULL_COLOR).lerp(this.hullMaterial.color, hullBlend);
+    this.topsideSubsurfacePlane.constant = state.waterlineY;
+  }
+
   setTetherPull(amount: number): void {
     this.tetherPullTarget = THREE.MathUtils.clamp(amount, 0, 2.6);
   }
@@ -739,6 +801,49 @@ export class Ship {
   worldToLocalPoint(point: THREE.Vector3, target = new THREE.Vector3()): THREE.Vector3 {
     target.copy(point);
     return this.root.worldToLocal(target);
+  }
+
+  private buildTopsideSubsurfaceOverlay(): void {
+    const overlay = this.fallbackVisualRoot.clone(true);
+    overlay.renderOrder = TOPSIDE_SUBSURFACE_RENDER_ORDER;
+    overlay.visible = true;
+
+    overlay.traverse((object) => {
+      object.renderOrder = TOPSIDE_SUBSURFACE_RENDER_ORDER;
+
+      if (object instanceof THREE.Light) {
+        object.visible = false;
+        return;
+      }
+
+      if (!(object instanceof THREE.Mesh)) {
+        return;
+      }
+
+      const materials = Array.isArray(object.material) ? object.material : [object.material];
+      const usesHaloMaterial = materials.some((material) =>
+        this.lanternHaloMaterials.includes(material as THREE.MeshBasicMaterial),
+      );
+      const usesTransparentGlow = materials.some(
+        (material) =>
+          material instanceof THREE.MeshBasicMaterial &&
+          material.transparent &&
+          material.blending !== THREE.NormalBlending,
+      );
+
+      if (usesHaloMaterial || usesTransparentGlow) {
+        object.visible = false;
+        return;
+      }
+
+      object.material = this.topsideSubsurfaceMaterial;
+      object.castShadow = false;
+      object.receiveShadow = false;
+      object.frustumCulled = false;
+    });
+
+    this.topsideSubsurfaceRoot.add(overlay);
+    this.topsideSubsurfaceRoot.visible = false;
   }
 
   private buildRowboat(): void {
