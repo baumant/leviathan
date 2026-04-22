@@ -44,8 +44,6 @@ const FLAGSHIP_START = new THREE.Vector3(0, 0.62, 54);
 const INTRO_HEADING = Math.PI;
 const INTRO_LAUNCH_OFFSET_RIGHT = 2.4;
 const INTRO_LAUNCH_OFFSET_BACK = 1.2;
-const CORRIDOR_WIDTH = 10;
-const CORRIDOR_RETURN = 1.4;
 const ROWING_TRIGGER_MIN_TIME = 3.6;
 const ROWING_TRIGGER_DISTANCE = 12;
 const ROWING_TRIGGER_FAILSAFE = 8;
@@ -330,7 +328,6 @@ export class IntroScene {
     );
 
     this.rowboatMovement.update(this.rowboat, this.input, deltaSeconds);
-    this.applyCorridorClamp(deltaSeconds);
     this.introDistanceTravelled = this.introStartPosition.distanceTo(this.rowboat.root.position);
 
     if (
@@ -347,7 +344,6 @@ export class IntroScene {
   private updateUnderpass(deltaSeconds: number): IntroSceneResult {
     this.phaseElapsed += deltaSeconds;
     this.rowboatMovement.update(this.rowboat, this.input, deltaSeconds);
-    this.applyCorridorClamp(deltaSeconds);
 
     this.underpassVisible = this.phaseElapsed <= UNDERPASS_VISIBLE_DURATION;
 
@@ -407,7 +403,6 @@ export class IntroScene {
     this.rowboat.travelSpeed = THREE.MathUtils.damp(this.rowboat.travelSpeed, 0.8, 1.2, deltaSeconds);
     this.rowboatForward.set(Math.sin(this.rowboat.heading), 0, Math.cos(this.rowboat.heading));
     this.rowboat.root.position.addScaledVector(this.rowboatForward, this.rowboat.travelSpeed * deltaSeconds);
-    this.applyCorridorClamp(deltaSeconds);
     this.updateWhaleBreachMotion();
   }
 
@@ -489,12 +484,6 @@ export class IntroScene {
     this.rowboat.update(deltaSeconds, this.elapsedSeconds, this.sampleOceanHeight);
     this.flagship.travelSpeed = 0;
     this.flagship.update(deltaSeconds, this.elapsedSeconds, this.sampleOceanHeight);
-  }
-
-  private applyCorridorClamp(deltaSeconds: number): void {
-    const lateral = this.rowboat.root.position.x;
-    const clamped = THREE.MathUtils.clamp(lateral, -CORRIDOR_WIDTH, CORRIDOR_WIDTH);
-    this.rowboat.root.position.x = THREE.MathUtils.damp(clamped, 0, CORRIDOR_RETURN, deltaSeconds);
   }
 
   private updateCamera(deltaSeconds: number): void {
