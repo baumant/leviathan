@@ -1,7 +1,9 @@
 import * as THREE from 'three';
 
 import { createCelMaterial } from '../fx/createCelMaterial';
+import { WHALE_SPEED_PROFILE } from '../tuning/whaleSpeedProfile';
 import { createWhaleHeroRig } from './WhaleHeroAsset';
+import { applyWhaleVisualPose, resetWhaleVisualPose, sampleWhaleSwimPose } from './WhaleVisualMotion';
 import { createSpermWhaleVisual } from './createSpermWhaleVisual';
 
 export type CaptiveWhaleState = 'inactive' | 'towed' | 'escaping' | 'captured' | 'gone';
@@ -73,7 +75,15 @@ export class CaptiveWhale {
   private escapeDepth = 0;
   private towInitialized = false;
   private yaw = 0;
+  private bodyVisualRoot: THREE.Object3D;
+  private tailVisualPivot: THREE.Object3D;
+  private flukeVisualPivot: THREE.Object3D;
+  private leftFinPivot: THREE.Object3D;
+  private rightFinPivot: THREE.Object3D;
   private towAttachNodes: readonly THREE.Object3D[] = [];
+  private readonly previousVisualPosition = new THREE.Vector3();
+  private swimPhase = 0;
+  private swimAmplitude = 0;
 
   constructor() {
     const harpoonMaterial = createCelMaterial({
@@ -98,6 +108,11 @@ export class CaptiveWhale {
     // Keep the captive whale broad and restrained so it reads through fog and
     // supports the mythic scale of the encounter without overtaking the player whale.
     this.fallbackVisualRoot = fallbackRig.root;
+    this.bodyVisualRoot = fallbackRig.bodyRoot;
+    this.tailVisualPivot = fallbackRig.tailPivot;
+    this.flukeVisualPivot = fallbackRig.flukePivot;
+    this.leftFinPivot = fallbackRig.leftFinPivot;
+    this.rightFinPivot = fallbackRig.rightFinPivot;
 
     for (const attachLocal of this.towAttachLocals) {
       const harpoon = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.9, 5), harpoonMaterial);
@@ -123,6 +138,13 @@ export class CaptiveWhale {
     this.root.add(this.visualRoot);
     this.root.visible = false;
     this.hideTowLines();
+    resetWhaleVisualPose(
+      this.bodyVisualRoot,
+      this.tailVisualPivot,
+      this.flukeVisualPivot,
+      this.leftFinPivot,
+      this.rightFinPivot,
+    );
 
     void this.loadHeroVisual();
   }
@@ -138,10 +160,19 @@ export class CaptiveWhale {
     this.escapeDepth = 0;
     this.towInitialized = false;
     this.yaw = 0;
+    this.swimPhase = 0;
+    this.swimAmplitude = 0;
     this.position.set(0, 0, 0);
     this.visualRoot.rotation.set(0, 0, 0, 'YXZ');
     this.root.visible = false;
     this.hideTowLines();
+    resetWhaleVisualPose(
+      this.bodyVisualRoot,
+      this.tailVisualPivot,
+      this.flukeVisualPivot,
+      this.leftFinPivot,
+      this.rightFinPivot,
+    );
     this.root.updateMatrixWorld(true);
   }
 
@@ -182,6 +213,7 @@ export class CaptiveWhale {
     this.towTarget.copy(this.towMidpoint).addScaledVector(this.towDirection, -TOWED_TRAIL_DISTANCE);
     this.towLateral.set(-this.towDirection.z, 0, this.towDirection.x);
     this.towTarget.addScaledVector(this.towLateral, Math.sin(params.elapsedSeconds * 1.35) * 0.58);
+    this.previousVisualPosition.copy(this.position);
 
     const surfaceHeight = params.sampleSurfaceHeight(this.towTarget.x, this.towTarget.z);
     this.towTarget.y = surfaceHeight - TOWED_DEPTH_OFFSET + Math.sin(params.elapsedSeconds * 1.7) * 0.1;
@@ -214,7 +246,15 @@ export class CaptiveWhale {
       2.9,
       params.deltaSeconds,
     );
+    const towTravelSpeed =
+      this.position.distanceTo(this.previousVisualPosition) / Math.max(params.deltaSeconds, 0.0001);
+    const towSpeedRatio = THREE.MathUtils.clamp(towTravelSpeed / WHALE_SPEED_PROFILE.maxTravelSpeed, 0, 1.2);
     this.visualRoot.rotation.set(pitch, this.yaw, roll, 'YXZ');
+    this.updateSwimVisual(
+      params.deltaSeconds,
+      THREE.MathUtils.lerp(0.08, 0.18, towSpeedRatio),
+      towTravelSpeed,
+    );
 
     this.root.visible = true;
     this.showTowLines(towOriginCount);
@@ -264,6 +304,7 @@ export class CaptiveWhale {
 
   update(deltaSeconds: number, elapsedSeconds: number, sampleSurfaceHeight: (x: number, z: number) => number): void {
     if (this.state === 'escaping') {
+      this.previousVisualPosition.copy(this.position);
       this.escapeAge += deltaSeconds;
       const escapeAlpha = THREE.MathUtils.clamp(this.escapeAge / ESCAPE_DURATION, 0, 1);
       const speed = THREE.MathUtils.lerp(ESCAPE_INITIAL_SPEED, ESCAPE_FINAL_SPEED, escapeAlpha);
@@ -284,6 +325,7 @@ export class CaptiveWhale {
         THREE.MathUtils.damp(this.visualRoot.rotation.z, rollTarget, 2.2, deltaSeconds),
         'YXZ',
       );
+      this.updateSwimVisual(deltaSeconds, THREE.MathUtils.lerp(0.22, 0.4, escapeAlpha), speed);
 
       this.root.updateMatrixWorld(true);
 
@@ -298,6 +340,7 @@ export class CaptiveWhale {
       return;
     }
 
+    this.previousVisualPosition.copy(this.position);
     this.captureAge += deltaSeconds;
     this.captureDirection.copy(this.captureTarget).sub(this.position).setY(0);
 
@@ -319,6 +362,11 @@ export class CaptiveWhale {
       this.yaw,
       THREE.MathUtils.damp(this.visualRoot.rotation.z, 0, 4, deltaSeconds),
       'YXZ',
+    );
+    this.updateSwimVisual(
+      deltaSeconds,
+      THREE.MathUtils.lerp(0.06, 0.03, captureAlpha),
+      this.position.distanceTo(this.previousVisualPosition) / Math.max(deltaSeconds, 0.0001),
     );
 
     this.root.updateMatrixWorld(true);
@@ -392,11 +440,58 @@ export class CaptiveWhale {
     }
   }
 
+  private updateSwimVisual(deltaSeconds: number, targetAmplitude: number, travelSpeed: number): void {
+    const speedRatio = THREE.MathUtils.clamp(
+      travelSpeed / Math.max(WHALE_SPEED_PROFILE.maxTravelSpeed, 0.001),
+      0,
+      1.2,
+    );
+    const frequency = THREE.MathUtils.lerp(1.02, 1.76, speedRatio);
+
+    this.swimAmplitude = THREE.MathUtils.damp(
+      this.swimAmplitude,
+      targetAmplitude,
+      targetAmplitude > this.swimAmplitude ? 4.6 : 3.3,
+      deltaSeconds,
+    );
+
+    if (this.swimAmplitude > 0.001 || targetAmplitude > 0.001) {
+      this.swimPhase += deltaSeconds * frequency * Math.PI * 2;
+      if (this.swimPhase > Math.PI * 2) {
+        this.swimPhase %= Math.PI * 2;
+      }
+    }
+
+    applyWhaleVisualPose(
+      this.bodyVisualRoot,
+      this.tailVisualPivot,
+      this.flukeVisualPivot,
+      this.leftFinPivot,
+      this.rightFinPivot,
+      sampleWhaleSwimPose(this.swimPhase, this.swimAmplitude),
+    );
+  }
+
   private async loadHeroVisual(): Promise<void> {
     try {
+      const bodyRotation = this.bodyVisualRoot.rotation.clone();
+      const tailRotation = this.tailVisualPivot.rotation.clone();
+      const flukeRotation = this.flukeVisualPivot.rotation.clone();
+      const leftFinRotation = this.leftFinPivot.rotation.clone();
+      const rightFinRotation = this.rightFinPivot.rotation.clone();
       const heroRig = await createWhaleHeroRig('captive');
       this.visualRoot.add(heroRig.root);
       this.fallbackVisualRoot.visible = false;
+      this.bodyVisualRoot = heroRig.bodyRoot;
+      this.tailVisualPivot = heroRig.tailPivot;
+      this.flukeVisualPivot = heroRig.flukePivot;
+      this.leftFinPivot = heroRig.leftFinPivot;
+      this.rightFinPivot = heroRig.rightFinPivot;
+      this.bodyVisualRoot.rotation.copy(bodyRotation);
+      this.tailVisualPivot.rotation.copy(tailRotation);
+      this.flukeVisualPivot.rotation.copy(flukeRotation);
+      this.leftFinPivot.rotation.copy(leftFinRotation);
+      this.rightFinPivot.rotation.copy(rightFinRotation);
       this.towAttachNodes = heroRig.towAttach;
     } catch (error) {
       console.warn('Failed to load captive whale hero asset, keeping procedural fallback.', error);

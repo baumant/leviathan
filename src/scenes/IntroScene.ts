@@ -2,9 +2,11 @@ import * as THREE from 'three';
 import { Water } from 'three/addons/objects/Water.js';
 
 import { PlayerWhale } from '../entities/PlayerWhale';
+import { preloadWhaleHeroAsset } from '../entities/WhaleHeroAsset';
 import { Ship, ShipLanternInfluence, ShipSpawnConfig } from '../entities/Ship';
 import { createArenaFogBankMaterial, updateArenaFogBankMaterial } from '../fx/createArenaFogBankMaterial';
 import { BreachSplashFX } from '../fx/BreachSplashFX';
+import { calculateWhaleTopsideRevealState, WhaleTopsideRevealState } from '../fx/calculateWhaleTopsideRevealState';
 import {
   createPainterlyOceanMaterial,
   OCEAN_SUBSURFACE_REVEAL_TUNING,
@@ -141,6 +143,12 @@ export class IntroScene {
   private readonly breachSplashFx: BreachSplashFX;
   private readonly shipWakeFx: ShipWakeFX;
   private readonly topsideSubsurfaceRevealFx: TopsideSubsurfaceRevealFX;
+  private whaleTopsideRevealState: WhaleTopsideRevealState = {
+    strength: 0,
+    depthBelowSurface: 0,
+    cameraAboveWater: true,
+    whaleSubmerged: false,
+  };
 
   private elapsedSeconds = 0;
   private phase: IntroScenePhase = 'rowing';
@@ -168,6 +176,7 @@ export class IntroScene {
     this.breachSplashFx = new BreachSplashFX(this.scene);
     this.shipWakeFx = new ShipWakeFX(this.scene, this.ships);
     this.topsideSubsurfaceRevealFx = new TopsideSubsurfaceRevealFX(this.scene);
+    void preloadWhaleHeroAsset();
 
     this.setupLights();
     this.setupSky();
@@ -206,6 +215,7 @@ export class IntroScene {
     this.rowboat.reset();
     this.flagship.reset();
     this.whale.reset();
+    this.whale.setVisualPresentation('surface');
     this.breachSplashFx.reset();
     this.shipWakeFx.reset();
     this.topsideSubsurfaceRevealFx.reset();
@@ -275,6 +285,7 @@ export class IntroScene {
 
     this.updateShips(deltaSeconds);
     this.updateCamera(deltaSeconds);
+    this.updateWhaleTopsidePresentation();
     this.updateAtmosphere(deltaSeconds);
     this.updateArenaFogBanks();
     this.updateOceanMaterial();
@@ -339,9 +350,9 @@ export class IntroScene {
     this.applyCorridorClamp(deltaSeconds);
 
     this.underpassVisible = this.phaseElapsed <= UNDERPASS_VISIBLE_DURATION;
-    this.whale.root.visible = false;
 
     if (this.underpassVisible) {
+      this.whale.root.visible = true;
       const progress = THREE.MathUtils.clamp(this.phaseElapsed / UNDERPASS_VISIBLE_DURATION, 0, 1);
       this.rowboat.getForward(this.rowboatForward);
       this.rowboatRight.set(this.rowboatForward.z, 0, -this.rowboatForward.x).normalize();
@@ -362,6 +373,7 @@ export class IntroScene {
       this.whale.root.rotation.set(0, this.whale.yaw, 0, 'YXZ');
       this.whale.root.updateMatrixWorld();
     } else {
+      this.whale.root.visible = false;
       this.whale.position.set(
         this.rowboat.root.position.x,
         this.sampleOceanHeight(this.rowboat.root.position.x, this.rowboat.root.position.z) - 12,
@@ -547,16 +559,14 @@ export class IntroScene {
 
   private updateHud(): void {
     this.ui.update({
+      capitalShipBars: [],
       objective: 'Row for open water. The fog is wrong.',
       whaleHealth: 1,
       whaleAir: 1,
-      targetHealth: 0,
-      targetLabel: '',
       shipStatus: '',
       speed: this.rowboat.travelSpeed,
       depth: 0,
       submerged: false,
-      burstActive: false,
       score: 0,
       fleetRemaining: 0,
       activeTethers: 0,
@@ -608,6 +618,21 @@ export class IntroScene {
     return this.topsideRevealTargets;
   }
 
+  private updateWhaleTopsidePresentation(): void {
+    this.whaleTopsideRevealState = calculateWhaleTopsideRevealState({
+      cameraPosition: this.camera.position,
+      whalePosition: this.whale.position,
+      sampleSurfaceHeight: this.sampleOceanHeight,
+    });
+
+    if (this.phase === 'underpass' && this.underpassVisible && this.whaleTopsideRevealState.strength > 0.001) {
+      this.whale.setVisualPresentation('topside_subsurface', this.whaleTopsideRevealState.strength);
+      return;
+    }
+
+    this.whale.setVisualPresentation('surface');
+  }
+
   private collectOceanSubsurfaceRevealWindows(): readonly PainterlyOceanSubsurfaceRevealWindow[] {
     this.oceanRevealWindows.length = 0;
 
@@ -624,14 +649,7 @@ export class IntroScene {
   }
 
   private appendWhaleRevealTarget(): void {
-    const surfaceHeight = this.sampleOceanHeight(this.whale.position.x, this.whale.position.z);
-    const depthBelowSurface = surfaceHeight - this.whale.position.y;
-    const tuning = OCEAN_SUBSURFACE_REVEAL_TUNING.whale;
-    const depthFadeIn = THREE.MathUtils.smoothstep(depthBelowSurface, tuning.minDepth, tuning.strongStart);
-    const depthFadeOut = 1 - THREE.MathUtils.smoothstep(depthBelowSurface, tuning.strongEnd, tuning.maxDepth);
-    const distanceFade =
-      1 - THREE.MathUtils.smoothstep(this.camera.position.distanceTo(this.whale.position), tuning.fadeDistanceStart, tuning.fadeDistanceEnd);
-    const strength = THREE.MathUtils.clamp(depthFadeIn * depthFadeOut * distanceFade * tuning.maxStrength, 0, 1);
+    const { depthBelowSurface, strength } = this.whaleTopsideRevealState;
 
     if (strength <= 0.01) {
       return;
@@ -645,6 +663,7 @@ export class IntroScene {
       halfWidth: this.whale.subsurfaceRevealHalfExtents.x,
       halfLength: this.whale.subsurfaceRevealHalfExtents.y,
       strength,
+      drawProxy: false,
     });
   }
 

@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 
 import { createCelMaterial } from '../fx/createCelMaterial';
+import { WhaleVisualRig } from './WhaleVisualMotion';
 
 export type WhaleHeroVariant = 'player' | 'captive';
 
@@ -18,12 +19,7 @@ interface WhaleVariantPalette {
   eyeColor: THREE.ColorRepresentation;
 }
 
-export interface WhaleHeroRig {
-  readonly root: THREE.Group;
-  readonly tailPivot: THREE.Object3D;
-  readonly flukePivot: THREE.Object3D;
-  readonly leftFinPivot: THREE.Object3D | null;
-  readonly rightFinPivot: THREE.Object3D | null;
+export interface WhaleHeroRig extends WhaleVisualRig {
   readonly tetherAttach: THREE.Object3D | null;
   readonly tailSlapAnchor: THREE.Object3D | null;
   readonly towAttach: readonly THREE.Object3D[];
@@ -68,6 +64,10 @@ function loadHeroTemplate(): Promise<THREE.Group> {
   }
 
   return heroTemplatePromise;
+}
+
+export function preloadWhaleHeroAsset(): Promise<void> {
+  return loadHeroTemplate().then(() => undefined);
 }
 
 function cloneTemplate(root: THREE.Group): THREE.Group {
@@ -180,10 +180,11 @@ export async function createWhaleHeroRig(variant: WhaleHeroVariant): Promise<Wha
 
   return {
     root,
+    bodyRoot: getRequiredNode(root, 'body_root'),
     tailPivot: getRequiredNode(root, 'tail_pivot'),
     flukePivot: getRequiredNode(root, 'fluke_pivot'),
-    leftFinPivot: getOptionalNode(root, 'left_fin_pivot'),
-    rightFinPivot: getOptionalNode(root, 'right_fin_pivot'),
+    leftFinPivot: getRequiredNode(root, 'left_fin_pivot'),
+    rightFinPivot: getRequiredNode(root, 'right_fin_pivot'),
     tetherAttach: getOptionalNode(root, 'tether_attach'),
     tailSlapAnchor: getOptionalNode(root, 'tail_slap_anchor'),
     towAttach: ['tow_attach_left', 'tow_attach_center', 'tow_attach_right']

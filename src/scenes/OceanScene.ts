@@ -5,9 +5,11 @@ import { Cannonball } from '../entities/Cannonball';
 import { CaptiveWhale } from '../entities/CaptiveWhale';
 import { Harpoon } from '../entities/Harpoon';
 import { PlayerWhale } from '../entities/PlayerWhale';
+import { preloadWhaleHeroAsset } from '../entities/WhaleHeroAsset';
 import { Ship, ShipLanternInfluence, ShipSpawnConfig } from '../entities/Ship';
 import { createArenaFogBankMaterial, updateArenaFogBankMaterial } from '../fx/createArenaFogBankMaterial';
 import { BreachSplashFX } from '../fx/BreachSplashFX';
+import { calculateWhaleTopsideRevealState, WhaleTopsideRevealState } from '../fx/calculateWhaleTopsideRevealState';
 import {
   createPainterlyOceanMaterial,
   OCEAN_SUBSURFACE_REVEAL_TUNING,
@@ -22,8 +24,9 @@ import { createOceanUndersideMaterial, UnderwaterReadabilityFX } from '../fx/Und
 import { Input } from '../game/Input';
 import { DamageSystem } from '../systems/DamageSystem';
 import { ShipAIContext, ShipAISystem } from '../systems/ShipAISystem';
-import { UISystem } from '../systems/UISystem';
+import { type HUDShipBarSnapshot, UISystem } from '../systems/UISystem';
 import { WhaleMovementResult, WhaleMovementSystem } from '../systems/WhaleMovementSystem';
+import { WHALE_SPEED_PROFILE } from '../tuning/whaleSpeedProfile';
 
 const SURFACE_FOG = new THREE.Color('#15202b');
 const UNDERWATER_FOG = new THREE.Color('#020d14');
@@ -52,7 +55,7 @@ const HARPOON_LIFETIME = 2.4;
 const CANNONBALL_SPEED = 28;
 const CANNONBALL_LIFETIME = 5.2;
 const CANNON_SPLASH_RADIUS = 4;
-const TETHER_SNAP_SPEED = 18;
+const TETHER_SNAP_SPEED = WHALE_SPEED_PROFILE.tetherSnapSpeed;
 const AIR_DRAIN_PER_SECOND = 0.35;
 const AIR_RECOVERY_PER_SECOND = 3.4;
 const SUFFOCATION_DAMAGE_PER_SECOND = 6;
@@ -72,7 +75,6 @@ const RESCUE_CORPORATE_CREEP_SPEED = 2.2;
 const TAIL_SLAP_CAMERA_BLEND_IN = 0.08;
 const TAIL_SLAP_CAMERA_POST_HOLD = 0.18;
 const TAIL_SLAP_CAMERA_BLEND_OUT = 0.22;
-
 interface OceanSwellLayer {
   direction: THREE.Vector2;
   frequency: number;
@@ -186,6 +188,8 @@ export class OceanScene {
   private readonly shipAiContext: ShipAIContext = {
     arenaRadius: ARENA_RADIUS,
     deltaSeconds: 0,
+    fleetAlerted: false,
+    otherShips: [],
     rowboatsRemaining: 0,
     shipHasActiveHarpoon: false,
     shipHasTether: false,
@@ -211,12 +215,29 @@ export class OceanScene {
   private readonly tempRescueTarget = new THREE.Vector3();
   private readonly tempRescueDirection = new THREE.Vector3();
   private readonly tempRescueLateral = new THREE.Vector3();
+  private readonly tempHealthBarAnchor = new THREE.Vector3();
+  private readonly tempHealthBarProjection = new THREE.Vector3();
+  private readonly tempCameraSpacePoint = new THREE.Vector3();
+  private readonly tempCollisionHalfExtentsA = new THREE.Vector2();
+  private readonly tempCollisionHalfExtentsB = new THREE.Vector2();
+  private readonly tempCollisionAxisA0 = new THREE.Vector2();
+  private readonly tempCollisionAxisA1 = new THREE.Vector2();
+  private readonly tempCollisionAxisB0 = new THREE.Vector2();
+  private readonly tempCollisionAxisB1 = new THREE.Vector2();
+  private readonly tempCollisionDelta = new THREE.Vector2();
+  private readonly tempCollisionNormal = new THREE.Vector2();
   private readonly rescueTowOrigins = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
   private readonly breachLaunchShipIds = new Set<string>();
   private readonly capitalBreachedThisArc = new Set<string>();
   private readonly oceanLanternInfluences: ShipLanternInfluence[] = [];
   private readonly oceanRevealWindows: PainterlyOceanSubsurfaceRevealWindow[] = [];
   private readonly topsideRevealTargets: TopsideSubsurfaceRevealTarget[] = [];
+  private whaleTopsideRevealState: WhaleTopsideRevealState = {
+    strength: 0,
+    depthBelowSurface: 0,
+    cameraAboveWater: true,
+    whaleSubmerged: false,
+  };
 
   private elapsedSeconds = 0;
   private impactShake = 0;
@@ -242,6 +263,9 @@ export class OceanScene {
   private rescueEncounterState: RescueEncounterState = 'inactive';
   private rescueTowBoatIds: string[] = [];
   private rescueInitialExtractionDistance = 1;
+  private fleetAlerted = false;
+  private viewportWidth = 1;
+  private viewportHeight = 1;
 
   constructor(
     private readonly input: Input,
@@ -263,6 +287,7 @@ export class OceanScene {
     this.shipWakeFx = new ShipWakeFX(this.scene, this.ships);
     this.topsideSubsurfaceRevealFx = new TopsideSubsurfaceRevealFX(this.scene);
     this.readabilityFx = new UnderwaterReadabilityFX(this.scene, this.camera);
+    void preloadWhaleHeroAsset();
 
     this.setupLights();
     this.setupSky();
@@ -290,6 +315,8 @@ export class OceanScene {
   }
 
   resize(width: number, height: number): void {
+    this.viewportWidth = Math.max(1, width);
+    this.viewportHeight = Math.max(1, height);
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
   }
@@ -319,6 +346,7 @@ export class OceanScene {
     this.rescueEncounterState = 'inactive';
     this.rescueTowBoatIds = [];
     this.rescueInitialExtractionDistance = 1;
+    this.fleetAlerted = false;
     this.breachLaunchShipIds.clear();
     this.capitalBreachedThisArc.clear();
 
@@ -368,12 +396,18 @@ export class OceanScene {
 
     if (this.phase === 'playing') {
       this.maybeSpawnCorporateWhalerByTimer();
+      this.updateFleetAlert();
     }
 
     this.updateShips(deltaSeconds);
+    if (this.phase === 'playing') {
+      this.resolveWhaleCapitalInteractions();
+    }
     this.updateRescueEncounter(deltaSeconds);
     if (this.phase === 'playing') {
       this.maybeLaunchCorporateRowboats();
+      this.resolveWhaleRowboatBodyContacts();
+      this.resolveShipShipCollisions();
     }
     this.updateHarpoons(deltaSeconds);
     this.updateCannonballs(deltaSeconds);
@@ -389,6 +423,7 @@ export class OceanScene {
     const underwaterRatio = this.getUnderwaterRatio();
 
     this.updateCamera(deltaSeconds, underwaterRatio);
+    this.updateWhaleTopsidePresentation();
     this.updateAtmosphere(deltaSeconds, underwaterRatio);
     this.updateArenaFogBanks(underwaterRatio);
     this.updateOceanMaterial(underwaterRatio);
@@ -411,7 +446,6 @@ export class OceanScene {
       camera: this.camera,
       whalePosition: this.whale.position,
       whaleSpeed: this.whale.speed,
-      whaleBoostActive: this.whale.boostActive,
       underwaterRatio,
       submerged: this.whale.submerged,
       surfaceHeightAtCamera: this.sampleOceanHeight(this.camera.position.x, this.camera.position.z),
@@ -640,6 +674,21 @@ export class OceanScene {
     return this.topsideRevealTargets;
   }
 
+  private updateWhaleTopsidePresentation(): void {
+    this.whaleTopsideRevealState = calculateWhaleTopsideRevealState({
+      cameraPosition: this.camera.position,
+      whalePosition: this.whale.position,
+      sampleSurfaceHeight: this.sampleOceanHeight,
+    });
+
+    if (this.whaleTopsideRevealState.strength > 0.001) {
+      this.whale.setVisualPresentation('topside_subsurface', this.whaleTopsideRevealState.strength);
+      return;
+    }
+
+    this.whale.setVisualPresentation('surface');
+  }
+
   private collectOceanSubsurfaceRevealWindows(): readonly PainterlyOceanSubsurfaceRevealWindow[] {
     this.oceanRevealWindows.length = 0;
 
@@ -656,19 +705,7 @@ export class OceanScene {
   }
 
   private appendWhaleRevealTarget(): void {
-    const surfaceHeight = this.sampleOceanHeight(this.whale.position.x, this.whale.position.z);
-    const depthBelowSurface = surfaceHeight - this.whale.position.y;
-    const tuning = OCEAN_SUBSURFACE_REVEAL_TUNING.whale;
-    const depthFadeIn = THREE.MathUtils.smoothstep(depthBelowSurface, tuning.minDepth, tuning.strongStart);
-    const depthFadeOut = 1 - THREE.MathUtils.smoothstep(depthBelowSurface, tuning.strongEnd, tuning.maxDepth);
-    const distanceFade =
-      1 -
-      THREE.MathUtils.smoothstep(
-        this.camera.position.distanceTo(this.whale.position),
-        tuning.fadeDistanceStart,
-        tuning.fadeDistanceEnd,
-      );
-    const strength = THREE.MathUtils.clamp(depthFadeIn * depthFadeOut * distanceFade * tuning.maxStrength, 0, 1);
+    const { depthBelowSurface, strength } = this.whaleTopsideRevealState;
 
     if (strength <= 0.01) {
       return;
@@ -682,6 +719,7 @@ export class OceanScene {
       halfWidth: this.whale.subsurfaceRevealHalfExtents.x,
       halfLength: this.whale.subsurfaceRevealHalfExtents.y,
       strength,
+      drawProxy: false,
     });
   }
 
@@ -718,8 +756,11 @@ export class OceanScene {
 
   private updateShips(deltaSeconds: number): void {
     const rowboatsRemaining = this.getRowboatsRemaining();
+    const combatShips = this.getCombatShipsForAI();
     const rescueTowActive = this.rescueEncounterState === 'towed';
     this.shipAiContext.deltaSeconds = deltaSeconds;
+    this.shipAiContext.fleetAlerted = this.fleetAlerted;
+    this.shipAiContext.otherShips = combatShips;
     this.shipAiContext.rowboatsRemaining = rowboatsRemaining;
     this.shipAiContext.whalePosition.copy(this.whale.position);
 
@@ -755,7 +796,7 @@ export class OceanScene {
       const pauseWaterShove = ship.isCapitalShip && this.whale.actionState === 'breach';
       ship.update(deltaSeconds, this.elapsedSeconds, this.sampleOceanHeight, pauseWaterShove);
 
-      if (this.phase === 'playing' && this.whale.actionState === 'swim') {
+      if (this.phase === 'playing' && this.whale.actionState === 'swim' && ship.role === 'rowboat') {
         const ramResult = this.damageSystem.resolveRam(this.whale, ship, this.elapsedSeconds);
 
         if (ramResult) {
@@ -923,7 +964,7 @@ export class OceanScene {
       }
 
       const tetherLength = harpoon.getTetherLength(this.tempShipOrigin, this.tempAttachPoint);
-      const snapped = tetherLength > harpoon.maxTetherLength && (this.whale.speed > TETHER_SNAP_SPEED || this.whale.boostActive);
+      const snapped = tetherLength > harpoon.maxTetherLength && this.whale.speed > TETHER_SNAP_SPEED;
 
       if (snapped) {
         this.impactShake = Math.max(this.impactShake, 0.14);
@@ -1139,9 +1180,13 @@ export class OceanScene {
   private spawnHarpoon(ship: Ship): void {
     const harpoon = new Harpoon(ship.id);
     const origin = ship.getHarpoonOrigin(this.tempTargetPoint);
-    const target = this.tempHarpoonDirection
-      .copy(this.whale.position)
-      .addScaledVector(this.whaleForward, THREE.MathUtils.clamp(this.whale.speed * 0.18, 0, 3.6));
+    const target = this.tempHarpoonDirection.copy(this.whale.position);
+    const harpoonLead = THREE.MathUtils.clamp(this.whale.speed * 0.18, 0, WHALE_SPEED_PROFILE.harpoonLeadClamp);
+
+    if (harpoonLead > 0.001 && this.whale.travelVelocity.lengthSq() > 0.0001) {
+      this.tempLaunchDirection.copy(this.whale.travelVelocity).normalize();
+      target.addScaledVector(this.tempLaunchDirection, harpoonLead);
+    }
 
     target.y += 0.35;
     target.sub(origin);
@@ -1162,14 +1207,19 @@ export class OceanScene {
       const origin = origins[index];
       const spread = index - (origins.length - 1) * 0.5;
       const cannonball = new Cannonball();
-      const target = this.tempTargetPoint
-        .copy(this.whale.position)
-        .addScaledVector(this.whaleForward, THREE.MathUtils.clamp(this.whale.speed * 0.55, 0, 6))
-        .addScaledVector(this.tempShipForward, spread * 2.2);
+      const target = this.tempTargetPoint.copy(this.whale.position);
+      const cannonLead = THREE.MathUtils.clamp(this.whale.speed * 0.55, 0, WHALE_SPEED_PROFILE.cannonLeadClamp);
 
-      this.tempCannonVelocity.copy(target).sub(origin).setY(0);
+      if (cannonLead > 0.001 && this.whale.travelVelocity.lengthSq() > 0.0001) {
+        this.tempLaunchDirection.copy(this.whale.travelVelocity).normalize();
+        target.addScaledVector(this.tempLaunchDirection, cannonLead);
+      }
+
+      target.addScaledVector(this.tempShipForward, spread * 2.2);
+
+      this.tempCannonVelocity.copy(target).sub(origin);
       this.tempCannonVelocity.normalize().multiplyScalar(CANNONBALL_SPEED);
-      this.tempCannonVelocity.y = 4.4 + Math.abs(spread) * 0.3;
+      this.tempCannonVelocity.y += 4.4 + Math.abs(spread) * 0.3;
 
       cannonball.launch(origin, this.tempCannonVelocity, ship.attackDamage, CANNON_SPLASH_RADIUS);
       this.cannonballs.push(cannonball);
@@ -1265,6 +1315,166 @@ export class OceanScene {
     return THREE.MathUtils.clamp(depthPull + tensionAlpha * 1.15, 0, 2.4);
   }
 
+  private resolveWhaleCapitalInteractions(): void {
+    for (const ship of this.ships) {
+      if (!ship.isCapitalShip) {
+        continue;
+      }
+
+      const interaction = this.damageSystem.resolveCapitalInteraction(this.whale, ship, this.elapsedSeconds);
+
+      if (interaction?.kind === 'ram_hit') {
+        this.impactShake = Math.max(this.impactShake, interaction.intensity);
+      }
+    }
+  }
+
+  private resolveWhaleRowboatBodyContacts(): void {
+    for (const ship of this.ships) {
+      if (ship.role !== 'rowboat') {
+        continue;
+      }
+
+      this.damageSystem.resolveBodyContact(this.whale, ship);
+    }
+  }
+
+  private resolveShipShipCollisions(): void {
+    const activeShips = this.ships.filter((ship) => !ship.sinking && !ship.sunk);
+
+    if (activeShips.length <= 1) {
+      return;
+    }
+
+    for (let iteration = 0; iteration < 2; iteration += 1) {
+      for (let index = 0; index < activeShips.length - 1; index += 1) {
+        const shipA = activeShips[index];
+
+        for (let otherIndex = index + 1; otherIndex < activeShips.length; otherIndex += 1) {
+          this.resolveShipPairCollision(shipA, activeShips[otherIndex]);
+        }
+      }
+    }
+
+    for (const ship of activeShips) {
+      ship.root.updateMatrixWorld();
+    }
+  }
+
+  private resolveShipPairCollision(shipA: Ship, shipB: Ship): void {
+    shipA.getCollisionHalfExtentsXZ(this.tempCollisionHalfExtentsA);
+    shipB.getCollisionHalfExtentsXZ(this.tempCollisionHalfExtentsB);
+    this.setCollisionAxes(shipA, this.tempCollisionAxisA0, this.tempCollisionAxisA1);
+    this.setCollisionAxes(shipB, this.tempCollisionAxisB0, this.tempCollisionAxisB1);
+    this.tempCollisionDelta.set(
+      shipB.root.position.x - shipA.root.position.x,
+      shipB.root.position.z - shipA.root.position.z,
+    );
+
+    const aHalfWidth = this.tempCollisionHalfExtentsA.x;
+    const aHalfLength = this.tempCollisionHalfExtentsA.y;
+    const bHalfWidth = this.tempCollisionHalfExtentsB.x;
+    const bHalfLength = this.tempCollisionHalfExtentsB.y;
+    const epsilon = 0.0001;
+
+    const tA0 = this.tempCollisionDelta.dot(this.tempCollisionAxisA0);
+    const tA1 = this.tempCollisionDelta.dot(this.tempCollisionAxisA1);
+    const r00 = this.tempCollisionAxisA0.dot(this.tempCollisionAxisB0);
+    const r01 = this.tempCollisionAxisA0.dot(this.tempCollisionAxisB1);
+    const r10 = this.tempCollisionAxisA1.dot(this.tempCollisionAxisB0);
+    const r11 = this.tempCollisionAxisA1.dot(this.tempCollisionAxisB1);
+    const absR00 = Math.abs(r00) + epsilon;
+    const absR01 = Math.abs(r01) + epsilon;
+    const absR10 = Math.abs(r10) + epsilon;
+    const absR11 = Math.abs(r11) + epsilon;
+    let minOverlap = Number.POSITIVE_INFINITY;
+
+    const testAxis = (axis: THREE.Vector2, distance: number, radiusA: number, radiusB: number): boolean => {
+      const overlap = radiusA + radiusB - Math.abs(distance);
+
+      if (overlap <= 0) {
+        return false;
+      }
+
+      if (overlap < minOverlap) {
+        minOverlap = overlap;
+        this.tempCollisionNormal.copy(axis).multiplyScalar(distance < 0 ? -1 : 1);
+      }
+
+      return true;
+    };
+
+    if (
+      !testAxis(this.tempCollisionAxisA0, tA0, aHalfWidth, bHalfWidth * absR00 + bHalfLength * absR01) ||
+      !testAxis(this.tempCollisionAxisA1, tA1, aHalfLength, bHalfWidth * absR10 + bHalfLength * absR11)
+    ) {
+      return;
+    }
+
+    const tB0 = this.tempCollisionDelta.dot(this.tempCollisionAxisB0);
+    const tB1 = this.tempCollisionDelta.dot(this.tempCollisionAxisB1);
+
+    if (
+      !testAxis(this.tempCollisionAxisB0, tB0, aHalfWidth * absR00 + aHalfLength * absR10, bHalfWidth) ||
+      !testAxis(this.tempCollisionAxisB1, tB1, aHalfWidth * absR01 + aHalfLength * absR11, bHalfLength)
+    ) {
+      return;
+    }
+
+    const correction = minOverlap + 0.02;
+    const massA = shipA.getCollisionMass();
+    const massB = shipB.getCollisionMass();
+    const totalMass = massA + massB;
+    const moveA = correction * (massB / totalMass);
+    const moveB = correction * (massA / totalMass);
+
+    shipA.root.position.x -= this.tempCollisionNormal.x * moveA;
+    shipA.root.position.z -= this.tempCollisionNormal.y * moveA;
+    shipB.root.position.x += this.tempCollisionNormal.x * moveB;
+    shipB.root.position.z += this.tempCollisionNormal.y * moveB;
+
+    const penetrationAlpha = THREE.MathUtils.clamp(correction / 4.5, 0, 1);
+    const baseShove = THREE.MathUtils.lerp(0.24, 1.1, penetrationAlpha);
+    this.tempShipVector.set(-this.tempCollisionNormal.x, 0, -this.tempCollisionNormal.y);
+    shipA.applyWaterShove(
+      this.tempShipVector,
+      baseShove * (massB / totalMass),
+      this.getCollisionYawStrength(shipA, -this.tempCollisionNormal.x, -this.tempCollisionNormal.y),
+    );
+    this.tempShipVector.set(this.tempCollisionNormal.x, 0, this.tempCollisionNormal.y);
+    shipB.applyWaterShove(
+      this.tempShipVector,
+      baseShove * (massA / totalMass),
+      this.getCollisionYawStrength(shipB, this.tempCollisionNormal.x, this.tempCollisionNormal.y),
+    );
+
+    if (this.tempCollisionAxisA1.dot(this.tempCollisionAxisB1) <= -0.6) {
+      shipA.travelSpeed *= 0.85;
+      shipB.travelSpeed *= 0.85;
+    }
+  }
+
+  private setCollisionAxes(ship: Ship, rightTarget: THREE.Vector2, forwardTarget: THREE.Vector2): void {
+    forwardTarget.set(Math.sin(ship.heading), Math.cos(ship.heading));
+    rightTarget.set(forwardTarget.y, -forwardTarget.x);
+  }
+
+  private getCollisionYawStrength(ship: Ship, pushX: number, pushZ: number): number {
+    const forwardX = Math.sin(ship.heading);
+    const forwardZ = Math.cos(ship.heading);
+    const rightX = forwardZ;
+    const rightZ = -forwardX;
+    const lateral = pushX * rightX + pushZ * rightZ;
+    const longitudinal = Math.abs(pushX * forwardX + pushZ * forwardZ);
+    const lateralAlpha = THREE.MathUtils.clamp(Math.abs(lateral) - longitudinal * 0.35, 0, 1);
+
+    if (lateralAlpha <= 0.05) {
+      return 0;
+    }
+
+    return Math.sign(lateral) * THREE.MathUtils.lerp(0.006, 0.024, lateralAlpha);
+  }
+
   private clampArenaBodies(): void {
     this.clampWhaleToArena();
 
@@ -1286,15 +1496,17 @@ export class OceanScene {
     this.whale.position.z *= clampScale;
 
     this.tempBoundaryVector.set(this.whale.position.x, 0, this.whale.position.z).normalize();
-    this.whale.getForward(this.whaleForward);
+    this.tempShipVector.copy(this.whale.travelVelocity).setY(0);
 
-    if (this.whaleForward.dot(this.tempBoundaryVector) > 0) {
-      this.whale.speed *= 0.72;
+    if (this.tempShipVector.dot(this.tempBoundaryVector) > 0) {
+      this.whale.scaleTravelMotion(0.72);
       const outwardDrift = this.whale.ramDriftVelocity.dot(this.tempBoundaryVector);
 
       if (outwardDrift > 0) {
         this.whale.ramDriftVelocity.addScaledVector(this.tempBoundaryVector, -outwardDrift);
       }
+
+      this.whale.syncTravelState();
     }
 
     const surfaceHeight = this.sampleOceanHeight(this.whale.position.x, this.whale.position.z);
@@ -1316,7 +1528,9 @@ export class OceanScene {
 
     this.tempBoundaryVector.set(ship.root.position.x, 0, ship.root.position.z).normalize();
     ship.heading = Math.atan2(-this.tempBoundaryVector.x, -this.tempBoundaryVector.z);
+    ship.root.rotation.y = ship.heading;
     ship.travelSpeed *= 0.58;
+    ship.root.updateMatrixWorld();
   }
 
   private addShip(ship: Ship): void {
@@ -1348,6 +1562,30 @@ export class OceanScene {
 
   private getRowboatsRemaining(): number {
     return this.ships.filter((ship) => ship.role === 'rowboat' && !ship.sinking).length;
+  }
+
+  private getCombatShipsForAI(): Ship[] {
+    return this.ships.filter((ship) => !this.isRescueTowBoat(ship) && !ship.sinking && !ship.sunk);
+  }
+
+  private updateFleetAlert(): void {
+    if (this.fleetAlerted) {
+      return;
+    }
+
+    for (const ship of this.ships) {
+      if (ship.sinking || ship.sunk || this.isRescueTowBoat(ship)) {
+        continue;
+      }
+
+      const alertRadius = Math.max(72, ship.holdRangeMax + 12);
+
+      if (ship.root.position.distanceTo(this.whale.position) <= alertRadius) {
+        this.fleetAlerted = true;
+        this.shipAiContext.fleetAlerted = true;
+        return;
+      }
+    }
   }
 
   private maybeSpawnCorporateWhalerByTimer(): void {
@@ -1681,15 +1919,22 @@ export class OceanScene {
       tailSlapActive
         ? 1 - THREE.MathUtils.clamp(this.whale.tailSlapTime / 0.42, 0, 1)
         : 0;
+    const whaleSpeedRatio = THREE.MathUtils.clamp(this.whale.speed / WHALE_SPEED_PROFILE.maxTravelSpeed, 0, 1.2);
     const strokeHeave = this.whale.strokeVisual * (1 - underwaterRatio * 0.3);
     const tetherZoomOut = THREE.MathUtils.lerp(0, 8.5, tetherZoomAlpha);
-    const cameraDistance = THREE.MathUtils.lerp(19.1, 17.2, underwaterRatio) + tetherZoomOut + tailSlapAlpha * 2.1;
+    const cameraDistance =
+      THREE.MathUtils.lerp(WHALE_SPEED_PROFILE.topsideCameraDistance, WHALE_SPEED_PROFILE.underwaterCameraDistance, underwaterRatio) +
+      tetherZoomOut +
+      tailSlapAlpha * 2.1;
     const cameraHeight =
       THREE.MathUtils.lerp(6.6, 3.3, underwaterRatio) +
       tetherZoomOut * 0.14 +
       strokeHeave * 0.7 +
       tailSlapAlpha * 1.1;
-    const lookDistance = THREE.MathUtils.lerp(8.1, 13.4, underwaterRatio) + tetherZoomOut * 0.22 + tailSlapAlpha * 0.9;
+    const lookDistance =
+      THREE.MathUtils.lerp(WHALE_SPEED_PROFILE.topsideLookDistance, WHALE_SPEED_PROFILE.underwaterLookDistance, underwaterRatio) +
+      tetherZoomOut * 0.22 +
+      tailSlapAlpha * 0.9;
     const shoulderTarget = underwaterRatio * THREE.MathUtils.clamp(-this.whale.roll * 8.4, -2.6, 2.6);
 
     this.shoulderOffset = THREE.MathUtils.damp(this.shoulderOffset, shoulderTarget, 3.2, deltaSeconds);
@@ -1751,7 +1996,13 @@ export class OceanScene {
     }
 
     const cameraFollowRate =
-      THREE.MathUtils.lerp(4.4, 3.1, underwaterRatio) + breachViewAlpha * 5.6 + tailSlapAlpha * 0.8;
+      THREE.MathUtils.lerp(
+        WHALE_SPEED_PROFILE.cameraFollowRateSurface,
+        WHALE_SPEED_PROFILE.cameraFollowRateUnderwater,
+        underwaterRatio,
+      ) +
+      breachViewAlpha * 5.6 +
+      tailSlapAlpha * 0.8;
     this.camera.position.lerp(this.cameraTarget, 1 - Math.exp(-deltaSeconds * cameraFollowRate));
 
     if (shouldClampBreachCamera) {
@@ -1794,7 +2045,7 @@ export class OceanScene {
     );
     this.camera.rotateZ(this.cameraRoll);
 
-    const speedFovBoost = THREE.MathUtils.clamp((this.whale.speed - 10) * 0.22, 0, 3.4);
+    const speedFovBoost = whaleSpeedRatio * WHALE_SPEED_PROFILE.speedFovBoostMax;
     const tetherFovBoost = tetherZoomAlpha * 2.2;
     const targetFov =
       62 +
@@ -1803,10 +2054,10 @@ export class OceanScene {
       tetherFovBoost +
       breachArcAlpha * 4.5 +
       breachViewAlpha * 2 +
-      tailSlapAlpha * 2.4 +
-      (this.whale.boostActive ? 4.8 : 0);
+      tailSlapAlpha * 2.4;
     this.camera.fov = THREE.MathUtils.damp(this.camera.fov, targetFov, 4.4, deltaSeconds);
     this.camera.updateProjectionMatrix();
+    this.camera.updateMatrixWorld();
   }
 
   private captureTailSlapCameraHeading(): void {
@@ -1864,6 +2115,68 @@ export class OceanScene {
     return THREE.MathUtils.clamp(1 - distanceRemaining / Math.max(this.rescueInitialExtractionDistance, 0.001), 0, 1);
   }
 
+  private collectCapitalShipBars(): HUDShipBarSnapshot[] {
+    const visibleBars: HUDShipBarSnapshot[] = [];
+
+    for (const ship of this.ships) {
+      if (!ship.isCapitalShip || ship.sinking || ship.sunk || ship.health >= ship.maxHealth) {
+        continue;
+      }
+
+      ship.getHealthBarAnchor(this.tempHealthBarAnchor);
+      this.tempCameraSpacePoint.copy(this.tempHealthBarAnchor).applyMatrix4(this.camera.matrixWorldInverse);
+
+      if (this.tempCameraSpacePoint.z >= -this.camera.near) {
+        continue;
+      }
+
+      this.tempHealthBarProjection.copy(this.tempHealthBarAnchor).project(this.camera);
+
+      if (
+        this.tempHealthBarProjection.z < -1 ||
+        this.tempHealthBarProjection.z > 1 ||
+        Math.abs(this.tempHealthBarProjection.x) > 1 ||
+        Math.abs(this.tempHealthBarProjection.y) > 1
+      ) {
+        continue;
+      }
+
+      const distance = this.camera.position.distanceTo(this.tempHealthBarAnchor);
+      const distanceAlpha = 1 - THREE.MathUtils.smoothstep(distance, 40, 240);
+      const opacity = THREE.MathUtils.clamp(0.34 + distanceAlpha * 0.5, 0.34, 0.84);
+      const width = ship.role === 'corporate_whaler' ? 96 : 78;
+
+      visibleBars.push({
+        id: ship.id,
+        screenX: (this.tempHealthBarProjection.x * 0.5 + 0.5) * this.viewportWidth,
+        screenY: (-this.tempHealthBarProjection.y * 0.5 + 0.5) * this.viewportHeight,
+        health: ship.healthPercent,
+        width,
+        opacity,
+      });
+    }
+
+    visibleBars.sort((barA, barB) => {
+      const shipA = this.shipById.get(barA.id);
+      const shipB = this.shipById.get(barB.id);
+
+      if (!shipA || !shipB) {
+        return barA.id.localeCompare(barB.id);
+      }
+
+      const distanceA = this.camera.position.distanceToSquared(shipA.root.position);
+      const distanceB = this.camera.position.distanceToSquared(shipB.root.position);
+
+      if (distanceA !== distanceB) {
+        return distanceB - distanceA;
+      }
+
+      return barA.id.localeCompare(barB.id);
+    });
+
+    return visibleBars;
+  }
+
   private updateHud(): void {
     const livingShips = this.ships.filter((ship) => !ship.sinking);
     const fleetRemaining = livingShips.length;
@@ -1873,23 +2186,23 @@ export class OceanScene {
     const rescueTowBoatTarget = this.getActiveRescueTowBoatTarget();
     const focusCandidates = rescueTowBoatTarget ? [rescueTowBoatTarget] : rowboatsRemaining > 0 ? livingShips : livingCapitals;
     const focusShip = focusCandidates.reduce<Ship | null>((nearest, ship) => {
-        if (!nearest) {
-          return ship;
-        }
+      if (!nearest) {
+        return ship;
+      }
 
-        const nextDistance = this.tempShipVector.copy(ship.root.position).sub(this.whale.position).lengthSq();
-        const currentDistance = this.tempTargetPoint.copy(nearest.root.position).sub(this.whale.position).lengthSq();
-        return nextDistance < currentDistance ? ship : nearest;
-      }, null);
+      const nextDistance = this.tempShipVector.copy(ship.root.position).sub(this.whale.position).lengthSq();
+      const currentDistance = this.tempTargetPoint.copy(nearest.root.position).sub(this.whale.position).lengthSq();
+      return nextDistance < currentDistance ? ship : nearest;
+    }, null);
 
     let objective = 'Break the harpoon crews first. Dive to drown tethered rowboats, then turn on the flagships.';
     let shipStatus = `${rowboatsRemaining} rowboats swarming / ${livingCapitals.length} capital ship${livingCapitals.length === 1 ? '' : 's'} armed`;
     let overlayTitle: string | undefined;
     let overlayCopy: string | undefined;
-    let targetLabel = focusShip ? focusShip.displayName : 'No target';
     const airPercent = this.whale.air / this.whale.maxAir;
     const towBoatsRemaining = this.getAliveRescueTowBoats().length;
     const extractionProgress = Math.round(this.getRescueExtractionProgress() * 100);
+    const capitalShipBars = this.collectCapitalShipBars();
 
     if (corporateActive && !this.corporateRowboatsLaunched) {
       objective = 'A corporate whaler is pushing in from the fog. Close before it opens the full battery and launches more crews.';
@@ -1915,7 +2228,6 @@ export class OceanScene {
     if (rescueTowBoatTarget) {
       objective = 'Tow boats are hauling a captive whale back to the corporate whaler. Break the convoy before it closes the gap.';
       shipStatus = `${towBoatsRemaining} tow boats hauling / extraction ${extractionProgress}%`;
-      targetLabel = 'Tow Rowboat';
     } else if (this.rescueEncounterState === 'escaping') {
       objective = 'The captive slips free into the deep. Turn back on the fleet before it regroups.';
       shipStatus = 'Rescue complete / corporate formation breaking';
@@ -1931,7 +2243,7 @@ export class OceanScene {
       this.rescueEncounterState !== 'escaping' &&
       this.rescueEncounterState !== 'failed'
     ) {
-      objective = 'Harpoons buried. Dive deep to drown the crews or burst hard enough to snap the lines.';
+      objective = 'Harpoons buried. Dive deep to drown the crews or tear the lines apart with speed.';
       shipStatus = `${this.activeTethers} tether${this.activeTethers === 1 ? '' : 's'} biting / ${rowboatsRemaining} rowboats left`;
     }
 
@@ -1962,16 +2274,14 @@ export class OceanScene {
     }
 
     this.ui.update({
+      capitalShipBars,
       objective,
       whaleHealth: this.whale.health / this.whale.maxHealth,
       whaleAir: airPercent,
-      targetHealth: focusShip?.healthPercent ?? 0,
-      targetLabel,
       shipStatus,
       speed: this.whale.speed,
       depth: -this.whale.depth,
       submerged: this.whale.submerged,
-      burstActive: this.whale.boostActive,
       score: this.score,
       fleetRemaining,
       activeTethers: this.activeTethers,

@@ -3,14 +3,15 @@ import * as THREE from 'three';
 import { createSpermWhaleSilhouetteGeometry } from '../entities/createSpermWhaleVisual';
 import { PlayerWhale } from '../entities/PlayerWhale';
 import { Ship, ShipRole } from '../entities/Ship';
+import { WHALE_SPEED_PROFILE } from '../tuning/whaleSpeedProfile';
 
 const SURFACE_OFFSET = 0.07;
 const SILHOUETTE_OFFSET = -0.09;
 const WORLD_PATCH_COUNT = 8;
 const BREACH_BURST_COUNT = 6;
 const MAX_SILHOUETTES = 8;
-const WHALE_MAX_SPEED = 34;
-const WHALE_ACCELERATION_RANGE = 18;
+const WHALE_MAX_SPEED = WHALE_SPEED_PROFILE.maxTravelSpeed;
+const WHALE_ACCELERATION_RANGE = WHALE_SPEED_PROFILE.surfaceDisturbanceAccelerationRange;
 
 const SURFACE_DISTURBANCE_LOOK = {
   worldPatchColor: '#445665',
@@ -29,7 +30,6 @@ const WHALE_DISTURBANCE_TUNING = {
   energyRise: 4.4,
   energyFall: 2.1,
   pulseDecay: 3.8,
-  boostBonus: 0.16,
 } as const;
 
 const SURFACE_SILHOUETTE_LOOK = {
@@ -449,11 +449,15 @@ export class SurfaceSeafoamFX {
     const speedRatio = THREE.MathUtils.clamp(snapshot.whale.speed / WHALE_MAX_SPEED, 0, 1.2);
     const acceleration = Math.max(0, snapshot.whale.speed - slot.previousSpeed) / Math.max(snapshot.deltaSeconds, 0.0001);
     const accelerationRatio = THREE.MathUtils.clamp(acceleration / WHALE_ACCELERATION_RANGE, 0, 1.2);
-    const strokePulse = THREE.MathUtils.clamp(snapshot.whaleStrokePulseStrength / 7.2, 0, 1.2);
+    const strokePulse = THREE.MathUtils.clamp(
+      snapshot.whaleStrokePulseStrength / WHALE_SPEED_PROFILE.strokeImpulseMax,
+      0,
+      1.2,
+    );
     const targetEnergy =
       nearSurfaceFactor *
       THREE.MathUtils.clamp(
-        0.04 + speedRatio * 0.36 + accelerationRatio * 0.24 + (snapshot.whale.boostActive ? WHALE_DISTURBANCE_TUNING.boostBonus : 0),
+        0.04 + speedRatio * 0.36 + accelerationRatio * 0.24,
         0,
         1.12,
       );
@@ -468,7 +472,7 @@ export class SurfaceSeafoamFX {
 
     const pulseKick =
       nearSurfaceFactor *
-      (strokePulse * 0.82 + accelerationRatio * 0.34 + (snapshot.whale.boostActive ? 0.12 : 0));
+      (strokePulse * 0.82 + accelerationRatio * 0.34);
     if (pulseKick > slot.pulse) {
       slot.pulse = pulseKick;
     }

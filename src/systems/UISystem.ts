@@ -4,17 +4,29 @@ interface ControlTile {
   root: HTMLElement;
 }
 
+interface ShipBarElements {
+  fill: HTMLDivElement;
+  root: HTMLDivElement;
+}
+
+export interface HUDShipBarSnapshot {
+  health: number;
+  id: string;
+  opacity: number;
+  screenX: number;
+  screenY: number;
+  width: number;
+}
+
 export interface HUDSnapshot {
+  capitalShipBars: HUDShipBarSnapshot[];
   objective: string;
   whaleHealth: number;
   whaleAir: number;
-  targetHealth: number;
-  targetLabel: string;
   shipStatus: string;
   speed: number;
   depth: number;
   submerged: boolean;
-  burstActive: boolean;
   score: number;
   fleetRemaining: number;
   activeTethers: number;
@@ -38,20 +50,19 @@ export class UISystem {
   private readonly eyebrowEl = document.createElement('p');
   private readonly whaleFill = document.createElement('div');
   private readonly airFill = document.createElement('div');
-  private readonly shipFill = document.createElement('div');
   private readonly whaleValue = document.createElement('span');
   private readonly airValue = document.createElement('span');
-  private readonly shipValue = document.createElement('span');
-  private readonly shipLabel = document.createElement('span');
   private readonly statusEl = document.createElement('div');
   private readonly debugEl = document.createElement('p');
   private readonly scoreValueEl = document.createElement('div');
   private readonly fleetValueEl = document.createElement('div');
   private readonly tetherValueEl = document.createElement('div');
+  private readonly shipBarsLayer = document.createElement('div');
   private readonly overlayCard = document.createElement('section');
   private readonly overlayTitle = document.createElement('h2');
   private readonly overlayCopy = document.createElement('p');
   private readonly fadeEl = document.createElement('div');
+  private readonly shipBars = new Map<string, ShipBarElements>();
   private readonly movementTile: ControlTile;
   private readonly diveTile: ControlTile;
   private readonly riseTile: ControlTile;
@@ -86,7 +97,6 @@ export class UISystem {
     bars.append(
       this.createBarRow('Whale hull', this.whaleFill, this.whaleValue, 'hud__bar-fill--whale'),
       this.createBarRow('Air', this.airFill, this.airValue, 'hud__bar-fill--air'),
-      this.createBarRow('Target hull', this.shipFill, this.shipValue, 'hud__bar-fill--ship', this.shipLabel),
     );
 
     this.statusEl.className = 'hud__status';
@@ -130,6 +140,8 @@ export class UISystem {
       this.tailSlapTile.root,
     );
 
+    this.shipBarsLayer.className = 'hud__ship-bars';
+
     this.overlayCard.className = 'hud__overlay';
     this.overlayCard.hidden = true;
 
@@ -145,7 +157,7 @@ export class UISystem {
     this.fadeEl.className = 'hud__fade';
     this.fadeEl.hidden = true;
 
-    this.root.append(this.topRow, this.bottomRow, this.controlsStrip, this.overlayCard, this.fadeEl);
+    this.root.append(this.topRow, this.bottomRow, this.shipBarsLayer, this.controlsStrip, this.overlayCard, this.fadeEl);
     parent.append(this.root);
   }
 
@@ -162,8 +174,7 @@ export class UISystem {
     this.tailSlapTile.root.hidden = !showActionControls;
     this.setBar(this.whaleFill, this.whaleValue, snapshot.whaleHealth);
     this.setBar(this.airFill, this.airValue, snapshot.whaleAir);
-    this.setBar(this.shipFill, this.shipValue, snapshot.targetHealth);
-    this.shipLabel.textContent = snapshot.targetLabel;
+    this.syncCapitalShipBars(snapshot.capitalShipBars);
 
     this.statusEl.textContent = snapshot.shipStatus;
     this.debugEl.textContent = [
@@ -172,7 +183,6 @@ export class UISystem {
       `depth ${snapshot.depth.toFixed(1)} m`,
       `air ${Math.round(snapshot.whaleAir * 100)}%`,
       `${snapshot.activeTethers} tether${snapshot.activeTethers === 1 ? '' : 's'}`,
-      snapshot.burstActive ? 'burst lit' : 'burst idle',
     ].join('  /  ');
 
     this.scoreValueEl.textContent = `${snapshot.score}`;
@@ -240,6 +250,54 @@ export class UISystem {
     const clamped = Math.max(0, Math.min(1, normalizedValue));
     fill.style.transform = `scaleX(${clamped})`;
     value.textContent = `${Math.round(clamped * 100)}%`;
+  }
+
+  private syncCapitalShipBars(shipBars: readonly HUDShipBarSnapshot[]): void {
+    const activeIds = new Set<string>();
+
+    for (const bar of shipBars) {
+      let elements = this.shipBars.get(bar.id);
+
+      if (!elements) {
+        elements = this.createCapitalShipBar();
+        this.shipBars.set(bar.id, elements);
+        this.shipBarsLayer.append(elements.root);
+      }
+
+      activeIds.add(bar.id);
+      const clampedHealth = THREE.MathUtils.clamp(bar.health, 0, 1);
+      const clampedOpacity = THREE.MathUtils.clamp(bar.opacity, 0, 1);
+      elements.root.style.left = `${bar.screenX}px`;
+      elements.root.style.top = `${bar.screenY}px`;
+      elements.root.style.opacity = `${clampedOpacity}`;
+      elements.root.style.setProperty('--hud-ship-bar-width', `${Math.max(48, Math.round(bar.width))}px`);
+      elements.fill.style.transform = `scaleX(${clampedHealth})`;
+      this.shipBarsLayer.append(elements.root);
+    }
+
+    for (const [shipId, elements] of this.shipBars.entries()) {
+      if (activeIds.has(shipId)) {
+        continue;
+      }
+
+      elements.root.remove();
+      this.shipBars.delete(shipId);
+    }
+  }
+
+  private createCapitalShipBar(): ShipBarElements {
+    const root = document.createElement('div');
+    root.className = 'hud__ship-health';
+
+    const track = document.createElement('div');
+    track.className = 'hud__ship-health-track';
+
+    const fill = document.createElement('div');
+    fill.className = 'hud__ship-health-fill';
+    track.append(fill);
+    root.append(track);
+
+    return { root, fill };
   }
 
   private createFact(label: string, valueEl: HTMLDivElement): HTMLElement {

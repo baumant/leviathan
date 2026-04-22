@@ -42,10 +42,6 @@ export class Input {
     return Number(this.anyHeld(KEY_BINDINGS.rise)) - Number(this.anyHeld(KEY_BINDINGS.dive));
   }
 
-  get boostHeld(): boolean {
-    return this.anyHeld(KEY_BINDINGS.dive);
-  }
-
   consumeTailSlapPressed(): boolean {
     if (!this.tailSlapRequested) {
       return false;

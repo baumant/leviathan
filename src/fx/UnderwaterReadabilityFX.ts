@@ -159,7 +159,6 @@ export interface UnderwaterReadabilitySnapshot {
   camera: THREE.PerspectiveCamera;
   whalePosition: THREE.Vector3;
   whaleSpeed: number;
-  whaleBoostActive: boolean;
   underwaterRatio: number;
   submerged: boolean;
   surfaceHeightAtCamera: number;
@@ -678,11 +677,7 @@ export class UnderwaterReadabilityFX {
   }
 
   private updateStreaks(snapshot: UnderwaterReadabilitySnapshot): void {
-    const burstAlpha = THREE.MathUtils.clamp(
-      THREE.MathUtils.inverseLerp(14, 28, snapshot.whaleSpeed) + (snapshot.whaleBoostActive ? 0.4 : 0),
-      0,
-      1,
-    );
+    const burstAlpha = THREE.MathUtils.clamp(THREE.MathUtils.inverseLerp(14, 28, snapshot.whaleSpeed), 0, 1);
 
     this.streakMaterial.opacity = this.underwaterAlpha * burstAlpha * 0.22;
     this.streaks.visible = this.streakMaterial.opacity > 0.01;
@@ -690,7 +685,7 @@ export class UnderwaterReadabilityFX {
     for (let index = 0; index < STREAK_COUNT; index += 1) {
       const start = index * 6;
       const drift = index * 2;
-      const speed = this.streakSpeeds[index] + snapshot.whaleSpeed * 1.2 + (snapshot.whaleBoostActive ? 22 : 0);
+      const speed = this.streakSpeeds[index] + snapshot.whaleSpeed * 1.2;
       const length = this.streakLengths[index] + burstAlpha * 1.8;
 
       this.streakPositions[start] += Math.sin(snapshot.elapsedSeconds * 0.7 + this.streakDrift[drift]) * snapshot.deltaSeconds * 0.08;

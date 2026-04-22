@@ -29,10 +29,18 @@ const SOURCE_PATH = process.env.WHALE_SOURCE_GLTF
   : path.resolve('public/models/whale-source.glb');
 const OUTPUT_PATH = path.resolve('public/models/whale-hero.glb');
 const TARGET_LENGTH = 13.1;
-const TAIL_PIVOT_POSITION = new THREE.Vector3(0, 0.0, -0.24);
-const FLUKE_PIVOT_WORLD_POSITION = new THREE.Vector3(0, 0.01, -0.4);
+const TAIL_PIVOT_POSITION = new THREE.Vector3(0, -0.012, -0.235);
+const FLUKE_PIVOT_WORLD_POSITION = new THREE.Vector3(0, -0.022, -0.395);
 const LEFT_FIN_PIVOT_POSITION = new THREE.Vector3(-0.145, -0.08, -0.01);
 const RIGHT_FIN_PIVOT_POSITION = new THREE.Vector3(0.145, -0.08, -0.01);
+const TAIL_NEUTRAL_PITCH = 0;
+const FLUKE_NEUTRAL_PITCH = 0;
+const TAIL_STRAIGHTEN_START_Z = -0.08;
+const TAIL_STRAIGHTEN_END_Z = -0.50048828125;
+const TAIL_STRAIGHTEN_ROTATION = THREE.MathUtils.degToRad(-13);
+const TAIL_STRAIGHTEN_DROP = 0.016;
+const TAIL_STRAIGHTEN_PIVOT_Y = -0.04;
+const TAIL_STRAIGHTEN_PIVOT_Z = -0.08;
 
 const exporter = new GLTFExporter();
 
@@ -123,6 +131,37 @@ function offsetRegionPositions(positions, offset) {
   return shifted;
 }
 
+function straightenTailPositions(positions) {
+  const shaped = new Array(positions.length);
+
+  for (let index = 0; index < positions.length; index += 3) {
+    const x = positions[index];
+    let y = positions[index + 1];
+    let z = positions[index + 2];
+
+    if (z < TAIL_STRAIGHTEN_START_Z) {
+      const rawProgress =
+        (TAIL_STRAIGHTEN_START_Z - z) / Math.max(TAIL_STRAIGHTEN_START_Z - TAIL_STRAIGHTEN_END_Z, 0.0001);
+      const progress = THREE.MathUtils.clamp(rawProgress, 0, 1);
+      const eased = progress * progress * (3 - 2 * progress);
+      const angle = TAIL_STRAIGHTEN_ROTATION * eased;
+      const sin = Math.sin(angle);
+      const cos = Math.cos(angle);
+      const localY = y - TAIL_STRAIGHTEN_PIVOT_Y;
+      const localZ = z - TAIL_STRAIGHTEN_PIVOT_Z;
+
+      y = localY * cos - localZ * sin + TAIL_STRAIGHTEN_PIVOT_Y - TAIL_STRAIGHTEN_DROP * eased;
+      z = localY * sin + localZ * cos + TAIL_STRAIGHTEN_PIVOT_Z;
+    }
+
+    shaped[index] = x;
+    shaped[index + 1] = y;
+    shaped[index + 2] = z;
+  }
+
+  return shaped;
+}
+
 function classifyRegion(cx, cy, cz) {
   if (cz < -0.36) {
     return cx < 0 ? 'left_fluke' : 'right_fluke';
@@ -151,7 +190,8 @@ if (!primitive) {
   throw new Error('Source GLB does not contain a readable primary mesh primitive.');
 }
 
-const positions = getAccessorArray(json, binChunk, primitive.attributes.POSITION);
+const sourcePositions = getAccessorArray(json, binChunk, primitive.attributes.POSITION);
+const positions = straightenTailPositions(sourcePositions);
 const indices = primitive.indices != null ? getAccessorArray(json, binChunk, primitive.indices) : null;
 const regionPositions = {
   body: [],
@@ -248,6 +288,8 @@ const tailMesh = new THREE.Mesh(
   material.clone(),
 );
 tailMesh.name = 'tail_stem';
+tailMesh.position.y = 0;
+tailMesh.rotation.x = TAIL_NEUTRAL_PITCH;
 tailPivot.add(tailMesh);
 
 const leftFlukeMesh = new THREE.Mesh(
@@ -255,6 +297,8 @@ const leftFlukeMesh = new THREE.Mesh(
   material.clone(),
 );
 leftFlukeMesh.name = 'left_fluke';
+leftFlukeMesh.position.y = 0;
+leftFlukeMesh.rotation.x = FLUKE_NEUTRAL_PITCH;
 flukePivot.add(leftFlukeMesh);
 
 const rightFlukeMesh = new THREE.Mesh(
@@ -262,6 +306,8 @@ const rightFlukeMesh = new THREE.Mesh(
   material.clone(),
 );
 rightFlukeMesh.name = 'right_fluke';
+rightFlukeMesh.position.y = 0;
+rightFlukeMesh.rotation.x = FLUKE_NEUTRAL_PITCH;
 flukePivot.add(rightFlukeMesh);
 
 const leftPectoralMesh = new THREE.Mesh(
@@ -295,6 +341,15 @@ rightEye.name = 'eye_right';
 rightEye.position.x *= -1;
 bodyRoot.add(rightEye);
 
+const blowholeCap = new THREE.Mesh(
+  new THREE.SphereGeometry(0.02, 16, 12),
+  material.clone(),
+);
+blowholeCap.name = 'blowhole_cap';
+blowholeCap.scale.set(1.8, 0.28, 0.92);
+blowholeCap.position.set(0, 0.108, 0.308);
+bodyRoot.add(blowholeCap);
+
 const blowhole = new THREE.Mesh(
   new THREE.CylinderGeometry(0.012, 0.014, 0.006, 16),
   new THREE.MeshStandardMaterial({
@@ -304,8 +359,8 @@ const blowhole = new THREE.Mesh(
   }),
 );
 blowhole.name = 'blowhole';
-blowhole.scale.set(1.8, 0.28, 0.72);
-blowhole.position.set(0, 0.115, 0.31);
+blowhole.scale.set(1.5, 0.22, 0.56);
+blowhole.position.set(0, 0.114, 0.31);
 blowhole.rotation.set(Math.PI / 2, 0, 0);
 bodyRoot.add(blowhole);
 

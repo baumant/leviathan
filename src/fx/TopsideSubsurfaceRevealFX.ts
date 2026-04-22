@@ -13,6 +13,7 @@ export interface TopsideSubsurfaceRevealTarget {
   halfWidth: number;
   halfLength: number;
   strength: number;
+  drawProxy?: boolean;
 }
 
 interface RevealSlot {
@@ -57,8 +58,8 @@ export class TopsideSubsurfaceRevealFX {
 
   update(params: TopsideSubsurfaceRevealUpdateParams): void {
     const visibility = 1 - THREE.MathUtils.smoothstep(params.underwaterRatio, 0.04, MAX_UNDERWATER_RATIO);
-    const whaleTarget = params.targets.find((target) => target.kind === 'whale');
-    const shipTargets = params.targets.filter((target) => target.kind === 'ship');
+    const whaleTarget = params.targets.find((target) => target.kind === 'whale' && target.drawProxy !== false);
+    const shipTargets = params.targets.filter((target) => target.kind === 'ship' && target.drawProxy !== false);
 
     this.updateSlot(this.whaleSlot, whaleTarget, visibility, WHALE_PROXY_BOUNDS);
 

@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 
 import { createCelMaterial } from '../fx/createCelMaterial';
+import { WhaleVisualRig } from './WhaleVisualMotion';
 
 export interface SpermWhaleVisualPalette {
   bodyColor: THREE.ColorRepresentation;
@@ -18,11 +19,7 @@ export interface SpermWhaleVisualOptions {
   finScale?: number;
 }
 
-export interface SpermWhaleVisualRig {
-  readonly root: THREE.Group;
-  readonly tailPivot: THREE.Group;
-  readonly flukePivot: THREE.Group;
-}
+export interface SpermWhaleVisualRig extends WhaleVisualRig {}
 
 function createSpermWhaleBodyGeometry(): THREE.LatheGeometry {
   const profile = [
@@ -79,8 +76,11 @@ export function createSpermWhaleVisual(options: SpermWhaleVisualOptions): SpermW
   const finScale = options.finScale ?? 1;
 
   const root = new THREE.Group();
+  const bodyRoot = new THREE.Group();
   const tailPivot = new THREE.Group();
   const flukePivot = new THREE.Group();
+  const leftFinPivot = new THREE.Group();
+  const rightFinPivot = new THREE.Group();
 
   const bodyMaterial = createCelMaterial({
     color: options.palette.bodyColor,
@@ -142,24 +142,21 @@ export function createSpermWhaleVisual(options: SpermWhaleVisualOptions): SpermW
   leftFin.rotation.set(-0.7, 0.12, 0.52);
 
   const rightFin = leftFin.clone();
-  rightFin.position.x *= -1;
-  rightFin.rotation.y *= -1;
-  rightFin.rotation.z *= -1;
 
   const tailStem = new THREE.Mesh(new THREE.CapsuleGeometry(0.48, 2.44, 4, 10), bodyMaterial);
   tailStem.rotation.x = Math.PI / 2;
   tailStem.scale.set(0.54 * girthScale, 0.24 * girthScale, 1.74 * lengthScale);
-  tailStem.position.set(0, -0.02 * girthScale, -1.28 * lengthScale);
+  tailStem.position.set(0, 0, -1.22 * lengthScale);
 
   const flukeKnuckle = new THREE.Mesh(new THREE.SphereGeometry(1, 12, 8), bodyMaterial);
   flukeKnuckle.scale.set(0.56 * girthScale, 0.14 * girthScale, 0.42 * lengthScale);
-  flukeKnuckle.position.set(0, -0.02 * girthScale, -2.78 * lengthScale);
+  flukeKnuckle.position.set(0, 0, 0);
 
   const flukeGeometry = new THREE.SphereGeometry(1, 14, 10);
   const leftFluke = new THREE.Mesh(flukeGeometry, bodyMaterial);
   leftFluke.scale.set(1.3 * girthScale * finScale, 0.08 * girthScale, 0.54 * lengthScale * finScale);
-  leftFluke.position.set(-1.42 * girthScale, 0.02 * girthScale, -3.08 * lengthScale);
-  leftFluke.rotation.set(0.06, 0.08, -0.14);
+  leftFluke.position.set(-1.42 * girthScale, 0, -0.4 * lengthScale);
+  leftFluke.rotation.set(0, 0.08, -0.12);
 
   const rightFluke = leftFluke.clone();
   rightFluke.position.x *= -1;
@@ -168,11 +165,27 @@ export function createSpermWhaleVisual(options: SpermWhaleVisualOptions): SpermW
 
   // Keep the whale as a few broad, smooth masses so silhouette and fog value do
   // more of the work than surface detail.
-  flukePivot.add(flukeKnuckle, leftFluke, rightFluke);
-  tailPivot.position.set(0, 0.06 * girthScale, -4.16 * lengthScale);
-  tailPivot.add(tailStem, flukePivot);
+  bodyRoot.name = 'body_root';
+  tailPivot.name = 'tail_pivot';
+  flukePivot.name = 'fluke_pivot';
+  leftFinPivot.name = 'left_fin_pivot';
+  rightFinPivot.name = 'right_fin_pivot';
 
-  root.add(
+  leftFinPivot.position.set(-1.34 * girthScale, -0.56 * girthScale, 0.9 * lengthScale);
+  rightFinPivot.position.set(1.34 * girthScale, -0.56 * girthScale, 0.9 * lengthScale);
+  leftFin.position.set(-0.62 * girthScale * finScale, -0.02 * girthScale, 0);
+  rightFin.position.set(0.62 * girthScale * finScale, -0.02 * girthScale, 0);
+  leftFin.rotation.set(0, 0, 0);
+  rightFin.rotation.set(0, 0, 0);
+
+  flukePivot.position.set(0, 0, -2.72 * lengthScale);
+  flukePivot.add(flukeKnuckle, leftFluke, rightFluke);
+  tailPivot.position.set(0, 0.04 * girthScale, -4.04 * lengthScale);
+  tailPivot.add(tailStem, flukePivot);
+  leftFinPivot.add(leftFin);
+  rightFinPivot.add(rightFin);
+
+  bodyRoot.add(
     body,
     headMass,
     foreheadShelf,
@@ -183,14 +196,21 @@ export function createSpermWhaleVisual(options: SpermWhaleVisualOptions): SpermW
     hump,
     knuckleA,
     knuckleB,
-    leftFin,
-    rightFin,
+  );
+
+  root.add(
+    bodyRoot,
+    leftFinPivot,
+    rightFinPivot,
     tailPivot,
   );
 
   return {
     root,
+    bodyRoot,
     tailPivot,
     flukePivot,
+    leftFinPivot,
+    rightFinPivot,
   };
 }

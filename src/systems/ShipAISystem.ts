@@ -5,6 +5,8 @@ import { BroadsideSide, Ship } from '../entities/Ship';
 export interface ShipAIContext {
   arenaRadius: number;
   deltaSeconds: number;
+  fleetAlerted: boolean;
+  otherShips: readonly Ship[];
   rowboatsRemaining: number;
   shipHasActiveHarpoon: boolean;
   shipHasTether: boolean;
@@ -20,9 +22,14 @@ export class ShipAISystem {
   private readonly toWhale = new THREE.Vector3();
   private readonly awayFromWhale = new THREE.Vector3();
   private readonly desiredPosition = new THREE.Vector3();
+  private readonly patrolOffset = new THREE.Vector3();
   private readonly tangent = new THREE.Vector3();
   private readonly forward = new THREE.Vector3();
   private readonly localWhale = new THREE.Vector3();
+  private readonly separationOffset = new THREE.Vector3();
+  private readonly neighborOffset = new THREE.Vector3();
+  private readonly shipCollisionHalfExtents = new THREE.Vector2();
+  private readonly otherCollisionHalfExtents = new THREE.Vector2();
 
   update(ship: Ship, context: ShipAIContext): ShipAIResult {
     ship.fireCooldown = Math.max(0, ship.fireCooldown - context.deltaSeconds);
@@ -56,17 +63,19 @@ export class ShipAISystem {
         .copy(context.whalePosition)
         .addScaledVector(this.awayFromWhale, ship.holdRangeMin * 0.9)
         .addScaledVector(this.tangent, ship.orbitOffset * 0.45);
+      this.desiredPosition.add(this.computeSeparationOffset(ship, context));
       this.steerShip(ship, this.desiredPosition, ship.moveSpeed * 0.92, context);
       return { wantsHarpoonThrow: false, broadsideTelegraphSide: null };
     }
 
-    if (distanceToWhale <= 72) {
+    if (context.fleetAlerted || distanceToWhale <= 72) {
       ship.aiState = 'close';
       const desiredRange = (ship.holdRangeMin + ship.holdRangeMax) * 0.5;
       this.desiredPosition
         .copy(context.whalePosition)
         .addScaledVector(this.awayFromWhale, desiredRange)
         .addScaledVector(this.tangent, ship.orbitOffset);
+      this.desiredPosition.add(this.computeSeparationOffset(ship, context));
 
       let speedScale = 0.95;
       if (distanceToWhale < ship.holdRangeMin) {
@@ -95,7 +104,13 @@ export class ShipAISystem {
     ship.patrolAngle += context.deltaSeconds * 0.4;
     this.desiredPosition
       .copy(ship.anchor)
-      .add(new THREE.Vector3(Math.cos(ship.patrolAngle) * ship.patrolRadius, 0, Math.sin(ship.patrolAngle) * ship.patrolRadius));
+      .add(
+        this.patrolOffset.set(
+          Math.cos(ship.patrolAngle) * ship.patrolRadius,
+          0,
+          Math.sin(ship.patrolAngle) * ship.patrolRadius,
+        ),
+      );
     this.steerShip(ship, this.desiredPosition, ship.moveSpeed * 0.72, context);
 
     return { wantsHarpoonThrow: false, broadsideTelegraphSide: null };
@@ -111,6 +126,7 @@ export class ShipAISystem {
         .normalize()
         .multiplyScalar(context.arenaRadius * 0.92)
         .addScaledVector(this.tangent, ship.orbitOffset * 0.35);
+      this.desiredPosition.add(this.computeSeparationOffset(ship, context));
       this.steerShip(ship, this.desiredPosition, ship.fleeSpeed, context);
     } else {
       const desiredRange = (ship.holdRangeMin + ship.holdRangeMax) * 0.5;
@@ -118,6 +134,7 @@ export class ShipAISystem {
         .copy(context.whalePosition)
         .addScaledVector(this.awayFromWhale, desiredRange)
         .addScaledVector(this.tangent, ship.orbitOffset);
+      this.desiredPosition.add(this.computeSeparationOffset(ship, context));
       this.steerShip(ship, this.desiredPosition, ship.moveSpeed * 0.96, context);
     }
 
@@ -155,6 +172,70 @@ export class ShipAISystem {
     this.forward.copy(targetPosition).sub(ship.root.position).setY(0).normalize();
     const shipForward = ship.getForward(new THREE.Vector3()).setY(0).normalize();
     return shipForward.dot(this.forward) >= minDot;
+  }
+
+  private computeSeparationOffset(ship: Ship, context: ShipAIContext): THREE.Vector3 {
+    this.separationOffset.set(0, 0, 0);
+    const shipRadius = this.getSeparationRadius(ship, this.shipCollisionHalfExtents);
+
+    for (const other of context.otherShips) {
+      if (other === ship || other.sinking || other.sunk) {
+        continue;
+      }
+
+      const profile = this.getSeparationProfile(ship, other);
+
+      if (!profile) {
+        continue;
+      }
+
+      this.neighborOffset.copy(ship.root.position).sub(other.root.position).setY(0);
+      let distance = this.neighborOffset.length();
+      const otherRadius = this.getSeparationRadius(other, this.otherCollisionHalfExtents);
+      const desiredDistance = shipRadius + otherRadius + profile.margin;
+
+      if (distance >= desiredDistance) {
+        continue;
+      }
+
+      if (distance <= 0.0001) {
+        this.neighborOffset.set(Math.cos(ship.heading), 0, -Math.sin(ship.heading));
+        distance = 1;
+      } else {
+        this.neighborOffset.multiplyScalar(1 / distance);
+      }
+
+      const separationAlpha = THREE.MathUtils.clamp(desiredDistance / Math.max(distance, 0.001) - 1, 0, 2.4);
+      this.separationOffset.addScaledVector(
+        this.neighborOffset,
+        profile.weight * separationAlpha * profile.margin,
+      );
+    }
+
+    const maxOffset = ship.role === 'rowboat' ? 12 : 18;
+
+    if (this.separationOffset.lengthSq() > maxOffset * maxOffset) {
+      this.separationOffset.setLength(maxOffset);
+    }
+
+    return this.separationOffset;
+  }
+
+  private getSeparationProfile(ship: Ship, other: Ship): { margin: number; weight: number } | null {
+    if (ship.role === 'rowboat') {
+      return other.role === 'rowboat'
+        ? { margin: 6, weight: 1 }
+        : { margin: 2, weight: 0.25 };
+    }
+
+    return other.isCapitalShip
+      ? { margin: 14, weight: 0.85 }
+      : { margin: 2, weight: 0.15 };
+  }
+
+  private getSeparationRadius(ship: Ship, target: THREE.Vector2): number {
+    ship.getCollisionHalfExtentsXZ(target);
+    return Math.max(target.x, target.y);
   }
 
   private steerShip(

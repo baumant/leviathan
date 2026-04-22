@@ -37,6 +37,8 @@ interface ShipRoleConfig {
   subsurfaceRevealOffsetY: number;
   sinkDepth: number;
   halfExtents: THREE.Vector3;
+  capitalContactBoundsMin: THREE.Vector3;
+  capitalContactBoundsMax: THREE.Vector3;
   surfaceShadowScale: THREE.Vector2;
   subsurfaceRevealHalfExtents: THREE.Vector2;
   isCapitalShip: boolean;
@@ -76,6 +78,8 @@ const SHIP_ROLE_CONFIGS: Record<ShipRole, ShipRoleConfig> = {
     subsurfaceRevealOffsetY: -0.62,
     sinkDepth: 4.8,
     halfExtents: new THREE.Vector3(1.24, 0.78, 2.9),
+    capitalContactBoundsMin: new THREE.Vector3(-1.24, -0.78, -2.9),
+    capitalContactBoundsMax: new THREE.Vector3(1.24, 0.78, 2.9),
     surfaceShadowScale: new THREE.Vector2(3.6, 8.6),
     subsurfaceRevealHalfExtents: new THREE.Vector2(1.2, 3.2),
     isCapitalShip: false,
@@ -105,6 +109,8 @@ const SHIP_ROLE_CONFIGS: Record<ShipRole, ShipRoleConfig> = {
     subsurfaceRevealOffsetY: -0.72,
     sinkDepth: 9.8,
     halfExtents: new THREE.Vector3(7.8, 4.1, 18.8),
+    capitalContactBoundsMin: new THREE.Vector3(-3.6, -1.45, -6.9),
+    capitalContactBoundsMax: new THREE.Vector3(3.6, 2.45, 11.8),
     surfaceShadowScale: new THREE.Vector2(24, 58),
     subsurfaceRevealHalfExtents: new THREE.Vector2(5.8, 14.8),
     isCapitalShip: true,
@@ -134,6 +140,8 @@ const SHIP_ROLE_CONFIGS: Record<ShipRole, ShipRoleConfig> = {
     subsurfaceRevealOffsetY: -1.18,
     sinkDepth: 13.5,
     halfExtents: new THREE.Vector3(15.6, 7.8, 37.6),
+    capitalContactBoundsMin: new THREE.Vector3(-4.8, -1.7, -10.9),
+    capitalContactBoundsMax: new THREE.Vector3(4.8, 3.15, 14.45),
     surfaceShadowScale: new THREE.Vector2(48, 116),
     subsurfaceRevealHalfExtents: new THREE.Vector2(11.8, 29.6),
     isCapitalShip: true,
@@ -184,7 +192,6 @@ export class Ship {
   private readonly mastTintMaterials: THREE.MeshToonMaterial[] = [];
   private readonly sailTintMaterials: THREE.MeshToonMaterial[] = [];
   private readonly lanternMaterials: THREE.MeshToonMaterial[] = [];
-  private readonly lanternMeshes: THREE.Mesh[] = [];
   private readonly lanternHalos: THREE.Mesh[] = [];
   private readonly lanternHaloMaterials: THREE.MeshBasicMaterial[] = [];
   private readonly lanternLights: THREE.PointLight[] = [];
@@ -200,6 +207,9 @@ export class Ship {
   private readonly towStarboardOriginLocal = new THREE.Vector3();
   private readonly reinforcementLaunchOffsets: THREE.Vector3[] = [];
   private readonly subsurfaceRevealLocal = new THREE.Vector3();
+  private readonly healthBarAnchorLocal = new THREE.Vector3();
+  private readonly capitalContactBoundsMinLocal = new THREE.Vector3();
+  private readonly capitalContactBoundsMaxLocal = new THREE.Vector3();
   private readonly visualSurfaceShadowScale = new THREE.Vector2();
   private readonly visualSubsurfaceRevealHalfExtents = new THREE.Vector2();
   private readonly roleConfig: ShipRoleConfig;
@@ -244,6 +254,8 @@ export class Ship {
     this.heading = config.initialHeading;
     this.anchor.copy(config.position);
     this.halfExtents.copy(this.roleConfig.halfExtents);
+    this.capitalContactBoundsMinLocal.copy(this.roleConfig.capitalContactBoundsMin);
+    this.capitalContactBoundsMaxLocal.copy(this.roleConfig.capitalContactBoundsMax);
     this.visualSurfaceShadowScale.copy(this.roleConfig.surfaceShadowScale);
     this.visualSubsurfaceRevealHalfExtents.copy(this.roleConfig.subsurfaceRevealHalfExtents);
     this.subsurfaceRevealLocal.set(0, this.roleConfig.subsurfaceRevealOffsetY, 0);
@@ -395,7 +407,7 @@ export class Ship {
   }
 
   applyDamage(amount: number, reactionProfile: ShipDamageReactionProfile = 'default'): void {
-    if (this.sinking || this.sunk) {
+    if (this.sinking || this.sunk || amount <= 0) {
       return;
     }
 
@@ -685,6 +697,28 @@ export class Ship {
     return this.root.localToWorld(target.copy(this.subsurfaceRevealLocal));
   }
 
+  getHealthBarAnchor(target = new THREE.Vector3()): THREE.Vector3 {
+    return this.root.localToWorld(target.copy(this.healthBarAnchorLocal));
+  }
+
+  getCapitalContactBounds(targetMin: THREE.Vector3, targetMax: THREE.Vector3, pad = 0): void {
+    targetMin.copy(this.capitalContactBoundsMinLocal).addScalar(-pad);
+    targetMax.copy(this.capitalContactBoundsMaxLocal).addScalar(pad);
+  }
+
+  getCollisionHalfExtentsXZ(target = new THREE.Vector2()): THREE.Vector2 {
+    // Gameplay half extents are already authored in world units for the ship hull.
+    return target.set(this.halfExtents.x, this.halfExtents.z);
+  }
+
+  getCollisionMass(): number {
+    if (this.role === 'corporate_whaler') {
+      return 8;
+    }
+
+    return this.role === 'flagship' ? 4 : 1;
+  }
+
   appendLanternInfluences(target: ShipLanternInfluence[]): void {
     if (this.sinking || this.sunk) {
       return;
@@ -712,6 +746,7 @@ export class Ship {
     this.wakeOriginLocal.set(0, 0.3 + this.roleConfig.visualDraftOffset, -3.2);
     this.towPortOriginLocal.set(-0.64, 0.4 + this.roleConfig.visualDraftOffset, -2.68);
     this.towStarboardOriginLocal.set(0.64, 0.4 + this.roleConfig.visualDraftOffset, -2.68);
+    this.healthBarAnchorLocal.set(0, 1.28 + this.roleConfig.visualDraftOffset, -0.1);
 
     const hullBottom = new THREE.Mesh(new THREE.SphereGeometry(1.16, 12, 10), this.hullMaterial);
     hullBottom.scale.set(0.98, 0.82, 2.04);
@@ -750,6 +785,7 @@ export class Ship {
     this.wakeOriginLocal.set(0, 0.72 + this.roleConfig.visualDraftOffset, -9.4);
     this.towPortOriginLocal.set(-1.7, 1.08 + this.roleConfig.visualDraftOffset, -8.2);
     this.towStarboardOriginLocal.set(1.7, 1.08 + this.roleConfig.visualDraftOffset, -8.2);
+    this.healthBarAnchorLocal.set(0, 4.05 + this.roleConfig.visualDraftOffset, -0.4);
 
     const hullBottom = new THREE.Mesh(new THREE.CapsuleGeometry(2.7, 10.4, 6, 12), this.hullMaterial);
     hullBottom.rotation.x = Math.PI / 2;
@@ -806,6 +842,7 @@ export class Ship {
     this.wakeOriginLocal.set(0, 1.12 + this.roleConfig.visualDraftOffset, -18.4);
     this.towPortOriginLocal.set(-2.1, 1.46 + this.roleConfig.visualDraftOffset, -14.8);
     this.towStarboardOriginLocal.set(2.1, 1.46 + this.roleConfig.visualDraftOffset, -14.8);
+    this.healthBarAnchorLocal.set(0, 6.7 + this.roleConfig.visualDraftOffset, -1.1);
 
     const hullBottom = new THREE.Mesh(new THREE.CapsuleGeometry(2.8, 13.8, 7, 14), this.hullMaterial);
     hullBottom.rotation.x = Math.PI / 2;
@@ -957,7 +994,6 @@ export class Ship {
     lanternLight.position.copy(offset);
 
     this.lanternMaterials.push(lanternMaterial);
-    this.lanternMeshes.push(lantern);
     this.lanternHaloMaterials.push(lanternHaloMaterial);
     this.lanternHalos.push(lanternHalo);
     this.lanternLights.push(lanternLight);
