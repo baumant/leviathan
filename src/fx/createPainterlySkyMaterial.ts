@@ -16,6 +16,7 @@ uniform vec3 uUpperSkyColor;
 uniform vec3 uHorizonColor;
 uniform vec3 uHorizonGlowColor;
 uniform vec3 uCloudColor;
+uniform float uUnderwaterRatio;
 
 varying vec3 vWorldPosition;
 
@@ -42,9 +43,32 @@ void main() {
   float cloudMask = smoothstep(0.66, 0.86, cloudLayer) * smoothstep(0.04, 0.32, dir.y);
   color = mix(color, uCloudColor, cloudMask * 0.42);
 
+  float underwaterBlend = smoothstep(0.08, 0.82, uUnderwaterRatio);
+  vec3 underwaterDistance = mix(
+    vec3(0.012, 0.08, 0.19),
+    vec3(0.002, 0.012, 0.052),
+    smoothstep(0.02, 0.62, dir.y)
+  );
+  underwaterDistance = mix(
+    vec3(0.005, 0.028, 0.086),
+    underwaterDistance,
+    smoothstep(-0.26, 0.12, dir.y)
+  );
+  color = mix(color, underwaterDistance, underwaterBlend);
+
   gl_FragColor = vec4(color, 1.0);
 }
 `;
+
+export interface PainterlySkyMaterialSnapshot {
+  underwaterRatio: number;
+}
+
+type PainterlySkyMaterial = THREE.ShaderMaterial & {
+  uniforms: {
+    uUnderwaterRatio: { value: number };
+  };
+};
 
 export function createPainterlySkyMaterial(): THREE.ShaderMaterial {
   const material = new THREE.ShaderMaterial({
@@ -54,6 +78,7 @@ export function createPainterlySkyMaterial(): THREE.ShaderMaterial {
       uHorizonColor: { value: new THREE.Color('#8e8d92') },
       uHorizonGlowColor: { value: new THREE.Color('#b4b0ac') },
       uCloudColor: { value: new THREE.Color('#d2d4d2') },
+      uUnderwaterRatio: { value: 0 },
     },
     vertexShader: SKY_VERTEX_SHADER,
     fragmentShader: SKY_FRAGMENT_SHADER,
@@ -64,4 +89,11 @@ export function createPainterlySkyMaterial(): THREE.ShaderMaterial {
 
   material.toneMapped = false;
   return material;
+}
+
+export function updatePainterlySkyMaterial(
+  material: THREE.ShaderMaterial,
+  snapshot: PainterlySkyMaterialSnapshot,
+): void {
+  (material as PainterlySkyMaterial).uniforms.uUnderwaterRatio.value = snapshot.underwaterRatio;
 }

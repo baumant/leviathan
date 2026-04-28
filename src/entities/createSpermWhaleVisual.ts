@@ -17,9 +17,16 @@ export interface SpermWhaleVisualOptions {
   lengthScale?: number;
   girthScale?: number;
   finScale?: number;
+  tetherAttachLocal?: THREE.Vector3;
+  tailSlapAnchorLocal?: THREE.Vector3;
+  towAttachLocals?: readonly THREE.Vector3[];
 }
 
-export interface SpermWhaleVisualRig extends WhaleVisualRig {}
+export interface SpermWhaleVisualRig extends WhaleVisualRig {
+  readonly tetherAttach: THREE.Object3D | null;
+  readonly tailSlapAnchor: THREE.Object3D | null;
+  readonly towAttach: readonly THREE.Object3D[];
+}
 
 function createSpermWhaleBodyGeometry(): THREE.LatheGeometry {
   const profile = [
@@ -76,6 +83,7 @@ export function createSpermWhaleVisual(options: SpermWhaleVisualOptions): SpermW
   const finScale = options.finScale ?? 1;
 
   const root = new THREE.Group();
+  const spineRoot = new THREE.Group();
   const bodyRoot = new THREE.Group();
   const tailPivot = new THREE.Group();
   const flukePivot = new THREE.Group();
@@ -165,6 +173,7 @@ export function createSpermWhaleVisual(options: SpermWhaleVisualOptions): SpermW
 
   // Keep the whale as a few broad, smooth masses so silhouette and fog value do
   // more of the work than surface detail.
+  spineRoot.name = 'spine_root';
   bodyRoot.name = 'body_root';
   tailPivot.name = 'tail_pivot';
   flukePivot.name = 'fluke_pivot';
@@ -185,6 +194,31 @@ export function createSpermWhaleVisual(options: SpermWhaleVisualOptions): SpermW
   leftFinPivot.add(leftFin);
   rightFinPivot.add(rightFin);
 
+  const tetherAttach = options.tetherAttachLocal
+    ? new THREE.Object3D()
+    : null;
+  if (tetherAttach) {
+    tetherAttach.name = 'tether_attach';
+    tetherAttach.position.copy(options.tetherAttachLocal!);
+  }
+
+  const tailSlapAnchor = options.tailSlapAnchorLocal
+    ? new THREE.Object3D()
+    : null;
+  if (tailSlapAnchor) {
+    tailSlapAnchor.name = 'tail_slap_anchor';
+    tailSlapAnchor.position.copy(options.tailSlapAnchorLocal!).sub(tailPivot.position);
+    tailPivot.add(tailSlapAnchor);
+  }
+
+  const towAttachNames = ['tow_attach_left', 'tow_attach_center', 'tow_attach_right'] as const;
+  const towAttach = (options.towAttachLocals ?? []).map((attachLocal, index) => {
+    const node = new THREE.Object3D();
+    node.name = towAttachNames[index] ?? `tow_attach_${index}`;
+    node.position.copy(attachLocal);
+    return node;
+  });
+
   bodyRoot.add(
     body,
     headMass,
@@ -198,19 +232,30 @@ export function createSpermWhaleVisual(options: SpermWhaleVisualOptions): SpermW
     knuckleB,
   );
 
-  root.add(
+  spineRoot.add(
     bodyRoot,
     leftFinPivot,
     rightFinPivot,
     tailPivot,
   );
+  if (tetherAttach) {
+    spineRoot.add(tetherAttach);
+  }
+  for (const attach of towAttach) {
+    spineRoot.add(attach);
+  }
+  root.add(spineRoot);
 
   return {
     root,
+    spineRoot,
     bodyRoot,
     tailPivot,
     flukePivot,
     leftFinPivot,
     rightFinPivot,
+    tetherAttach,
+    tailSlapAnchor,
+    towAttach,
   };
 }

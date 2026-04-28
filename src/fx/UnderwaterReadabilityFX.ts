@@ -2,21 +2,15 @@ import * as THREE from 'three';
 
 import { Ship } from '../entities/Ship';
 
-const VAULT_RADIUS = 84;
-const BASIN_RADIUS = 220;
 const AMBIENT_COUNT = 88;
 const STREAK_COUNT = 18;
 const BEAM_COUNT = 5;
-const OCCLUDER_COUNT = 8;
+const MAX_UNDERSIDE_REVEAL_WINDOWS = 8;
 const DOWN_AXIS = new THREE.Vector3(0, -1, 0);
 const UNDERWATER_LOOK = {
   ambientColor: new THREE.Color('#30444a'),
   streakColor: new THREE.Color('#41565d'),
-  surfaceBandColor: new THREE.Color('#35535c'),
-  hullShadowCore: new THREE.Color('#01060b'),
-  hullShadowPenumbra: new THREE.Color('#09131c'),
-  basinCore: new THREE.Color('#031018'),
-  basinEdge: new THREE.Color('#06141b'),
+  surfaceBandColor: new THREE.Color('#426878'),
 } as const;
 
 const BEAM_DEFINITIONS = [
@@ -47,6 +41,8 @@ uniform vec3 uFocusPosition;
 uniform vec3 uMoonDirection;
 uniform float uArenaRadius;
 uniform float uArenaFadeStart;
+uniform vec4 uRevealWindows[${MAX_UNDERSIDE_REVEAL_WINDOWS}];
+uniform float uRevealStrengths[${MAX_UNDERSIDE_REVEAL_WINDOWS}];
 
 varying vec3 vWorldPosition;
 varying vec3 vWorldNormal;
@@ -58,10 +54,35 @@ float layeredWave(vec2 point, float time) {
   return clamp(primary * 0.34 + cross * 0.28 + chop * 0.38, 0.0, 1.0);
 }
 
+float revealWindowMask(vec2 point, vec2 halfSize) {
+  vec2 safeHalfSize = max(halfSize, vec2(0.001));
+  vec2 scaled = point / safeHalfSize;
+  float radial = dot(scaled, scaled);
+  return 1.0 - smoothstep(0.54, 1.26, radial);
+}
+
+float undersideRevealWindow(vec2 waterPoint) {
+  float revealStrength = 0.0;
+
+  for (int index = 0; index < ${MAX_UNDERSIDE_REVEAL_WINDOWS}; index++) {
+    vec4 bounds = uRevealWindows[index];
+    float strength = uRevealStrengths[index];
+
+    if (strength <= 0.001 || bounds.z <= 0.0 || bounds.w <= 0.0) {
+      continue;
+    }
+
+    vec2 delta = waterPoint - bounds.xy;
+    float mask = revealWindowMask(delta, bounds.zw);
+    revealStrength = max(revealStrength, mask * strength);
+  }
+
+  return clamp(revealStrength, 0.0, 1.0);
+}
+
 void main() {
   float arenaDistance = length(vWorldPosition.xz);
-  float arenaMask = 1.0 - smoothstep(uArenaFadeStart, uArenaRadius, arenaDistance);
-  if (arenaMask <= 0.001) discard;
+  float arenaMist = smoothstep(uArenaFadeStart, uArenaRadius, arenaDistance);
 
   vec2 focusDelta = vWorldPosition.xz - uFocusPosition.xz;
   vec2 stretchedDelta = focusDelta / vec2(176.0, 154.0);
@@ -69,6 +90,7 @@ void main() {
 
   vec2 moonOffset = focusDelta + uMoonDirection.xz * 44.0;
   float moonPatch = 1.0 - smoothstep(0.06, 1.32, length(moonOffset / vec2(132.0, 108.0)));
+  float revealMask = undersideRevealWindow(vWorldPosition.xz);
 
   float ripple = layeredWave(vWorldPosition.xz, uTime);
   float caustic = pow(layeredWave(vWorldPosition.zx * vec2(1.2, 0.82), uTime * 1.08 + 4.0), 1.75);
@@ -77,21 +99,23 @@ void main() {
   float outerShadow = smoothstep(0.84, 1.4, length(stretchedDelta));
 
   float lightMix =
-    (0.06 +
+    (0.08 +
       centerFalloff * 0.13 +
       moonPatch * 0.07 +
       ripple * 0.04 +
       caustic * 0.11 +
-      crest * 0.05 +
+      crest * 0.06 +
       normalLift * 0.04) *
     uTransmissionStrength *
     uUnderwaterAlpha;
 
-  vec3 baseColor = mix(vec3(0.006, 0.018, 0.028), vec3(0.014, 0.048, 0.064), centerFalloff * 0.24 + moonPatch * 0.06);
-  vec3 litColor = mix(vec3(0.08, 0.14, 0.18), vec3(0.22, 0.3, 0.34), caustic * 0.26 + moonPatch * 0.06);
+  vec3 baseColor = mix(vec3(0.002, 0.014, 0.056), vec3(0.008, 0.034, 0.104), centerFalloff * 0.24 + moonPatch * 0.06);
+  vec3 litColor = mix(vec3(0.036, 0.07, 0.132), vec3(0.078, 0.132, 0.212), caustic * 0.22 + moonPatch * 0.04);
   vec3 color = mix(baseColor, litColor, smoothstep(0.0, 0.92, lightMix));
-  color *= 1.0 - outerShadow * 0.32;
-  color *= arenaMask;
+  vec3 revealColor = mix(vec3(0.062, 0.12, 0.19), vec3(0.128, 0.214, 0.314), moonPatch * 0.16 + centerFalloff * 0.2);
+  color = mix(color, max(color, revealColor), revealMask * uUnderwaterAlpha * 0.62);
+  color *= 1.0 - outerShadow * 0.56;
+  color = mix(color, vec3(0.002, 0.01, 0.062), arenaMist * 0.82);
 
   gl_FragColor = vec4(color, 1.0);
 }
@@ -146,24 +170,18 @@ interface BeamSlot {
   readonly drift: number;
 }
 
-interface HullOccluderSlot {
-  readonly root: THREE.Group;
-  readonly core: THREE.Mesh<THREE.ShapeGeometry, THREE.MeshBasicMaterial>;
-  readonly penumbra: THREE.Mesh<THREE.ShapeGeometry, THREE.MeshBasicMaterial>;
-}
-
 export interface UnderwaterReadabilitySnapshot {
   deltaSeconds: number;
   elapsedSeconds: number;
-  approxWaterDepth: number;
   camera: THREE.PerspectiveCamera;
   cameraUnderwater: boolean;
   whalePosition: THREE.Vector3;
   whaleSpeed: number;
   underwaterRatio: number;
-  submerged: boolean;
   surfaceHeightAtCamera: number;
+  floorHeightAtCamera: number;
   sampleSurfaceHeight: (x: number, z: number) => number;
+  sampleFloorHeight: (x: number, z: number) => number;
   moonDirection: THREE.Vector3;
   oceanUndersideMesh: THREE.Mesh<THREE.BufferGeometry, THREE.ShaderMaterial>;
   ships: readonly Ship[];
@@ -177,8 +195,14 @@ export function createOceanUndersideMaterial(arenaRadius: number): THREE.ShaderM
       uTransmissionStrength: { value: 1 },
       uFocusPosition: { value: new THREE.Vector3() },
       uMoonDirection: { value: new THREE.Vector3(0.35, -0.9, 0.15).normalize() },
-      uArenaRadius: { value: arenaRadius },
-      uArenaFadeStart: { value: arenaRadius * 0.9 },
+      uArenaRadius: { value: arenaRadius * 1.55 },
+      uArenaFadeStart: { value: arenaRadius * 0.86 },
+      uRevealWindows: {
+        value: Array.from({ length: MAX_UNDERSIDE_REVEAL_WINDOWS }, () => new THREE.Vector4()),
+      },
+      uRevealStrengths: {
+        value: Array.from({ length: MAX_UNDERSIDE_REVEAL_WINDOWS }, () => 0),
+      },
     },
     vertexShader: OCEAN_UNDERSIDE_VERTEX_SHADER,
     fragmentShader: OCEAN_UNDERSIDE_FRAGMENT_SHADER,
@@ -197,11 +221,9 @@ export class UnderwaterReadabilityFX {
   private readonly particleRoot = new THREE.Group();
   private readonly surfaceOverlayRoot = new THREE.Group();
   private readonly beamSlots: BeamSlot[] = [];
-  private readonly hullOccluderSlots: HullOccluderSlot[] = [];
   private readonly beamPlaneGeometry = new THREE.PlaneGeometry(1, 1, 1, 20);
-  private readonly hullOccluderGeometry = this.createHullOccluderGeometry();
   private readonly shipVector = new THREE.Vector3();
-  private readonly shadowScale = new THREE.Vector2();
+  private readonly shipRevealPoint = new THREE.Vector3();
   private readonly ceilingFocusTarget = new THREE.Vector3();
   private readonly ceilingFocus = new THREE.Vector3();
   private readonly beamAnchor = new THREE.Vector3();
@@ -234,12 +256,8 @@ export class UnderwaterReadabilityFX {
   private readonly streakDrift = new Float32Array(STREAK_COUNT * 2);
   private readonly streaks: THREE.LineSegments;
   private readonly beamAlpha = new Float32Array(BEAM_COUNT);
-  private readonly occluderStrength = new Float32Array(OCCLUDER_COUNT);
-  private readonly vaultMaterial: THREE.MeshBasicMaterial;
   private readonly surfaceBandMaterial: THREE.MeshBasicMaterial;
   private readonly surfaceBand: THREE.Mesh<THREE.RingGeometry, THREE.MeshBasicMaterial>;
-  private readonly basinFloorMaterial: THREE.MeshBasicMaterial;
-  private readonly basinFloor: THREE.Mesh<THREE.CircleGeometry, THREE.MeshBasicMaterial>;
   private underwaterAlpha = 0;
 
   constructor(scene: THREE.Scene, camera: THREE.PerspectiveCamera) {
@@ -248,14 +266,12 @@ export class UnderwaterReadabilityFX {
     }
 
     this.root.renderOrder = -10;
+    this.root.visible = false;
     this.particleRoot.renderOrder = 10;
     this.surfaceOverlayRoot.renderOrder = -3;
+    this.surfaceOverlayRoot.visible = false;
 
     this.beamPlaneGeometry.translate(0, -0.5, 0);
-
-    this.vaultMaterial = this.createVaultMaterial();
-    const vault = new THREE.Mesh(this.createVaultGeometry(), this.vaultMaterial);
-    vault.frustumCulled = false;
 
     this.surfaceBandMaterial = new THREE.MeshBasicMaterial({
       color: UNDERWATER_LOOK.surfaceBandColor,
@@ -273,13 +289,6 @@ export class UnderwaterReadabilityFX {
     );
     this.surfaceBand.rotation.x = -Math.PI / 2;
     this.surfaceBand.frustumCulled = false;
-
-    this.basinFloorMaterial = this.createBasinFloorMaterial();
-    this.basinFloor = new THREE.Mesh(new THREE.CircleGeometry(1, 64), this.basinFloorMaterial);
-    this.basinFloor.rotation.x = -Math.PI / 2;
-    this.basinFloor.scale.setScalar(BASIN_RADIUS);
-    this.basinFloor.frustumCulled = false;
-    this.basinFloor.renderOrder = -6;
 
     this.ambientMaterial.fog = false;
     this.ambientMaterial.toneMapped = false;
@@ -302,12 +311,29 @@ export class UnderwaterReadabilityFX {
     this.streaks.frustumCulled = false;
 
     this.createBeamSlots();
-    this.createHullOccluderSlots();
 
-    this.root.add(vault, this.basinFloor, this.surfaceBand);
+    this.root.add(this.surfaceBand);
     this.particleRoot.add(this.ambientParticles, this.streaks);
     scene.add(this.root, this.surfaceOverlayRoot);
     camera.add(this.particleRoot);
+  }
+
+  reset(): void {
+    this.underwaterAlpha = 0;
+    this.root.visible = false;
+    this.surfaceOverlayRoot.visible = false;
+    this.surfaceBandMaterial.opacity = 0;
+    this.ambientMaterial.opacity = 0;
+    this.streakMaterial.opacity = 0;
+    this.ambientParticles.visible = false;
+    this.streaks.visible = false;
+    this.beamAlpha.fill(0);
+
+    for (const beam of this.beamSlots) {
+      beam.root.visible = false;
+      beam.materialA.uniforms.uAlpha.value = 0;
+      beam.materialB.uniforms.uAlpha.value = 0;
+    }
   }
 
   update(snapshot: UnderwaterReadabilitySnapshot): void {
@@ -317,10 +343,7 @@ export class UnderwaterReadabilityFX {
     this.underwaterAlpha = THREE.MathUtils.damp(this.underwaterAlpha, targetAlpha, 2.4, snapshot.deltaSeconds);
 
     this.root.position.copy(snapshot.camera.position);
-    this.vaultMaterial.opacity = this.underwaterAlpha * 0.94;
-    this.basinFloor.position.set(0, snapshot.surfaceHeightAtCamera - snapshot.camera.position.y - snapshot.approxWaterDepth, 0);
-    this.basinFloorMaterial.opacity = this.underwaterAlpha * THREE.MathUtils.lerp(0.16, 0.3, snapshot.underwaterRatio);
-    this.basinFloor.visible = this.basinFloorMaterial.opacity > 0.01;
+    this.root.visible = this.underwaterAlpha > 0.01;
     this.surfaceOverlayRoot.visible = this.underwaterAlpha > 0.01;
 
     const surfaceOffset = snapshot.surfaceHeightAtCamera - snapshot.camera.position.y - 0.45;
@@ -335,7 +358,6 @@ export class UnderwaterReadabilityFX {
 
     this.updateUndersideMaterial(snapshot);
     this.updateBeamVolumes(snapshot);
-    this.updateHullOccluders(snapshot);
     this.updateAmbientParticles(snapshot);
     this.updateStreaks(snapshot);
     this.updateShipReadability(snapshot);
@@ -348,81 +370,15 @@ export class UnderwaterReadabilityFX {
     this.ambientGeometry.dispose();
     this.streakGeometry.dispose();
     this.beamPlaneGeometry.dispose();
-    this.hullOccluderGeometry.dispose();
-    this.vaultMaterial.dispose();
-    this.basinFloorMaterial.dispose();
     this.surfaceBandMaterial.dispose();
     this.ambientMaterial.dispose();
     this.streakMaterial.dispose();
-    this.basinFloor.geometry.dispose();
     this.surfaceBand.geometry.dispose();
 
     for (const beam of this.beamSlots) {
       beam.materialA.dispose();
       beam.materialB.dispose();
     }
-
-    for (const occluder of this.hullOccluderSlots) {
-      occluder.core.material.dispose();
-      occluder.penumbra.material.dispose();
-    }
-  }
-
-  private createVaultGeometry(): THREE.SphereGeometry {
-    const geometry = new THREE.SphereGeometry(VAULT_RADIUS, 24, 16);
-    const positions = geometry.attributes.position;
-    const colors = new Float32Array(positions.count * 3);
-    const baseLow = new THREE.Color('#00060b');
-    const mid = new THREE.Color('#07131b');
-    const top = new THREE.Color('#17323a');
-    const bandTint = new THREE.Color('#5e7a80');
-    const moonBreak = new THREE.Color('#9fb5b7');
-    const color = new THREE.Color();
-
-    for (let index = 0; index < positions.count; index += 1) {
-      const y = positions.getY(index) / VAULT_RADIUS;
-      const normalizedY = THREE.MathUtils.clamp((y + 1) * 0.5, 0, 1);
-      const band = THREE.MathUtils.smoothstep(normalizedY, 0.7, 0.9) * (1 - THREE.MathUtils.smoothstep(normalizedY, 0.94, 1));
-      const moonBand = THREE.MathUtils.smoothstep(normalizedY, 0.8, 1);
-
-      color.copy(baseLow).lerp(mid, normalizedY * 0.58);
-      color.lerp(top, Math.pow(normalizedY, 1.9) * 0.56);
-      color.lerp(bandTint, band * 0.26);
-      color.lerp(moonBreak, moonBand * 0.05);
-
-      colors[index * 3] = color.r;
-      colors[index * 3 + 1] = color.g;
-      colors[index * 3 + 2] = color.b;
-    }
-
-    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    return geometry;
-  }
-
-  private createVaultMaterial(): THREE.MeshBasicMaterial {
-    const material = new THREE.MeshBasicMaterial({
-      vertexColors: true,
-      side: THREE.BackSide,
-      transparent: true,
-      opacity: 0,
-      depthWrite: false,
-    });
-    material.fog = false;
-    material.toneMapped = false;
-    return material;
-  }
-
-  private createBasinFloorMaterial(): THREE.MeshBasicMaterial {
-    const material = new THREE.MeshBasicMaterial({
-      color: UNDERWATER_LOOK.basinCore,
-      transparent: true,
-      depthWrite: false,
-      side: THREE.DoubleSide,
-      opacity: 0,
-      fog: true,
-    });
-    material.toneMapped = false;
-    return material;
   }
 
   private createBeamSlots(): void {
@@ -455,68 +411,6 @@ export class UnderwaterReadabilityFX {
       });
       this.surfaceOverlayRoot.add(root);
     }
-  }
-
-  private createHullOccluderSlots(): void {
-    for (let index = 0; index < OCCLUDER_COUNT; index += 1) {
-      const core = new THREE.Mesh(
-        this.hullOccluderGeometry,
-        new THREE.MeshBasicMaterial({
-          color: UNDERWATER_LOOK.hullShadowCore,
-          transparent: true,
-          opacity: 0,
-          side: THREE.DoubleSide,
-          depthWrite: false,
-          blending: THREE.NormalBlending,
-          polygonOffset: true,
-          polygonOffsetFactor: -2,
-          polygonOffsetUnits: -2,
-        }),
-      );
-      core.material.toneMapped = false;
-      core.renderOrder = 1;
-
-      const penumbra = new THREE.Mesh(
-        this.hullOccluderGeometry,
-        new THREE.MeshBasicMaterial({
-          color: UNDERWATER_LOOK.hullShadowPenumbra,
-          transparent: true,
-          opacity: 0,
-          side: THREE.DoubleSide,
-          depthWrite: false,
-          blending: THREE.NormalBlending,
-          polygonOffset: true,
-          polygonOffsetFactor: -3,
-          polygonOffsetUnits: -3,
-        }),
-      );
-      penumbra.material.toneMapped = false;
-      penumbra.scale.set(1.24, 1, 1.14);
-      penumbra.renderOrder = 0;
-
-      const root = new THREE.Group();
-      root.visible = false;
-      root.add(penumbra, core);
-
-      this.hullOccluderSlots.push({ root, core, penumbra });
-      this.surfaceOverlayRoot.add(root);
-    }
-  }
-
-  private createHullOccluderGeometry(): THREE.ShapeGeometry {
-    const radius = 0.34;
-    const halfLength = 0.92;
-    const shape = new THREE.Shape();
-
-    shape.moveTo(radius, -halfLength);
-    shape.lineTo(radius, halfLength);
-    shape.absarc(0, halfLength, radius, 0, Math.PI, false);
-    shape.lineTo(-radius, -halfLength);
-    shape.absarc(0, -halfLength, radius, Math.PI, Math.PI * 2, false);
-
-    const geometry = new THREE.ShapeGeometry(shape, 24);
-    geometry.rotateX(-Math.PI / 2);
-    return geometry;
   }
 
   private createBeamMaterial(seed: number): THREE.ShaderMaterial {
@@ -554,12 +448,84 @@ export class UnderwaterReadabilityFX {
   private updateUndersideMaterial(snapshot: UnderwaterReadabilitySnapshot): void {
     const uniforms = snapshot.oceanUndersideMesh.material.uniforms;
     this.beamDirection.copy(snapshot.moonDirection).normalize();
+    const localWaterColumnDepth = THREE.MathUtils.clamp(
+      snapshot.surfaceHeightAtCamera - snapshot.floorHeightAtCamera,
+      18,
+      86,
+    );
+    const depthBoost = THREE.MathUtils.lerp(
+      0.92,
+      1.06,
+      THREE.MathUtils.inverseLerp(24, 72, localWaterColumnDepth),
+    );
 
     uniforms.uTime.value = snapshot.elapsedSeconds;
     uniforms.uUnderwaterAlpha.value = this.underwaterAlpha;
-    uniforms.uTransmissionStrength.value = THREE.MathUtils.lerp(0.48, 0.66, snapshot.underwaterRatio);
+    uniforms.uTransmissionStrength.value =
+      THREE.MathUtils.lerp(0.46, 0.68, snapshot.underwaterRatio) * depthBoost;
     uniforms.uFocusPosition.value.copy(this.ceilingFocus);
     uniforms.uMoonDirection.value.copy(this.beamDirection);
+
+    const revealWindows = uniforms.uRevealWindows.value as THREE.Vector4[];
+    const revealStrengths = uniforms.uRevealStrengths.value as number[];
+
+    for (let index = 0; index < MAX_UNDERSIDE_REVEAL_WINDOWS; index += 1) {
+      revealWindows[index].set(0, 0, 0, 0);
+      revealStrengths[index] = 0;
+    }
+
+    const slotDistances = new Float32Array(MAX_UNDERSIDE_REVEAL_WINDOWS);
+    slotDistances.fill(Number.POSITIVE_INFINITY);
+
+    for (const ship of snapshot.ships) {
+      if (ship.sunk) {
+        continue;
+      }
+
+      ship.getSubsurfaceRevealPoint(this.shipRevealPoint);
+      const distanceSq = snapshot.camera.position.distanceToSquared(this.shipRevealPoint);
+      const distanceFade = 1 - THREE.MathUtils.smoothstep(Math.sqrt(distanceSq), 18, 112);
+
+      if (distanceFade <= 0.01) {
+        continue;
+      }
+
+      const surfaceHeight = snapshot.sampleSurfaceHeight(this.shipRevealPoint.x, this.shipRevealPoint.z);
+      const depthBelowSurface = surfaceHeight - this.shipRevealPoint.y;
+      const shallowFade = 1 - THREE.MathUtils.smoothstep(depthBelowSurface, 1.8, 9.5);
+      const strength = distanceFade * shallowFade * (ship.isCapitalShip ? 0.88 : 0.68);
+
+      if (strength <= 0.01) {
+        continue;
+      }
+
+      let insertIndex = -1;
+      for (let index = 0; index < MAX_UNDERSIDE_REVEAL_WINDOWS; index += 1) {
+        if (distanceSq < slotDistances[index]) {
+          insertIndex = index;
+          break;
+        }
+      }
+
+      if (insertIndex < 0) {
+        continue;
+      }
+
+      for (let index = MAX_UNDERSIDE_REVEAL_WINDOWS - 1; index > insertIndex; index -= 1) {
+        slotDistances[index] = slotDistances[index - 1];
+        revealWindows[index].copy(revealWindows[index - 1]);
+        revealStrengths[index] = revealStrengths[index - 1];
+      }
+
+      slotDistances[insertIndex] = distanceSq;
+      revealWindows[insertIndex].set(
+        this.shipRevealPoint.x,
+        this.shipRevealPoint.z,
+        ship.subsurfaceRevealHalfExtents.x * (ship.isCapitalShip ? 1.18 : 1.26),
+        ship.subsurfaceRevealHalfExtents.y * (ship.isCapitalShip ? 1.1 : 1.18),
+      );
+      revealStrengths[insertIndex] = strength;
+    }
   }
 
   private updateBeamVolumes(snapshot: UnderwaterReadabilitySnapshot): void {
@@ -578,14 +544,22 @@ export class UnderwaterReadabilityFX {
       const targetX = this.ceilingFocus.x + slot.offset.x + swayX;
       const targetZ = this.ceilingFocus.z + slot.offset.y + swayZ;
       const surfaceHeight = snapshot.sampleSurfaceHeight(targetX, targetZ);
+      const floorHeight = snapshot.sampleFloorHeight(targetX, targetZ);
+      const waterColumnDepth = THREE.MathUtils.clamp(surfaceHeight - floorHeight, 18, 88);
       const horizontalDistance = Math.hypot(targetX - snapshot.whalePosition.x, targetZ - snapshot.whalePosition.z);
       const distanceFade = 1 - THREE.MathUtils.smoothstep(horizontalDistance, 10, 82);
+      const depthFade = THREE.MathUtils.lerp(
+        0.78,
+        1.04,
+        THREE.MathUtils.inverseLerp(22, 72, waterColumnDepth),
+      );
       const targetBeamAlpha =
         this.underwaterAlpha *
         THREE.MathUtils.lerp(0.12, 0.28, snapshot.underwaterRatio) *
         distanceFade *
+        depthFade *
         slot.opacity *
-        0.08;
+        0.05;
 
       this.beamAlpha[index] = THREE.MathUtils.damp(this.beamAlpha[index], targetBeamAlpha, 2.1, snapshot.deltaSeconds);
       const beamAlpha = this.beamAlpha[index];
@@ -595,7 +569,11 @@ export class UnderwaterReadabilityFX {
       slot.root.position.lerp(this.beamAnchor, 1 - Math.exp(-snapshot.deltaSeconds * 1.1));
       slot.root.quaternion.slerp(this.beamQuaternion, 1 - Math.exp(-snapshot.deltaSeconds * 1.5));
 
-      const lengthScale = THREE.MathUtils.lerp(0.82, 1.04, snapshot.underwaterRatio);
+      const lengthScale = THREE.MathUtils.clamp(
+        THREE.MathUtils.lerp(0.72, 1.12, THREE.MathUtils.inverseLerp(20, 80, waterColumnDepth)),
+        0.72,
+        1.16,
+      );
       slot.planeA.scale.set(slot.width, slot.length * lengthScale, 1);
       slot.planeB.scale.set(slot.width * 0.82, slot.length * lengthScale * 1.06, 1);
 
@@ -606,59 +584,15 @@ export class UnderwaterReadabilityFX {
     }
   }
 
-  private updateHullOccluders(snapshot: UnderwaterReadabilitySnapshot): void {
-    let visibleOccluders = 0;
-
-    for (const ship of snapshot.ships) {
-      if (visibleOccluders >= this.hullOccluderSlots.length) {
-        break;
-      }
-
-      if (ship.sinking || ship.sunk) {
-        continue;
-      }
-
-      const shipDistance = this.shipVector.copy(ship.root.position).sub(snapshot.whalePosition).length();
-      const proximity = 1 - THREE.MathUtils.smoothstep(shipDistance, 14, 122);
-      const strength = this.underwaterAlpha * proximity * 1.08;
-
-      if (strength <= 0.02) {
-        continue;
-      }
-
-      const occluder = this.hullOccluderSlots[visibleOccluders];
-      const surfaceHeight = snapshot.sampleSurfaceHeight(ship.root.position.x, ship.root.position.z);
-
-      occluder.root.visible = true;
-      occluder.root.position.set(ship.root.position.x, surfaceHeight - 0.14, ship.root.position.z);
-      occluder.root.rotation.set(0, ship.heading, 0);
-
-      this.shadowScale.copy(ship.surfaceShadowScale);
-      occluder.root.scale.set(this.shadowScale.x, 1, this.shadowScale.y);
-      this.occluderStrength[visibleOccluders] = THREE.MathUtils.damp(
-        this.occluderStrength[visibleOccluders],
-        strength,
-        3,
-        snapshot.deltaSeconds,
-      );
-      occluder.core.material.opacity = this.occluderStrength[visibleOccluders] * 0.5;
-      occluder.penumbra.material.opacity = this.occluderStrength[visibleOccluders] * 0.18;
-
-      visibleOccluders += 1;
-    }
-
-    for (let index = visibleOccluders; index < this.hullOccluderSlots.length; index += 1) {
-      const occluder = this.hullOccluderSlots[index];
-      this.occluderStrength[index] = THREE.MathUtils.damp(this.occluderStrength[index], 0, 4, snapshot.deltaSeconds);
-      occluder.root.visible = false;
-      occluder.core.material.opacity = 0;
-      occluder.penumbra.material.opacity = 0;
-    }
-  }
-
   private updateAmbientParticles(snapshot: UnderwaterReadabilitySnapshot): void {
     const speedFactor = THREE.MathUtils.clamp(snapshot.whaleSpeed / 28, 0, 1.4);
-    this.ambientMaterial.opacity = this.underwaterAlpha * (0.07 + speedFactor * 0.03);
+    const floorSupport = THREE.MathUtils.smoothstep(
+      snapshot.camera.position.y - snapshot.floorHeightAtCamera,
+      -8,
+      14,
+    );
+
+    this.ambientMaterial.opacity = this.underwaterAlpha * floorSupport * (0.06 + speedFactor * 0.03);
     this.ambientParticles.visible = this.ambientMaterial.opacity > 0.005;
 
     for (let index = 0; index < AMBIENT_COUNT; index += 1) {
@@ -681,8 +615,13 @@ export class UnderwaterReadabilityFX {
 
   private updateStreaks(snapshot: UnderwaterReadabilitySnapshot): void {
     const burstAlpha = THREE.MathUtils.clamp(THREE.MathUtils.inverseLerp(14, 28, snapshot.whaleSpeed), 0, 1);
+    const floorSupport = THREE.MathUtils.smoothstep(
+      snapshot.camera.position.y - snapshot.floorHeightAtCamera,
+      -8,
+      16,
+    );
 
-    this.streakMaterial.opacity = this.underwaterAlpha * burstAlpha * 0.22;
+    this.streakMaterial.opacity = this.underwaterAlpha * floorSupport * burstAlpha * 0.22;
     this.streaks.visible = this.streakMaterial.opacity > 0.01;
 
     for (let index = 0; index < STREAK_COUNT; index += 1) {

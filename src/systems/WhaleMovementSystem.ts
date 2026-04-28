@@ -45,6 +45,7 @@ const TAIL_SLAP_HALF_ANGLE = THREE.MathUtils.degToRad(78);
 const TAIL_SLAP_TRAVEL_SPEED = WHALE_SPEED_PROFILE.tailSlapTravelSpeed;
 const TAIL_SLAP_SURFACE_TARGET_DEPTH = -0.18;
 const RAM_RESPONSE_DAMPING = 4.8;
+const DIRECTIONAL_VISUAL_CLIMB_NORMALIZER = 6;
 
 export interface WhaleBreachImpactEvent {
   position: THREE.Vector3;
@@ -96,10 +97,16 @@ export class WhaleMovementSystem {
     whale.strokeVisual = THREE.MathUtils.damp(whale.strokeVisual, 0, 5.6, deltaSeconds);
 
     if (whale.actionState === 'breach' && whale.breachActive) {
+      whale.setDirectionalVisualInput(
+        0,
+        THREE.MathUtils.clamp(whale.verticalSpeed / DIRECTIONAL_VISUAL_CLIMB_NORMALIZER, -1, 1),
+        1,
+      );
       return this.updateBreach(whale, deltaSeconds, oceanHeightAt, result);
     }
 
     if (whale.actionState === 'tail_slap') {
+      whale.setDirectionalVisualInput(0, 0, 0);
       return this.updateTailSlap(whale, deltaSeconds, oceanHeightAt, result);
     }
 
@@ -197,6 +204,12 @@ export class WhaleMovementSystem {
       whale.turnDragMultiplier *
       recoveryScale;
     const speedTurnScale = THREE.MathUtils.clamp(0.45 + whale.speed / MAX_TRAVEL_SPEED, 0.45, 1.1);
+    const speedRatio = THREE.MathUtils.clamp(whale.speed / Math.max(MAX_TRAVEL_SPEED, 0.001), 0, 1.2);
+    whale.setDirectionalVisualInput(
+      THREE.MathUtils.clamp(turnInput * speedTurnScale, -1, 1),
+      THREE.MathUtils.clamp(depthInput, -1, 1),
+      THREE.MathUtils.smoothstep(speedRatio, 0.12, 0.72),
+    );
     whale.yaw -= turnInput * turnRate * speedTurnScale * deltaSeconds;
 
     if (whale.actionState === 'swim' && tailSlapPressed && whale.depth >= TAIL_SLAP_DEPTH_LIMIT) {
@@ -224,6 +237,11 @@ export class WhaleMovementSystem {
       whale.depth >= AUTO_BREACH_DEPTH_THRESHOLD
     ) {
       this.startBreach(whale);
+      whale.setDirectionalVisualInput(
+        0,
+        THREE.MathUtils.clamp(whale.verticalSpeed / DIRECTIONAL_VISUAL_CLIMB_NORMALIZER, -1, 1),
+        1,
+      );
       result.breachStarted = true;
       return this.updateBreach(whale, deltaSeconds, oceanHeightAt, result);
     }

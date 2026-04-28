@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { Water } from 'three/addons/objects/Water.js';
 
 import { PlayerWhale } from '../entities/PlayerWhale';
+import { preloadRowboatAsset } from '../entities/RowboatVisualAsset';
 import { preloadWhaleHeroAsset } from '../entities/WhaleHeroAsset';
 import { Ship, ShipLanternInfluence, ShipSpawnConfig } from '../entities/Ship';
 import { createArenaFogBankMaterial, updateArenaFogBankMaterial } from '../fx/createArenaFogBankMaterial';
@@ -176,7 +177,7 @@ export class IntroScene {
     this.breachSplashFx = new BreachSplashFX(this.scene);
     this.shipWakeFx = new ShipWakeFX(this.scene, this.ships);
     this.topsideSubsurfaceRevealFx = new TopsideSubsurfaceRevealFX(this.scene);
-    void preloadWhaleHeroAsset();
+    void Promise.all([preloadWhaleHeroAsset(), preloadRowboatAsset()]);
 
     this.setupLights();
     this.setupSky();

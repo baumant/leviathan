@@ -8,13 +8,17 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
+    "asset:rowboat": "node scripts/build-rowboat-asset.mjs",
     "asset:whale": "node scripts/build-whale-hero-asset.mjs"
   },
   "dependencies": {
     "three": "^0.180.0"
   },
   "devDependencies": {
+    "@gltf-transform/core": "^4.3.0",
+    "@gltf-transform/functions": "^4.3.0",
     "@types/three": "^0.180.0",
+    "meshoptimizer": "^1.1.1",
     "typescript": "^5.9.3",
     "vite": "^7.1.9"
   }

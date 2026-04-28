@@ -4,8 +4,6 @@ Before changing rendering, materials, lighting, camera, particles, or environmen
 Prefer:
 - silhouette clarity
 - fog-based composition
-- cheap geometry with strong lighting
 - restrained palette
-- whale readability over environment detail
 
 When making visual changes, explain briefly how they support atmosphere, readability, or mythic scale.

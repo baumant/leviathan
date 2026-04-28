@@ -251,14 +251,18 @@ const assetRoot = new THREE.Group();
 assetRoot.name = 'whale_hero_root';
 assetRoot.scale.setScalar(TARGET_LENGTH);
 
+const spineRoot = new THREE.Group();
+spineRoot.name = 'spine_root';
+assetRoot.add(spineRoot);
+
 const bodyRoot = new THREE.Group();
 bodyRoot.name = 'body_root';
-assetRoot.add(bodyRoot);
+spineRoot.add(bodyRoot);
 
 const tailPivot = new THREE.Group();
 tailPivot.name = 'tail_pivot';
 tailPivot.position.copy(TAIL_PIVOT_POSITION);
-assetRoot.add(tailPivot);
+spineRoot.add(tailPivot);
 
 const flukePivot = new THREE.Group();
 flukePivot.name = 'fluke_pivot';
@@ -268,12 +272,12 @@ tailPivot.add(flukePivot);
 const leftFinPivot = new THREE.Group();
 leftFinPivot.name = 'left_fin_pivot';
 leftFinPivot.position.copy(LEFT_FIN_PIVOT_POSITION);
-assetRoot.add(leftFinPivot);
+spineRoot.add(leftFinPivot);
 
 const rightFinPivot = new THREE.Group();
 rightFinPivot.name = 'right_fin_pivot';
 rightFinPivot.position.copy(RIGHT_FIN_PIVOT_POSITION);
-assetRoot.add(rightFinPivot);
+spineRoot.add(rightFinPivot);
 
 const bodyMesh = new THREE.Mesh(createTriangleGeometry(regionPositions.body), material.clone());
 bodyMesh.name = 'body';
@@ -367,27 +371,28 @@ bodyRoot.add(blowhole);
 const tetherAttach = new THREE.Object3D();
 tetherAttach.name = 'tether_attach';
 tetherAttach.position.set(0, 0.028, 0.19);
-assetRoot.add(tetherAttach);
+spineRoot.add(tetherAttach);
 
 const tailSlapAnchor = new THREE.Object3D();
 tailSlapAnchor.name = 'tail_slap_anchor';
 tailSlapAnchor.position.set(0, 0.0, -0.49);
-assetRoot.add(tailSlapAnchor);
+tailSlapAnchor.position.sub(TAIL_PIVOT_POSITION);
+tailPivot.add(tailSlapAnchor);
 
 const towAttachLeft = new THREE.Object3D();
 towAttachLeft.name = 'tow_attach_left';
 towAttachLeft.position.set(-0.11, 0.02, 0.18);
-assetRoot.add(towAttachLeft);
+spineRoot.add(towAttachLeft);
 
 const towAttachCenter = new THREE.Object3D();
 towAttachCenter.name = 'tow_attach_center';
 towAttachCenter.position.set(0, 0.026, 0.2);
-assetRoot.add(towAttachCenter);
+spineRoot.add(towAttachCenter);
 
 const towAttachRight = new THREE.Object3D();
 towAttachRight.name = 'tow_attach_right';
 towAttachRight.position.set(0.11, 0.02, 0.18);
-assetRoot.add(towAttachRight);
+spineRoot.add(towAttachRight);
 
 assetRoot.updateMatrixWorld(true);
 

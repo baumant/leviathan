@@ -34,6 +34,7 @@ export interface HUDSnapshot {
   overlayCopy?: string;
   presentation?: 'combat' | 'intro';
   showActionControls?: boolean;
+  tailSlapAvailable?: boolean;
   eyebrowText?: string;
   fadeAlpha?: number;
 }
@@ -165,13 +166,14 @@ export class UISystem {
     const presentation = snapshot.presentation ?? 'combat';
     const isIntro = presentation === 'intro';
     const showActionControls = snapshot.showActionControls ?? !isIntro;
+    const showTailSlapControl = showActionControls && (snapshot.tailSlapAvailable ?? true);
     this.objectiveEl.textContent = snapshot.objective;
     this.eyebrowEl.textContent = snapshot.eyebrowText ?? 'First playable';
     this.introHintEl.hidden = !isIntro;
     this.controlsStrip.classList.toggle('hud__controls--intro', isIntro);
     this.diveTile.root.hidden = !showActionControls;
     this.riseTile.root.hidden = !showActionControls;
-    this.tailSlapTile.root.hidden = !showActionControls;
+    this.tailSlapTile.root.hidden = !showTailSlapControl;
     this.setBar(this.whaleFill, this.whaleValue, snapshot.whaleHealth);
     this.setBar(this.airFill, this.airValue, snapshot.whaleAir);
     this.syncCapitalShipBars(snapshot.capitalShipBars);

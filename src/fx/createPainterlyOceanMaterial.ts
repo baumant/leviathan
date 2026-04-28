@@ -205,7 +205,7 @@ export function createPainterlyOceanMaterial(geometry: THREE.PlaneGeometry, aren
   material.uniforms.uApproxWaterDepth = { value: 95 };
   material.uniforms.uUnderwaterRatio = { value: 0 };
   material.uniforms.uArenaRadius = { value: arenaRadius };
-  material.uniforms.uArenaFadeStart = { value: arenaRadius * 0.9 };
+  material.uniforms.uArenaFadeStart = { value: arenaRadius * 0.76 };
 
   material.fragmentShader = material.fragmentShader.replace(
     'varying vec4 worldPosition;',
@@ -386,7 +386,8 @@ albedo += uLanternColor * lanternGlow * uLanternWarmBlend;
 albedo = mix( albedo, fogColor, horizonFade * clamp( 0.34 + fogDensity * 10.0, 0.0, 0.74 ) );
 albedo = max( albedo, uDeepColor * uMinimumDensity * 0.68 );
 albedo = mix( fogColor, albedo, arenaMask );
-float localAlpha = mix( alpha, max( uRevealMinAlpha, alpha * ( 1.0 - translucencyWindow * 0.28 ) ), revealWindowClarity );`,
+float localAlpha = mix( alpha, max( uRevealMinAlpha, alpha * ( 1.0 - translucencyWindow * 0.28 ) ), revealWindowClarity );
+localAlpha *= pow( arenaMask, 1.35 );`,
   );
 
   material.fragmentShader = material.fragmentShader.replace(

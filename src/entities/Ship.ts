@@ -6,6 +6,7 @@ import {
   WaterlinePassthroughState,
 } from '../fx/calculateWhaleTopsideRevealState';
 import { createCelMaterial } from '../fx/createCelMaterial';
+import { createRowboatVisualAsset } from './RowboatVisualAsset';
 
 export type ShipRole = 'rowboat' | 'flagship' | 'corporate_whaler';
 export type ShipAIState = 'patrol' | 'close' | 'throw' | 'tethered' | 'engage' | 'flee' | 'sinking';
@@ -61,13 +62,13 @@ const WATER_SHOVE_YAW_DAMPING = 1.3;
 const WATER_SLIDE_ROLL_DAMPING = 2.4;
 const WATER_SLIDE_ROLL_LIMIT = 0.06;
 const TOPSIDE_SUBSURFACE_RENDER_ORDER = 24;
-const TOPSIDE_SUBSURFACE_HULL_COLOR = new THREE.Color('#86a4b3');
-const TOPSIDE_SUBSURFACE_OPACITY_MIN = 0.08;
-const TOPSIDE_SUBSURFACE_OPACITY_MAX = 0.46;
-const CAPITAL_TOPSIDE_SUBSURFACE_OPACITY_MIN = 0.14;
-const CAPITAL_TOPSIDE_SUBSURFACE_OPACITY_MAX = 0.62;
-const CAPITAL_TOPSIDE_SUBSURFACE_HULL_BLEND = 0.08;
-const ROWBOAT_TOPSIDE_SUBSURFACE_HULL_BLEND = 0.18;
+const TOPSIDE_SUBSURFACE_HULL_COLOR = new THREE.Color('#53696b');
+const TOPSIDE_SUBSURFACE_OPACITY_MIN = 0.06;
+const TOPSIDE_SUBSURFACE_OPACITY_MAX = 0.34;
+const CAPITAL_TOPSIDE_SUBSURFACE_OPACITY_MIN = 0.1;
+const CAPITAL_TOPSIDE_SUBSURFACE_OPACITY_MAX = 0.48;
+const CAPITAL_TOPSIDE_SUBSURFACE_HULL_BLEND = 0.14;
+const ROWBOAT_TOPSIDE_SUBSURFACE_HULL_BLEND = 0.24;
 
 type ShipDamageReactionProfile = 'default' | 'capital_ram' | 'capital_breach';
 
@@ -84,10 +85,10 @@ const SHIP_ROLE_CONFIGS: Record<ShipRole, ShipRoleConfig> = {
     holdRangeMin: 8,
     holdRangeMax: 14,
     orbitOffset: 4,
-    scale: 0.72,
+    scale: 1,
     lanternIntensity: 1.1,
     floatHeight: 0.18,
-    visualDraftOffset: -0.42,
+    visualDraftOffset: 0,
     subsurfaceRevealOffsetY: -0.62,
     sinkDepth: 4.8,
     halfExtents: new THREE.Vector3(1.24, 0.78, 2.9),
@@ -207,6 +208,7 @@ export class Ship {
   private readonly hullTintMaterials: THREE.MeshToonMaterial[] = [];
   private readonly mastTintMaterials: THREE.MeshToonMaterial[] = [];
   private readonly sailTintMaterials: THREE.MeshToonMaterial[] = [];
+  private readonly lanternMeshes: THREE.Mesh[] = [];
   private readonly lanternMaterials: THREE.MeshToonMaterial[] = [];
   private readonly lanternHalos: THREE.Mesh[] = [];
   private readonly lanternHaloMaterials: THREE.MeshBasicMaterial[] = [];
@@ -249,6 +251,11 @@ export class Ship {
   private waterShoveYawVelocity = 0;
   private airborneHeight = 0;
   private airborneVelocity = 0;
+  private readonly tempMarkerPoint = new THREE.Vector3();
+  private rowboatVisualAssetRoot: THREE.Group | null = null;
+  private rowboatWakeOriginNode: THREE.Object3D | null = null;
+  private rowboatHarpoonOriginNode: THREE.Object3D | null = null;
+  private rowboatLanternOriginNodes: readonly THREE.Object3D[] = [];
 
   constructor(config: ShipSpawnConfig) {
     this.id = config.id;
@@ -342,6 +349,10 @@ export class Ship {
     this.root.updateMatrixWorld();
 
     this.reset();
+
+    if (this.role === 'rowboat') {
+      void this.loadRowboatVisualAsset();
+    }
   }
 
   get sinking(): boolean {
@@ -627,18 +638,18 @@ export class Ship {
     const haloBaseOpacity = Math.max(0, (0.14 + lanternPulse * 0.06) * (1 - this.sinkProgress * 0.92));
 
     for (const material of this.hullTintMaterials) {
-      material.emissive.set('#8fb7df');
-      material.emissiveIntensity = cue * (isCorporate ? 0.024 : isCapital ? 0.028 : 0.036);
+      material.emissive.set('#334449');
+      material.emissiveIntensity = cue * (isCorporate ? 0.014 : isCapital ? 0.016 : 0.018);
     }
 
     for (const material of this.mastTintMaterials) {
-      material.emissive.set('#86a5c8');
-      material.emissiveIntensity = cue * 0.026;
+      material.emissive.set('#3b494d');
+      material.emissiveIntensity = cue * 0.013;
     }
 
     for (const material of this.sailTintMaterials) {
-      material.emissive.set('#98b6d6');
-      material.emissiveIntensity = cue * 0.012;
+      material.emissive.set('#48545a');
+      material.emissiveIntensity = cue * 0.006;
     }
 
     for (let index = 0; index < this.lanternLights.length; index += 1) {
@@ -652,12 +663,12 @@ export class Ship {
         (this.roleConfig.lanternIntensity - damageRatio - this.sinkProgress * 1.6) * lanternPulse * lanternStrength,
       );
 
-      light.intensity = baseIntensity * (1 + cue * 0.24);
-      light.distance = THREE.MathUtils.lerp(18, 28, cue) * this.roleConfig.scale;
+      light.intensity = baseIntensity * (1 + cue * 0.36);
+      light.distance = THREE.MathUtils.lerp(18, 32, cue) * this.roleConfig.scale;
 
-      lanternMaterial.emissiveIntensity = Math.max(0, 0.9 - this.sinkProgress * 0.72) + cue * 0.18;
-      haloMaterial.opacity = Math.min(0.62, haloBaseOpacity + cue * 0.08);
-      halo.scale.setScalar(haloBaseScale * lanternStrength * (1 + cue * 0.08));
+      lanternMaterial.emissiveIntensity = Math.max(0, 0.9 - this.sinkProgress * 0.72) + cue * 0.24;
+      haloMaterial.opacity = Math.min(0.64, haloBaseOpacity + cue * 0.1);
+      halo.scale.setScalar(haloBaseScale * lanternStrength * (1 + cue * 0.1));
     }
 
     this.updateCannonTelegraphVisuals(telegraphAlpha);
@@ -803,8 +814,11 @@ export class Ship {
     return this.root.worldToLocal(target);
   }
 
-  private buildTopsideSubsurfaceOverlay(): void {
-    const overlay = this.fallbackVisualRoot.clone(true);
+  private buildTopsideSubsurfaceOverlay(sourceRoot: THREE.Object3D = this.fallbackVisualRoot): void {
+    const wasVisible = this.topsideSubsurfaceRoot.visible;
+    this.topsideSubsurfaceRoot.clear();
+
+    const overlay = sourceRoot.clone(true);
     overlay.renderOrder = TOPSIDE_SUBSURFACE_RENDER_ORDER;
     overlay.visible = true;
 
@@ -843,7 +857,7 @@ export class Ship {
     });
 
     this.topsideSubsurfaceRoot.add(overlay);
-    this.topsideSubsurfaceRoot.visible = false;
+    this.topsideSubsurfaceRoot.visible = wasVisible;
   }
 
   private buildRowboat(): void {
@@ -882,7 +896,7 @@ export class Ship {
     rightOar.rotation.z *= -1;
 
     this.fallbackVisualRoot.add(hullBottom, hullTop, gunwale, bench, bow, stern, leftOar, rightOar);
-    this.addLantern(new THREE.Vector3(0, 0.92, 0.45));
+    this.addLantern(new THREE.Vector3(0, 0.62, -0.08));
   }
 
   private buildFlagship(): void {
@@ -1069,10 +1083,10 @@ export class Ship {
       emissiveIntensity: 0.9,
     });
 
-    const lanternRadius = this.role === 'corporate_whaler' ? 0.34 : this.role === 'flagship' ? 0.28 : 0.22;
-    const haloRadius = this.role === 'corporate_whaler' ? 1.5 : this.role === 'flagship' ? 1.2 : 0.9;
-    const lightIntensity = this.role === 'corporate_whaler' ? 3.2 : this.role === 'flagship' ? 2.6 : 1.5;
-    const lightDistance = this.role === 'corporate_whaler' ? 30 : this.role === 'flagship' ? 24 : 16;
+    const lanternRadius = this.role === 'corporate_whaler' ? 0.34 : this.role === 'flagship' ? 0.28 : 0.15;
+    const haloRadius = this.role === 'corporate_whaler' ? 1.5 : this.role === 'flagship' ? 1.2 : 0.58;
+    const lightIntensity = this.role === 'corporate_whaler' ? 3.2 : this.role === 'flagship' ? 2.6 : 1.25;
+    const lightDistance = this.role === 'corporate_whaler' ? 30 : this.role === 'flagship' ? 24 : 14;
 
     const lantern = new THREE.Mesh(
       new THREE.SphereGeometry(lanternRadius, 8, 8),
@@ -1098,6 +1112,7 @@ export class Ship {
     const lanternLight = new THREE.PointLight('#ffb25a', lightIntensity, lightDistance, 2);
     lanternLight.position.copy(offset);
 
+    this.lanternMeshes.push(lantern);
     this.lanternMaterials.push(lanternMaterial);
     this.lanternHaloMaterials.push(lanternHaloMaterial);
     this.lanternHalos.push(lanternHalo);
@@ -1174,6 +1189,96 @@ export class Ship {
 
     for (const lanternMaterial of this.lanternMaterials) {
       lanternMaterial.color.set('#ffd18f').lerp(new THREE.Color('#6d4d28'), damageRatio * 0.6);
+    }
+  }
+
+  private async loadRowboatVisualAsset(): Promise<void> {
+    if (this.role !== 'rowboat' || this.rowboatVisualAssetRoot) {
+      return;
+    }
+
+    try {
+      const asset = await createRowboatVisualAsset();
+
+      this.rowboatVisualAssetRoot = asset.root;
+      this.rowboatWakeOriginNode = asset.wakeOrigin;
+      this.rowboatHarpoonOriginNode = asset.harpoonOrigin;
+      this.rowboatLanternOriginNodes = asset.lanternOrigins;
+
+      this.visualRoot.add(asset.root);
+      this.registerTintMaterials(asset.root);
+      this.fallbackVisualRoot.visible = false;
+      this.syncRowboatMarkerOffsets();
+      this.buildTopsideSubsurfaceOverlay(asset.root);
+      this.updateDamageLook();
+      this.root.updateMatrixWorld(true);
+    } catch (error) {
+      console.warn('Failed to load rowboat asset, keeping procedural fallback.', error);
+    }
+  }
+
+  private registerTintMaterials(root: THREE.Object3D): void {
+    root.traverse((object) => {
+      if (!(object instanceof THREE.Mesh)) {
+        return;
+      }
+
+      const materials = Array.isArray(object.material) ? object.material : [object.material];
+      const bucket = this.getTintMaterialBucket(object.name);
+
+      for (const material of materials) {
+        if (!(material instanceof THREE.MeshToonMaterial) || bucket.includes(material)) {
+          continue;
+        }
+
+        bucket.push(material);
+      }
+    });
+  }
+
+  private getTintMaterialBucket(name: string): THREE.MeshToonMaterial[] {
+    const normalized = name.toLowerCase();
+    return normalized.includes('trim') || normalized.includes('wood')
+      ? this.mastTintMaterials
+      : this.hullTintMaterials;
+  }
+
+  private syncRowboatMarkerOffsets(): void {
+    if (this.role !== 'rowboat' || !this.rowboatVisualAssetRoot) {
+      return;
+    }
+
+    this.visualRoot.updateMatrixWorld(true);
+    this.root.updateMatrixWorld(true);
+
+    this.copyMarkerToLocal(this.rowboatWakeOriginNode, this.root, this.wakeOriginLocal);
+    this.copyMarkerToLocal(this.rowboatHarpoonOriginNode, this.root, this.harpoonOriginLocal);
+
+    const lanternOrigin = this.rowboatLanternOriginNodes[0] ?? null;
+    if (lanternOrigin) {
+      this.copyMarkerToLocal(lanternOrigin, this.visualRoot, this.tempMarkerPoint);
+      this.setLanternOffset(this.tempMarkerPoint);
+    }
+  }
+
+  private copyMarkerToLocal(
+    marker: THREE.Object3D | null,
+    targetParent: THREE.Object3D,
+    target: THREE.Vector3,
+  ): void {
+    if (!marker) {
+      return;
+    }
+
+    target.copy(marker.getWorldPosition(this.tempMarkerPoint));
+    targetParent.worldToLocal(target);
+  }
+
+  private setLanternOffset(offset: THREE.Vector3): void {
+    for (let index = 0; index < this.lanternMeshes.length; index += 1) {
+      this.lanternMeshes[index].position.copy(offset);
+      this.lanternHalos[index].position.copy(offset);
+      this.lanternLights[index].position.copy(offset);
     }
   }
 }

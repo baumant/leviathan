@@ -5,6 +5,7 @@ import { Cannonball } from '../entities/Cannonball';
 import { CaptiveWhale } from '../entities/CaptiveWhale';
 import { Harpoon } from '../entities/Harpoon';
 import { PlayerWhale } from '../entities/PlayerWhale';
+import { preloadRowboatAsset } from '../entities/RowboatVisualAsset';
 import { preloadWhaleHeroAsset } from '../entities/WhaleHeroAsset';
 import { Ship, ShipLanternInfluence, ShipSpawnConfig } from '../entities/Ship';
 import { createArenaFogBankMaterial, updateArenaFogBankMaterial } from '../fx/createArenaFogBankMaterial';
@@ -20,11 +21,18 @@ import {
   PainterlyOceanSubsurfaceRevealWindow,
   updatePainterlyOceanMaterial,
 } from '../fx/createPainterlyOceanMaterial';
-import { createPainterlySkyMaterial } from '../fx/createPainterlySkyMaterial';
+import { createPainterlySkyMaterial, updatePainterlySkyMaterial } from '../fx/createPainterlySkyMaterial';
 import { ShipWakeFX } from '../fx/ShipWakeFX';
 import { TailSlapShockwaveFX } from '../fx/TailSlapShockwaveFX';
 import { TopsideSubsurfaceRevealFX, TopsideSubsurfaceRevealTarget } from '../fx/TopsideSubsurfaceRevealFX';
+import { UnderwaterEnvironmentFX } from '../fx/UnderwaterEnvironmentFX';
 import { createOceanUndersideMaterial, UnderwaterReadabilityFX } from '../fx/UnderwaterReadabilityFX';
+import {
+  createUnderwaterEnvironmentLayout,
+  createUnderwaterRockColliders,
+  UnderwaterEnvironmentLayout,
+  UnderwaterRockCollider,
+} from '../fx/underwaterRockLayout';
 import { Input } from '../game/Input';
 import { DamageSystem } from '../systems/DamageSystem';
 import { ShipAIContext, ShipAISystem } from '../systems/ShipAISystem';
@@ -33,10 +41,10 @@ import { WhaleMovementResult, WhaleMovementSystem } from '../systems/WhaleMoveme
 import { WHALE_SPEED_PROFILE } from '../tuning/whaleSpeedProfile';
 
 const SURFACE_FOG = new THREE.Color('#15202b');
-const UNDERWATER_FOG = new THREE.Color('#020d14');
-const SURFACE_FOG_DENSITY = 0.0154;
-const UNDERWATER_FOG_DENSITY = 0.0188;
-const APPROX_OCEAN_DEPTH = 95;
+const UNDERWATER_FOG = new THREE.Color('#0a243e');
+const UNDERWATER_BACKGROUND = new THREE.Color('#031946');
+const SURFACE_FOG_DENSITY = 0.0166;
+const UNDERWATER_FOG_DENSITY = 0.0108;
 const MOON_LIGHT_COLOR = new THREE.Color('#c6d6f5');
 const MOON_LIGHT_INTENSITY = 2.2;
 const MOON_LIGHT_POSITION = new THREE.Vector3(-28, 54, -34);
@@ -48,10 +56,14 @@ const MOON_HALO_COLOR = new THREE.Color('#87a1c4');
 const DISTANT_SILHOUETTE_COLOR = new THREE.Color('#081018');
 const ARENA_RADIUS = 182;
 const OCEAN_SIZE = 720;
+const OCEAN_UNDERSIDE_SIZE = 2200;
 const FOG_BANK_INNER_RADIUS = ARENA_RADIUS * 1.04;
-const FOG_BANK_OUTER_RADIUS = ARENA_RADIUS * 1.12;
+const FOG_BANK_MID_RADIUS = ARENA_RADIUS * 1.1;
+const FOG_BANK_OUTER_RADIUS = ARENA_RADIUS * 1.16;
 const FOG_BANK_INNER_HEIGHT = 72;
-const FOG_BANK_OUTER_HEIGHT = 104;
+const FOG_BANK_MID_HEIGHT = 92;
+const FOG_BANK_OUTER_HEIGHT = 118;
+const FOG_BANK_UNDERWATER_DEPTH = 132;
 const WHALE_BOUNDARY_MARGIN = 4;
 const SHIP_BOUNDARY_MARGIN = 3;
 const HARPOON_SPEED = 30;
@@ -79,6 +91,13 @@ const RESCUE_CORPORATE_CREEP_SPEED = 2.2;
 const TAIL_SLAP_CAMERA_BLEND_IN = 0.08;
 const TAIL_SLAP_CAMERA_POST_HOLD = 0.18;
 const TAIL_SLAP_CAMERA_BLEND_OUT = 0.22;
+const DIVE_CAMERA_DEPTH_START = 0.35;
+const DIVE_CAMERA_DEPTH_END = 4.8;
+const DIVE_CAMERA_SURFACE_CLEARANCE_MIN = 0.85;
+const DIVE_CAMERA_SURFACE_CLEARANCE_MAX = 4.8;
+const DIVE_CAMERA_FOLLOW_BOOST = 4.2;
+const WHALE_SEABED_CLEARANCE = 2.4;
+const WHALE_ROCK_COLLISION_PADDING = 0.7;
 interface OceanSwellLayer {
   direction: THREE.Vector2;
   frequency: number;
@@ -164,10 +183,18 @@ export class OceanScene {
   private readonly damageSystem = new DamageSystem();
   private readonly shipAiSystem = new ShipAISystem();
   private readonly oceanGeometry = new THREE.PlaneGeometry(OCEAN_SIZE, OCEAN_SIZE, 72, 72);
+  private readonly oceanUndersideGeometry = new THREE.PlaneGeometry(
+    OCEAN_UNDERSIDE_SIZE,
+    OCEAN_UNDERSIDE_SIZE,
+    96,
+    96,
+  );
   private readonly arenaFogBankGeometry = new THREE.CylinderGeometry(1, 1, 1, 48, 1, true);
   private readonly oceanMesh: Water;
   private readonly oceanUndersideMesh: THREE.Mesh<THREE.PlaneGeometry, THREE.ShaderMaterial>;
+  private readonly skyMaterial = createPainterlySkyMaterial();
   private readonly arenaFogBanks: THREE.Mesh<THREE.CylinderGeometry, THREE.ShaderMaterial>[] = [];
+  private readonly backgroundColor = SURFACE_FOG.clone();
   private readonly baseWaveCoordinates: Float32Array;
   private readonly cameraTarget = new THREE.Vector3();
   private readonly lookTarget = new THREE.Vector3();
@@ -188,7 +215,9 @@ export class OceanScene {
   private readonly tailSlapShockwaveFx: TailSlapShockwaveFX;
   private readonly shipWakeFx: ShipWakeFX;
   private readonly topsideSubsurfaceRevealFx: TopsideSubsurfaceRevealFX;
+  private readonly underwaterEnvironmentFx: UnderwaterEnvironmentFX;
   private readonly readabilityFx: UnderwaterReadabilityFX;
+  private readonly underwaterEnvironmentLayout: UnderwaterEnvironmentLayout;
   private readonly shipAiContext: ShipAIContext = {
     arenaRadius: ARENA_RADIUS,
     deltaSeconds: 0,
@@ -221,6 +250,8 @@ export class OceanScene {
   private readonly tempRescueTarget = new THREE.Vector3();
   private readonly tempRescueDirection = new THREE.Vector3();
   private readonly tempRescueLateral = new THREE.Vector3();
+  private readonly tempFloorProbe = new THREE.Vector3();
+  private readonly tempUnderwaterPush = new THREE.Vector2();
   private readonly tempHealthBarAnchor = new THREE.Vector3();
   private readonly tempHealthBarProjection = new THREE.Vector3();
   private readonly tempCameraSpacePoint = new THREE.Vector3();
@@ -232,6 +263,7 @@ export class OceanScene {
   private readonly tempCollisionAxisB1 = new THREE.Vector2();
   private readonly tempCollisionDelta = new THREE.Vector2();
   private readonly tempCollisionNormal = new THREE.Vector2();
+  private readonly underwaterRockColliders: readonly UnderwaterRockCollider[];
   private readonly rescueTowOrigins = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
   private readonly breachLaunchShipIds = new Set<string>();
   private readonly capitalBreachedThisArc = new Set<string>();
@@ -275,8 +307,10 @@ export class OceanScene {
     width: number,
     height: number,
   ) {
-    this.scene.background = this.atmosphereColor;
+    this.scene.background = this.backgroundColor;
     this.scene.fog = new THREE.FogExp2(this.atmosphereColor, SURFACE_FOG_DENSITY);
+    this.underwaterEnvironmentLayout = createUnderwaterEnvironmentLayout(this.sampleOceanFloorHeight);
+    this.underwaterRockColliders = createUnderwaterRockColliders(this.underwaterEnvironmentLayout);
 
     this.camera.position.set(0, 6, -14);
     this.camera.lookAt(0, 0, 0);
@@ -288,8 +322,13 @@ export class OceanScene {
     this.tailSlapShockwaveFx = new TailSlapShockwaveFX(this.scene);
     this.shipWakeFx = new ShipWakeFX(this.scene, this.ships);
     this.topsideSubsurfaceRevealFx = new TopsideSubsurfaceRevealFX(this.scene);
+    this.underwaterEnvironmentFx = new UnderwaterEnvironmentFX(this.scene, {
+      arenaRadius: ARENA_RADIUS,
+      sampleFloorHeight: this.sampleOceanFloorHeight,
+      layout: this.underwaterEnvironmentLayout,
+    });
     this.readabilityFx = new UnderwaterReadabilityFX(this.scene, this.camera);
-    void preloadWhaleHeroAsset();
+    void Promise.all([preloadWhaleHeroAsset(), preloadRowboatAsset()]);
 
     this.setupLights();
     this.setupSky();
@@ -370,6 +409,8 @@ export class OceanScene {
     this.tailSlapShockwaveFx.reset();
     this.shipWakeFx.reset();
     this.topsideSubsurfaceRevealFx.reset();
+    this.underwaterEnvironmentFx.reset();
+    this.readabilityFx.reset();
     this.whale.clearTailSlapVisual();
     this.syncTetherDragState();
   }
@@ -385,6 +426,7 @@ export class OceanScene {
 
     if (this.phase === 'playing') {
       movementResult = this.whaleMovement.update(this.whale, this.input, deltaSeconds, this.sampleOceanHeight);
+      this.resolveWhaleUnderwaterEnvironmentCollision();
     }
 
     this.whale.getForward(this.whaleForward);
@@ -415,6 +457,7 @@ export class OceanScene {
     this.updateHarpoons(deltaSeconds);
     this.updateCannonballs(deltaSeconds);
     this.clampArenaBodies();
+    this.resolveWhaleUnderwaterEnvironmentCollision();
     this.syncTetherDragState();
     this.syncShipTetherPulls();
 
@@ -427,6 +470,7 @@ export class OceanScene {
 
     this.updateCamera(deltaSeconds, underwaterRatio);
     const surfaceHeightAtCamera = this.sampleOceanHeight(this.camera.position.x, this.camera.position.z);
+    const floorHeightAtCamera = this.sampleOceanFloorHeight(this.camera.position.x, this.camera.position.z);
     const cameraUnderwater = this.camera.position.y < surfaceHeightAtCamera - 0.18;
     this.updateTopsidePassthroughPresentation();
     this.updateAtmosphere(deltaSeconds, underwaterRatio);
@@ -444,18 +488,28 @@ export class OceanScene {
       underwaterRatio,
       targets: this.collectTopsideRevealTargets(),
     });
+    this.underwaterEnvironmentFx.update({
+      deltaSeconds,
+      elapsedSeconds,
+      camera: this.camera,
+      cameraUnderwater,
+      underwaterRatio,
+      floorHeightAtCamera,
+      whalePosition: this.whale.position,
+      moonDirection: this.moonDirection,
+    });
     this.readabilityFx.update({
       deltaSeconds,
       elapsedSeconds,
-      approxWaterDepth: APPROX_OCEAN_DEPTH,
       camera: this.camera,
       cameraUnderwater,
       whalePosition: this.whale.position,
       whaleSpeed: this.whale.speed,
       underwaterRatio,
-      submerged: this.whale.submerged,
       surfaceHeightAtCamera,
+      floorHeightAtCamera,
       sampleSurfaceHeight: this.sampleOceanHeight,
+      sampleFloorHeight: this.sampleOceanFloorHeight,
       moonDirection: this.moonDirection,
       oceanUndersideMesh: this.oceanUndersideMesh,
       ships: this.ships,
@@ -472,8 +526,11 @@ export class OceanScene {
     this.tailSlapShockwaveFx.dispose();
     this.shipWakeFx.dispose();
     this.topsideSubsurfaceRevealFx.dispose();
+    this.underwaterEnvironmentFx.dispose();
     this.readabilityFx.dispose();
     this.captiveWhale.dispose();
+    this.oceanUndersideGeometry.dispose();
+    this.skyMaterial.dispose();
     this.arenaFogBankGeometry.dispose();
 
     for (const fogBank of this.arenaFogBanks) {
@@ -497,22 +554,28 @@ export class OceanScene {
       height: number,
       opacity: number,
       renderOrder: number,
+      extendsUnderwater = false,
     ): THREE.Mesh<THREE.CylinderGeometry, THREE.ShaderMaterial> => {
-      const mesh = new THREE.Mesh(this.arenaFogBankGeometry, createArenaFogBankMaterial(opacity));
-      mesh.scale.set(radius, height, radius);
-      mesh.position.y = height * 0.5;
+      const underwaterDepth = extendsUnderwater ? FOG_BANK_UNDERWATER_DEPTH : 0;
+      const totalHeight = height + underwaterDepth;
+      const waterlineHeight = underwaterDepth > 0 ? THREE.MathUtils.clamp(underwaterDepth / totalHeight, 0, 1) : 0;
+      const mesh = new THREE.Mesh(this.arenaFogBankGeometry, createArenaFogBankMaterial(opacity, waterlineHeight));
+      mesh.scale.set(radius, totalHeight, radius);
+      mesh.position.y = height * 0.5 - underwaterDepth * 0.5;
       mesh.renderOrder = renderOrder;
       return mesh;
     };
 
     this.arenaFogBanks.push(
-      createFogBankMesh(FOG_BANK_OUTER_RADIUS, FOG_BANK_OUTER_HEIGHT, 0.2, 6),
-      createFogBankMesh(FOG_BANK_INNER_RADIUS, FOG_BANK_INNER_HEIGHT, 0.34, 7),
+      createFogBankMesh(FOG_BANK_OUTER_RADIUS, FOG_BANK_OUTER_HEIGHT, 0.16, 5, true),
+      createFogBankMesh(FOG_BANK_MID_RADIUS, FOG_BANK_MID_HEIGHT, 0.24, 6),
+      createFogBankMesh(FOG_BANK_INNER_RADIUS, FOG_BANK_INNER_HEIGHT, 0.32, 7),
     );
   }
 
   private createOceanUnderside(): THREE.Mesh<THREE.PlaneGeometry, THREE.ShaderMaterial> {
-    const underside = new THREE.Mesh(this.oceanGeometry, createOceanUndersideMaterial(ARENA_RADIUS));
+    this.oceanUndersideGeometry.rotateX(-Math.PI / 2);
+    const underside = new THREE.Mesh(this.oceanUndersideGeometry, createOceanUndersideMaterial(ARENA_RADIUS));
     underside.renderOrder = -2;
     return underside;
   }
@@ -536,7 +599,7 @@ export class OceanScene {
 
     const sky = new THREE.Mesh(
       new THREE.SphereGeometry(320, 18, 18),
-      createPainterlySkyMaterial(),
+      this.skyMaterial,
     );
 
     const moonHalo = new THREE.Mesh(
@@ -624,6 +687,120 @@ export class OceanScene {
     return height;
   };
 
+  private readonly sampleOceanFloorHeight = (x: number, z: number): number => {
+    const radialDistance = Math.hypot(x, z);
+    const innerShelf = 1 - THREE.MathUtils.smoothstep(radialDistance, 64, 94);
+    const midShelf =
+      THREE.MathUtils.smoothstep(radialDistance, 64, 104) *
+      (1 - THREE.MathUtils.smoothstep(radialDistance, 122, 158));
+    const outerShelf = THREE.MathUtils.smoothstep(radialDistance, 126, 182);
+    const openLaneMask = 1 - THREE.MathUtils.smoothstep(Math.hypot(x / 62, z / 96), 0.3, 1.0);
+
+    const shelfBase = -48 - THREE.MathUtils.smoothstep(radialDistance, 64, 122) * 18 - outerShelf * 38;
+
+    const sandRippleA = Math.sin(x * 0.072 + z * 0.014 + 0.6) * 0.72;
+    const sandRippleB = Math.cos(x * -0.056 + z * 0.048 - 0.2) * 0.5;
+    const sandRippleC = Math.sin((x - z) * 0.046 + 1.1) * 0.34;
+    const shelfRelief = (sandRippleA + sandRippleB + sandRippleC) * THREE.MathUtils.lerp(0.88, 1.08, innerShelf);
+
+    const duneA = Math.sin(x * 0.022 + z * 0.014 + 0.9) * 1.08;
+    const duneB = Math.cos(x * -0.018 + z * 0.021 - 1.2) * 0.92;
+    const duneC = Math.sin((x + z) * 0.026 + 0.5) * 0.72;
+    const midDuneStrength = THREE.MathUtils.lerp(1.1, 1.9, THREE.MathUtils.smoothstep(radialDistance, 64, 138));
+    const duneWeight = midShelf * (1 - openLaneMask * 0.74);
+
+    const outerBreakA = Math.sin(radialDistance * 0.074 - 1.1) * 2.8 * outerShelf;
+    const outerBreakB = Math.cos(x * 0.014 - z * 0.017 + 2.1) * 2.4 * outerShelf;
+
+    return shelfBase + shelfRelief + (duneA + duneB + duneC) * midDuneStrength * duneWeight + outerBreakA + outerBreakB;
+  };
+
+  private readonly sampleWaterColumnDepth = (x: number, z: number): number =>
+    this.sampleOceanHeight(x, z) - this.sampleOceanFloorHeight(x, z);
+
+  private resolveWhaleUnderwaterEnvironmentCollision(): void {
+    let surfaceHeight = this.sampleOceanHeight(this.whale.position.x, this.whale.position.z);
+    let floorHeight = this.sampleOceanFloorHeight(this.whale.position.x, this.whale.position.z);
+    let collidedWithEnvironment = false;
+    let collidedWithFloor = false;
+
+    const minimumWhaleY = (): number => floorHeight + WHALE_SEABED_CLEARANCE;
+
+    if (this.whale.position.y < minimumWhaleY()) {
+      this.whale.position.y = minimumWhaleY();
+      collidedWithEnvironment = true;
+      collidedWithFloor = true;
+    }
+
+    for (const collider of this.underwaterRockColliders) {
+      if (this.whale.position.y - this.whale.radius >= collider.topHeight) {
+        continue;
+      }
+
+      this.tempUnderwaterPush.set(
+        this.whale.position.x - collider.center.x,
+        this.whale.position.z - collider.center.y,
+      );
+
+      const requiredDistance = collider.radius + this.whale.radius + WHALE_ROCK_COLLISION_PADDING;
+      const distanceSq = this.tempUnderwaterPush.lengthSq();
+
+      if (distanceSq >= requiredDistance * requiredDistance) {
+        continue;
+      }
+
+      collidedWithEnvironment = true;
+
+      if (distanceSq <= 0.0001) {
+        this.whale.getForward(this.whaleForward).setY(0);
+        if (this.whaleForward.lengthSq() <= 0.0001) {
+          this.tempUnderwaterPush.set(1, 0);
+        } else {
+          this.tempUnderwaterPush.set(this.whaleForward.x, this.whaleForward.z).normalize();
+        }
+      } else {
+        this.tempUnderwaterPush.multiplyScalar(1 / Math.sqrt(distanceSq));
+      }
+
+      this.whale.position.x = collider.center.x + this.tempUnderwaterPush.x * requiredDistance;
+      this.whale.position.z = collider.center.y + this.tempUnderwaterPush.y * requiredDistance;
+      surfaceHeight = this.sampleOceanHeight(this.whale.position.x, this.whale.position.z);
+      floorHeight = this.sampleOceanFloorHeight(this.whale.position.x, this.whale.position.z);
+
+      if (this.whale.position.y < collider.topHeight + this.whale.radius * 0.4) {
+        this.whale.position.y = collider.topHeight + this.whale.radius * 0.4;
+      }
+
+      if (this.whale.position.y < minimumWhaleY()) {
+        this.whale.position.y = minimumWhaleY();
+        collidedWithFloor = true;
+      }
+    }
+
+    surfaceHeight = this.sampleOceanHeight(this.whale.position.x, this.whale.position.z);
+    floorHeight = this.sampleOceanFloorHeight(this.whale.position.x, this.whale.position.z);
+
+    if (this.whale.position.y < minimumWhaleY()) {
+      this.whale.position.y = minimumWhaleY();
+      collidedWithEnvironment = true;
+      collidedWithFloor = true;
+    }
+
+    this.whale.depth = this.whale.position.y - surfaceHeight;
+    this.whale.submerged = this.whale.depth < -0.45;
+
+    if (collidedWithEnvironment && this.whale.verticalSpeed < 0) {
+      this.whale.verticalSpeed = 0;
+    }
+
+    if (collidedWithFloor) {
+      this.whale.breachPrimed = false;
+    }
+
+    this.whale.root.updateMatrixWorld();
+    this.whale.syncTravelState();
+  }
+
   private updateOceanMaterial(underwaterRatio: number): void {
     const fog = this.scene.fog as THREE.FogExp2;
 
@@ -633,7 +810,7 @@ export class OceanScene {
       fogColor: this.atmosphereColor,
       fogDensity: fog.density,
       moonDirection: this.moonDirection,
-      approxWaterDepth: APPROX_OCEAN_DEPTH,
+      approxWaterDepth: this.sampleWaterColumnDepth(this.camera.position.x, this.camera.position.z),
       underwaterRatio,
       lanternInfluences: this.collectOceanLanternInfluences(),
       subsurfaceRevealWindows: this.collectOceanSubsurfaceRevealWindows(),
@@ -1943,18 +2120,26 @@ export class OceanScene {
         : 0;
     const whaleSpeedRatio = THREE.MathUtils.clamp(this.whale.speed / WHALE_SPEED_PROFILE.maxTravelSpeed, 0, 1.2);
     const strokeHeave = this.whale.strokeVisual * (1 - underwaterRatio * 0.3);
+    const depthBelowSurface = Math.max(0, -this.whale.depth);
+    const diveIntent = THREE.MathUtils.clamp(-this.input.depthAxis, 0, 1);
+    const descentSpeed = Math.max(0, -this.whale.verticalSpeed);
+    const diveCameraAlpha =
+      Math.max(diveIntent, THREE.MathUtils.smoothstep(descentSpeed, 0.8, 5.5)) *
+      THREE.MathUtils.smoothstep(depthBelowSurface, DIVE_CAMERA_DEPTH_START, DIVE_CAMERA_DEPTH_END) *
+      (1 - breachViewAlpha);
+    const cameraModeAlpha = Math.max(underwaterRatio, diveCameraAlpha * 0.86);
     const tetherZoomOut = THREE.MathUtils.lerp(0, 8.5, tetherZoomAlpha);
     const cameraDistance =
-      THREE.MathUtils.lerp(WHALE_SPEED_PROFILE.topsideCameraDistance, WHALE_SPEED_PROFILE.underwaterCameraDistance, underwaterRatio) +
+      THREE.MathUtils.lerp(WHALE_SPEED_PROFILE.topsideCameraDistance, WHALE_SPEED_PROFILE.underwaterCameraDistance, cameraModeAlpha) +
       tetherZoomOut +
       tailSlapAlpha * 2.1;
     const cameraHeight =
-      THREE.MathUtils.lerp(6.6, 3.3, underwaterRatio) +
+      THREE.MathUtils.lerp(6.6, 4.4, cameraModeAlpha) +
       tetherZoomOut * 0.14 +
       strokeHeave * 0.7 +
       tailSlapAlpha * 1.1;
     const lookDistance =
-      THREE.MathUtils.lerp(WHALE_SPEED_PROFILE.topsideLookDistance, WHALE_SPEED_PROFILE.underwaterLookDistance, underwaterRatio) +
+      THREE.MathUtils.lerp(WHALE_SPEED_PROFILE.topsideLookDistance, WHALE_SPEED_PROFILE.underwaterLookDistance, cameraModeAlpha) +
       tetherZoomOut * 0.22 +
       tailSlapAlpha * 0.9;
     const shoulderTarget = underwaterRatio * THREE.MathUtils.clamp(-this.whale.roll * 8.4, -2.6, 2.6);
@@ -1974,6 +2159,24 @@ export class OceanScene {
     this.cameraOffset.set(0, cameraHeight, 0);
     this.cameraTarget.add(this.cameraOffset);
     this.cameraTarget.y += strokeHeave * 0.24;
+
+    if (diveCameraAlpha > 0.001) {
+      const targetSurfaceHeight = this.sampleOceanHeight(this.cameraTarget.x, this.cameraTarget.z);
+      const diveDepthAlpha = THREE.MathUtils.smoothstep(depthBelowSurface, 0.8, 6.2);
+      const submergedCameraY =
+        targetSurfaceHeight -
+        THREE.MathUtils.lerp(
+          DIVE_CAMERA_SURFACE_CLEARANCE_MIN,
+          DIVE_CAMERA_SURFACE_CLEARANCE_MAX,
+          diveDepthAlpha,
+        );
+
+      this.cameraTarget.y = THREE.MathUtils.lerp(
+        this.cameraTarget.y,
+        Math.min(this.cameraTarget.y, submergedCameraY),
+        diveCameraAlpha * 0.92,
+      );
+    }
 
     if (breachViewAlpha > 0) {
       this.breachCameraForward.set(0, 0, 1).applyAxisAngle(this.worldUp, this.breachCameraHeading).normalize();
@@ -2021,8 +2224,9 @@ export class OceanScene {
       THREE.MathUtils.lerp(
         WHALE_SPEED_PROFILE.cameraFollowRateSurface,
         WHALE_SPEED_PROFILE.cameraFollowRateUnderwater,
-        underwaterRatio,
+        cameraModeAlpha,
       ) +
+      diveCameraAlpha * DIVE_CAMERA_FOLLOW_BOOST +
       breachViewAlpha * 5.6 +
       tailSlapAlpha * 0.8;
     this.camera.position.lerp(this.cameraTarget, 1 - Math.exp(-deltaSeconds * cameraFollowRate));
@@ -2038,7 +2242,54 @@ export class OceanScene {
       .copy(this.whale.position)
       .addScaledVector(this.cameraBasisForward, lookDistance)
       .addScaledVector(this.cameraBasisRight, this.shoulderOffset * 0.18);
-    this.lookTarget.y += THREE.MathUtils.lerp(0.8, 0.15, underwaterRatio) + strokeHeave * 0.16;
+    this.lookTarget.y += THREE.MathUtils.lerp(0.8, 0.7, underwaterRatio) + strokeHeave * 0.16;
+
+    if (diveCameraAlpha > 0.001) {
+      const diveLookDepthAlpha = THREE.MathUtils.smoothstep(depthBelowSurface, 0.8, 6.2);
+      const diveLookY =
+        this.sampleOceanHeight(this.whale.position.x, this.whale.position.z) -
+        THREE.MathUtils.lerp(1.2, 4.6, diveLookDepthAlpha);
+
+      this.lookTarget.y = THREE.MathUtils.lerp(
+        this.lookTarget.y,
+        Math.min(this.lookTarget.y, diveLookY),
+        diveCameraAlpha * 0.68,
+      );
+    }
+
+    const risingUnderwaterAlpha =
+      underwaterRatio > 0.25
+        ? THREE.MathUtils.clamp(THREE.MathUtils.inverseLerp(0.25, 4.2, this.whale.verticalSpeed), 0, 1)
+        : 0;
+    if (risingUnderwaterAlpha > 0) {
+      const surfaceLookY =
+        this.sampleOceanHeight(this.whale.position.x, this.whale.position.z) -
+        THREE.MathUtils.lerp(6.2, 3.2, underwaterRatio);
+      this.lookTarget.y = THREE.MathUtils.lerp(
+        this.lookTarget.y + THREE.MathUtils.lerp(0.8, 2.2, underwaterRatio) * risingUnderwaterAlpha,
+        surfaceLookY,
+        0.34 * risingUnderwaterAlpha,
+      );
+    }
+
+    if (underwaterRatio > 0.25 && this.whale.verticalSpeed <= 0.25) {
+      const floorProbeDistance = THREE.MathUtils.lerp(12, 24, underwaterRatio);
+      this.tempFloorProbe
+        .copy(this.whale.position)
+        .addScaledVector(this.cameraBasisForward, floorProbeDistance);
+
+      const floorProbeHeight = this.sampleOceanFloorHeight(this.tempFloorProbe.x, this.tempFloorProbe.z);
+      const floorDistanceAtProbe = this.camera.position.y - floorProbeHeight;
+
+      if (floorDistanceAtProbe >= 8 && floorDistanceAtProbe <= 78) {
+        const floorLookY = floorProbeHeight + THREE.MathUtils.lerp(4, 2, underwaterRatio);
+        const floorLookBlend =
+          THREE.MathUtils.smoothstep(underwaterRatio, 0.25, 1) *
+          (1 - THREE.MathUtils.smoothstep(floorDistanceAtProbe, 8, 104)) *
+          0.95;
+        this.lookTarget.y = THREE.MathUtils.lerp(this.lookTarget.y, floorLookY, floorLookBlend);
+      }
+    }
 
     if (breachViewAlpha > 0) {
       this.cameraOffset
@@ -2055,14 +2306,17 @@ export class OceanScene {
       this.cameraInitialized = true;
     }
 
-    const lookLagRate = THREE.MathUtils.lerp(5.8, 2.4, underwaterRatio) + breachViewAlpha * 1.1;
+    const lookLagRate =
+      THREE.MathUtils.lerp(5.8, 2.4, cameraModeAlpha) +
+      diveCameraAlpha * 2.4 +
+      breachViewAlpha * 1.1;
     this.lookTargetCurrent.lerp(this.lookTarget, 1 - Math.exp(-deltaSeconds * lookLagRate));
     this.camera.lookAt(this.lookTargetCurrent);
 
     this.cameraRoll = THREE.MathUtils.damp(
       this.cameraRoll,
-      breachViewAlpha > 0.001 ? 0 : THREE.MathUtils.clamp(this.whale.roll * 0.48, -0.14, 0.14) * underwaterRatio,
-      breachViewAlpha > 0.001 ? 7.2 : 4.2,
+      breachViewAlpha > 0.001 ? 0 : THREE.MathUtils.clamp(this.whale.roll * 0.22, -0.07, 0.07) * underwaterRatio,
+      breachViewAlpha > 0.001 ? 7.2 : 4.6,
       deltaSeconds,
     );
     this.camera.rotateZ(this.cameraRoll);
@@ -2095,9 +2349,12 @@ export class OceanScene {
 
   private updateAtmosphere(deltaSeconds: number, underwaterRatio: number): void {
     const targetFog = this.whale.submerged ? UNDERWATER_FOG : SURFACE_FOG;
+    const targetBackground = this.whale.submerged ? UNDERWATER_BACKGROUND : SURFACE_FOG;
     const fog = this.scene.fog as THREE.FogExp2;
 
     this.atmosphereColor.lerp(targetFog, 1 - Math.exp(-deltaSeconds * 2.1));
+    this.backgroundColor.lerp(targetBackground, 1 - Math.exp(-deltaSeconds * 2.1));
+    updatePainterlySkyMaterial(this.skyMaterial, { underwaterRatio });
     fog.color.copy(this.atmosphereColor);
     fog.density = THREE.MathUtils.damp(
       fog.density,
@@ -2295,6 +2552,9 @@ export class OceanScene {
       overlayCopy = 'The lines held long enough for the guns to land. Press R to return beneath them.';
     }
 
+    const tailSlapAvailable =
+      this.phase === 'playing' && !this.whale.submerged && this.whale.actionState === 'swim';
+
     this.ui.update({
       capitalShipBars,
       objective,
@@ -2310,6 +2570,7 @@ export class OceanScene {
       overlayTitle,
       overlayCopy,
       showActionControls: this.phase === 'playing',
+      tailSlapAvailable,
     });
   }
 }

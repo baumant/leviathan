@@ -180,6 +180,7 @@ export async function createWhaleHeroRig(variant: WhaleHeroVariant): Promise<Wha
 
   return {
     root,
+    spineRoot: getRequiredNode(root, 'spine_root'),
     bodyRoot: getRequiredNode(root, 'body_root'),
     tailPivot: getRequiredNode(root, 'tail_pivot'),
     flukePivot: getRequiredNode(root, 'fluke_pivot'),

@@ -12,6 +12,7 @@ import {
   WHALE_FIN_NEUTRAL_ROLL,
   applyWhaleVisualPose,
   resetWhaleVisualPose,
+  sampleWhaleDirectionalPose,
   sampleWhaleSwimPose,
 } from './WhaleVisualMotion';
 import { createSpermWhaleVisual } from './createSpermWhaleVisual';
@@ -36,6 +37,9 @@ const SWIM_PULSE_AMPLITUDE_FALL = 5.2;
 const SWIM_PULSE_FREQUENCY_MIN = 1.18;
 const SWIM_PULSE_FREQUENCY_MAX = 1.9;
 const SWIM_PULSE_RECOVERY_SUPPRESSION = 0.42;
+const DIRECTIONAL_CLIMB_RATE_NORMALIZER = 6;
+const DIRECTIONAL_VISUAL_RISE = 5.2;
+const DIRECTIONAL_VISUAL_FALL = 6.6;
 const TOPSIDE_SUBSURFACE_COLOR = new THREE.Color('#7f98a2');
 const TOPSIDE_SUBSURFACE_EMISSIVE = new THREE.Color('#1c2e37');
 const TOPSIDE_SUBSURFACE_OPACITY_MIN = 0.1;
@@ -116,11 +120,13 @@ export class PlayerWhale {
   private activeVisualRoot: THREE.Group;
   private readonly waterlineOverlayRoot = new THREE.Group();
   private waterlineOverlayController: WaterlineOverlayController;
+  private overlaySpineVisualRoot: THREE.Object3D;
   private overlayBodyVisualRoot: THREE.Object3D;
   private overlayTailVisualPivot: THREE.Object3D;
   private overlayFlukeVisualPivot: THREE.Object3D;
   private overlayLeftFinPivot: THREE.Object3D;
   private overlayRightFinPivot: THREE.Object3D;
+  private spineVisualRoot: THREE.Object3D;
   private bodyVisualRoot: THREE.Object3D;
   private tailVisualPivot: THREE.Object3D;
   private flukeVisualPivot: THREE.Object3D;
@@ -138,6 +144,11 @@ export class PlayerWhale {
   private swimPulsePhase = 0;
   private swimPulseAmplitude = 0;
   private previousStrokeVisual = 0;
+  private directionalTurnTarget = 0;
+  private directionalClimbTarget = 0;
+  private directionalSpeedWeight = 0;
+  private directionalTurn = 0;
+  private directionalClimb = 0;
   private readonly presentationMaterials = new Map<WhalePresentationMaterial, WhalePresentationMaterialState>();
   private readonly presentationMeshes = new Map<THREE.Mesh, WhalePresentationMeshState>();
   private visualPresentation: WhaleVisualPresentation = 'surface';
@@ -157,6 +168,8 @@ export class PlayerWhale {
       lengthScale: 1.04,
       girthScale: 1.06,
       finScale: 1,
+      tetherAttachLocal: this.tetherAttachLocal.clone(),
+      tailSlapAnchorLocal: this.tailSlapAnchorLocal.clone(),
     });
     const overlayFallbackRig = createSpermWhaleVisual({
       palette: {
@@ -170,21 +183,27 @@ export class PlayerWhale {
       lengthScale: 1.04,
       girthScale: 1.06,
       finScale: 1,
+      tetherAttachLocal: this.tetherAttachLocal.clone(),
+      tailSlapAnchorLocal: this.tailSlapAnchorLocal.clone(),
     });
 
     this.fallbackVisualRoot = fallbackRig.root;
     this.activeVisualRoot = fallbackRig.root;
+    this.spineVisualRoot = fallbackRig.spineRoot;
     this.bodyVisualRoot = fallbackRig.bodyRoot;
     this.tailVisualPivot = fallbackRig.tailPivot;
     this.flukeVisualPivot = fallbackRig.flukePivot;
     this.leftFinPivot = fallbackRig.leftFinPivot;
     this.rightFinPivot = fallbackRig.rightFinPivot;
+    this.tetherAttachNode = fallbackRig.tetherAttach;
+    this.tailSlapAnchorNode = fallbackRig.tailSlapAnchor;
     this.waterlineOverlayController = createWaterlineOverlay(overlayFallbackRig.root, {
       color: TOPSIDE_SUBSURFACE_COLOR,
       opacityMin: TOPSIDE_SUBSURFACE_OPACITY_MIN,
       opacityMax: TOPSIDE_SUBSURFACE_OPACITY_MAX,
       renderOrder: TOPSIDE_SUBSURFACE_RENDER_ORDER,
     });
+    this.overlaySpineVisualRoot = overlayFallbackRig.spineRoot;
     this.overlayBodyVisualRoot = overlayFallbackRig.bodyRoot;
     this.overlayTailVisualPivot = overlayFallbackRig.tailPivot;
     this.overlayFlukeVisualPivot = overlayFallbackRig.flukePivot;
@@ -199,11 +218,20 @@ export class PlayerWhale {
     this.root.rotation.order = 'YXZ';
     this.registerPresentationMaterials(this.fallbackVisualRoot);
     resetWhaleVisualPose(
+      this.spineVisualRoot,
       this.bodyVisualRoot,
       this.tailVisualPivot,
       this.flukeVisualPivot,
       this.leftFinPivot,
       this.rightFinPivot,
+    );
+    resetWhaleVisualPose(
+      this.overlaySpineVisualRoot,
+      this.overlayBodyVisualRoot,
+      this.overlayTailVisualPivot,
+      this.overlayFlukeVisualPivot,
+      this.overlayLeftFinPivot,
+      this.overlayRightFinPivot,
     );
 
     void this.loadHeroVisual();
@@ -247,6 +275,11 @@ export class PlayerWhale {
     this.swimPulsePhase = 0;
     this.swimPulseAmplitude = 0;
     this.previousStrokeVisual = 0;
+    this.directionalTurnTarget = 0;
+    this.directionalClimbTarget = 0;
+    this.directionalSpeedWeight = 0;
+    this.directionalTurn = 0;
+    this.directionalClimb = 0;
     this.breachDirection.set(0, 0, 1);
     this.breachOrigin.set(0, SURFACED_START_DEPTH, 0);
     this.root.position.set(0, SURFACED_START_DEPTH, 0);
@@ -313,6 +346,12 @@ export class PlayerWhale {
     this.syncTravelState();
   }
 
+  setDirectionalVisualInput(turnInput: number, climbInput: number, speedWeight: number): void {
+    this.directionalTurnTarget = THREE.MathUtils.clamp(turnInput, -1, 1);
+    this.directionalClimbTarget = THREE.MathUtils.clamp(climbInput, -1, 1);
+    this.directionalSpeedWeight = THREE.MathUtils.clamp(speedWeight, 0, 1);
+  }
+
   getTetherAttachPoint(target = new THREE.Vector3()): THREE.Vector3 {
     if (this.tetherAttachNode) {
       return this.tetherAttachNode.getWorldPosition(target);
@@ -350,6 +389,7 @@ export class PlayerWhale {
     this.tailVisualRecoveryStartYaw = 0;
     this.tailVisualRecoveryStartRoll = 0;
     resetWhaleVisualPose(
+      this.spineVisualRoot,
       this.bodyVisualRoot,
       this.tailVisualPivot,
       this.flukeVisualPivot,
@@ -357,6 +397,7 @@ export class PlayerWhale {
       this.rightFinPivot,
     );
     resetWhaleVisualPose(
+      this.overlaySpineVisualRoot,
       this.overlayBodyVisualRoot,
       this.overlayTailVisualPivot,
       this.overlayFlukeVisualPivot,
@@ -378,6 +419,7 @@ export class PlayerWhale {
     }
 
     const swimPose = this.updateSwimPulse(deltaSeconds);
+    const directionalPose = this.updateDirectionalPose(deltaSeconds);
     let tailYaw = 0;
     let flukeRoll = 0;
     let finPitchOffset = 0;
@@ -421,12 +463,14 @@ export class PlayerWhale {
     flukeRoll += impactAlpha * TAIL_VISUAL_FLUKE_ROLL;
 
     applyWhaleVisualPose(
+      this.spineVisualRoot,
       this.bodyVisualRoot,
       this.tailVisualPivot,
       this.flukeVisualPivot,
       this.leftFinPivot,
       this.rightFinPivot,
       swimPose,
+      directionalPose,
       {
         tailYaw,
         flukeRoll,
@@ -435,12 +479,14 @@ export class PlayerWhale {
       },
     );
     applyWhaleVisualPose(
+      this.overlaySpineVisualRoot,
       this.overlayBodyVisualRoot,
       this.overlayTailVisualPivot,
       this.overlayFlukeVisualPivot,
       this.overlayLeftFinPivot,
       this.overlayRightFinPivot,
       swimPose,
+      directionalPose,
       {
         tailYaw,
         flukeRoll,
@@ -488,8 +534,41 @@ export class PlayerWhale {
     return sampleWhaleSwimPose(this.swimPulsePhase, this.swimPulseAmplitude);
   }
 
+  private updateDirectionalPose(deltaSeconds: number) {
+    let targetTurn = this.directionalTurnTarget;
+    let targetClimb = this.directionalClimbTarget;
+    let speedWeight = this.directionalSpeedWeight;
+
+    if (this.actionState === 'recovery') {
+      targetTurn *= 0.35;
+      targetClimb *= 0.35;
+      speedWeight *= 0.35;
+    } else if (this.actionState === 'breach') {
+      targetTurn = 0;
+      targetClimb = THREE.MathUtils.clamp(this.verticalSpeed / DIRECTIONAL_CLIMB_RATE_NORMALIZER, -1, 1) * 0.25;
+      speedWeight = Math.max(speedWeight, 0.25);
+    } else if (this.actionState === 'tail_slap') {
+      targetTurn = 0;
+      targetClimb = 0;
+      speedWeight = 0;
+    }
+
+    const turnDamp = Math.abs(targetTurn) > Math.abs(this.directionalTurn)
+      ? DIRECTIONAL_VISUAL_RISE
+      : DIRECTIONAL_VISUAL_FALL;
+    const climbDamp = Math.abs(targetClimb) > Math.abs(this.directionalClimb)
+      ? DIRECTIONAL_VISUAL_RISE
+      : DIRECTIONAL_VISUAL_FALL;
+
+    this.directionalTurn = THREE.MathUtils.damp(this.directionalTurn, targetTurn, turnDamp, deltaSeconds);
+    this.directionalClimb = THREE.MathUtils.damp(this.directionalClimb, targetClimb, climbDamp, deltaSeconds);
+
+    return sampleWhaleDirectionalPose(this.directionalTurn, this.directionalClimb, speedWeight);
+  }
+
   private async loadHeroVisual(): Promise<void> {
     try {
+      const spineRotation = this.spineVisualRoot.rotation.clone();
       const bodyRotation = this.bodyVisualRoot.rotation.clone();
       const tailRotation = this.tailVisualPivot.rotation.clone();
       const flukeRotation = this.flukeVisualPivot.rotation.clone();
@@ -513,6 +592,7 @@ export class PlayerWhale {
       });
       this.waterlineOverlayRoot.add(this.waterlineOverlayController.root);
 
+      this.spineVisualRoot = heroRig.spineRoot;
       this.bodyVisualRoot = heroRig.bodyRoot;
       this.tailVisualPivot = heroRig.tailPivot;
       this.flukeVisualPivot = heroRig.flukePivot;
@@ -521,16 +601,19 @@ export class PlayerWhale {
       this.tetherAttachNode = heroRig.tetherAttach;
       this.tailSlapAnchorNode = heroRig.tailSlapAnchor;
 
+      this.spineVisualRoot.rotation.copy(spineRotation);
       this.bodyVisualRoot.rotation.copy(bodyRotation);
       this.tailVisualPivot.rotation.copy(tailRotation);
       this.flukeVisualPivot.rotation.copy(flukeRotation);
       this.leftFinPivot.rotation.copy(leftFinRotation);
       this.rightFinPivot.rotation.copy(rightFinRotation);
+      this.overlaySpineVisualRoot = overlayHeroRig.spineRoot;
       this.overlayBodyVisualRoot = overlayHeroRig.bodyRoot;
       this.overlayTailVisualPivot = overlayHeroRig.tailPivot;
       this.overlayFlukeVisualPivot = overlayHeroRig.flukePivot;
       this.overlayLeftFinPivot = overlayHeroRig.leftFinPivot;
       this.overlayRightFinPivot = overlayHeroRig.rightFinPivot;
+      this.overlaySpineVisualRoot.rotation.copy(spineRotation);
       this.overlayBodyVisualRoot.rotation.copy(bodyRotation);
       this.overlayTailVisualPivot.rotation.copy(tailRotation);
       this.overlayFlukeVisualPivot.rotation.copy(flukeRotation);

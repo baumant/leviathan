@@ -11,6 +11,10 @@ void main() {
 
 const FOG_BANK_BASE_TARGET = new THREE.Color('#111a21');
 const FOG_BANK_HIGHLIGHT_TARGET = new THREE.Color('#61717c');
+const UNDERWATER_FOG_BANK_BASE_TARGET = new THREE.Color('#041a3d');
+const UNDERWATER_FOG_BANK_HIGHLIGHT_TARGET = new THREE.Color('#0c3c68');
+const underwaterBaseColor = new THREE.Color();
+const underwaterHighlightColor = new THREE.Color();
 
 const FOG_BANK_FRAGMENT_SHADER = `
 uniform vec3 uBaseColor;
@@ -18,6 +22,7 @@ uniform vec3 uHighlightColor;
 uniform float uOpacity;
 uniform float uTime;
 uniform float uUnderwaterRatio;
+uniform float uWaterlineHeight;
 
 varying vec3 vLocalPosition;
 
@@ -35,16 +40,31 @@ void main() {
 
   float waterlineBand = 1.0 - smoothstep(0.02, 0.18, abs(height01 - 0.08) * 2.8);
   float bodyMass = smoothstep(0.0, 0.16, height01) * (1.0 - smoothstep(0.54, 0.96, height01));
-  float topFade = 1.0 - smoothstep(0.72, 0.98, height01);
-  float density = (bodyMass * mix(0.76, 1.18, breakup) + waterlineBand * 0.52) * topFade;
-  float underwaterFade = 1.0 - smoothstep(0.04, 0.46, uUnderwaterRatio);
+  float lowerMass = 1.0 - smoothstep(0.12, 0.72, height01);
+  float topFade = 1.0 - smoothstep(0.78, 0.99, height01);
+  float belowWater = uWaterlineHeight > 0.001
+    ? 1.0 - smoothstep(uWaterlineHeight - 0.018, uWaterlineHeight + 0.034, height01)
+    : 0.0;
+  float waterlineDistance = abs(height01 - uWaterlineHeight);
+  float surfaceShelf = belowWater * (1.0 - smoothstep(0.0, 0.13, waterlineDistance));
+  float deepVolume = belowWater * smoothstep(0.02, 0.34, uWaterlineHeight - height01);
+  float density =
+    (bodyMass * mix(0.78, 1.22, breakup) + waterlineBand * 0.48 + lowerMass * 0.18) * topFade;
+  float submergedBlend = smoothstep(0.06, 0.72, uUnderwaterRatio);
+  float oceanVolume = belowWater * (0.18 + deepVolume * 0.32 + breakup * 0.16);
+  density = mix(density, oceanVolume + surfaceShelf * 0.12, submergedBlend * belowWater);
+  float underwaterFade = mix(1.0, 0.58 + deepVolume * 0.18, submergedBlend * belowWater);
   float alpha = uOpacity * density * underwaterFade;
 
   if (alpha <= 0.001) {
     discard;
   }
 
-  vec3 color = mix(uBaseColor, uHighlightColor, clamp(height01 * 0.7 + breakup * 0.22, 0.0, 1.0));
+  vec3 color = mix(uBaseColor, uHighlightColor, clamp(height01 * 0.58 + breakup * 0.16, 0.0, 1.0));
+  vec3 oceanBlue = mix(vec3(0.012, 0.084, 0.19), vec3(0.036, 0.18, 0.34), clamp(deepVolume + breakup * 0.18, 0.0, 1.0));
+  vec3 surfaceShadow = vec3(0.002, 0.012, 0.038);
+  color = mix(color, oceanBlue, submergedBlend * belowWater * 0.96);
+  color = mix(color, surfaceShadow, submergedBlend * surfaceShelf * 0.64);
   gl_FragColor = vec4(color, alpha);
 }
 `;
@@ -62,10 +82,11 @@ type ArenaFogBankShaderMaterial = THREE.ShaderMaterial & {
     uOpacity: { value: number };
     uTime: { value: number };
     uUnderwaterRatio: { value: number };
+    uWaterlineHeight: { value: number };
   };
 };
 
-export function createArenaFogBankMaterial(opacity: number): ArenaFogBankShaderMaterial {
+export function createArenaFogBankMaterial(opacity: number, waterlineHeight = 0): ArenaFogBankShaderMaterial {
   const material = new THREE.ShaderMaterial({
     uniforms: {
       uBaseColor: { value: new THREE.Color('#18232d') },
@@ -73,6 +94,7 @@ export function createArenaFogBankMaterial(opacity: number): ArenaFogBankShaderM
       uOpacity: { value: opacity },
       uTime: { value: 0 },
       uUnderwaterRatio: { value: 0 },
+      uWaterlineHeight: { value: waterlineHeight },
     },
     vertexShader: FOG_BANK_VERTEX_SHADER,
     fragmentShader: FOG_BANK_FRAGMENT_SHADER,
@@ -83,6 +105,7 @@ export function createArenaFogBankMaterial(opacity: number): ArenaFogBankShaderM
     fog: false,
   }) as ArenaFogBankShaderMaterial;
 
+  material.userData.baseOpacity = opacity;
   material.toneMapped = false;
   return material;
 }
@@ -94,9 +117,29 @@ export function updateArenaFogBankMaterial(
   const fogBankMaterial = material as ArenaFogBankShaderMaterial;
   const baseColor = fogBankMaterial.uniforms.uBaseColor.value;
   const highlightColor = fogBankMaterial.uniforms.uHighlightColor.value;
+  const underwaterBlend = THREE.MathUtils.smoothstep(snapshot.underwaterRatio, 0.06, 0.7);
+  const underwaterVisibility = THREE.MathUtils.lerp(
+    1,
+    1.08,
+    THREE.MathUtils.smoothstep(snapshot.underwaterRatio, 0.18, 0.9),
+  );
 
-  baseColor.copy(snapshot.atmosphereColor).lerp(FOG_BANK_BASE_TARGET, 0.42);
-  highlightColor.copy(snapshot.atmosphereColor).lerp(FOG_BANK_HIGHLIGHT_TARGET, 0.52);
+  underwaterBaseColor
+    .copy(UNDERWATER_FOG_BANK_BASE_TARGET)
+    .lerp(snapshot.atmosphereColor, 0.12);
+  underwaterHighlightColor
+    .copy(UNDERWATER_FOG_BANK_HIGHLIGHT_TARGET)
+    .lerp(snapshot.atmosphereColor, 0.14);
+
+  baseColor
+    .copy(snapshot.atmosphereColor)
+    .lerp(FOG_BANK_BASE_TARGET, 0.42 * (1 - underwaterBlend))
+    .lerp(underwaterBaseColor, underwaterBlend * 0.92);
+  highlightColor
+    .copy(snapshot.atmosphereColor)
+    .lerp(FOG_BANK_HIGHLIGHT_TARGET, 0.52 * (1 - underwaterBlend))
+    .lerp(underwaterHighlightColor, underwaterBlend * 0.82);
+  fogBankMaterial.uniforms.uOpacity.value = (fogBankMaterial.userData.baseOpacity as number) * underwaterVisibility;
   fogBankMaterial.uniforms.uTime.value = snapshot.elapsedSeconds;
   fogBankMaterial.uniforms.uUnderwaterRatio.value = snapshot.underwaterRatio;
 }
