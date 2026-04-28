@@ -30,7 +30,7 @@ globalThis.FileReader = NodeFileReader;
 
 const SOURCE_PATH = process.env.ROWBOAT_SOURCE_GLTF
   ? path.resolve(process.env.ROWBOAT_SOURCE_GLTF)
-  : path.resolve('public/models/rowboat-source.glb');
+  : path.resolve('source-assets/models/rowboat-source.glb');
 const OUTPUT_PATH = path.resolve('public/models/rowboat.glb');
 const TARGET_LENGTH = 4.15;
 const TARGET_TRIANGLES = 8000;

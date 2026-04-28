@@ -28,6 +28,7 @@ import { TailSlapShockwaveFX } from '../fx/TailSlapShockwaveFX';
 import { TopsideSubsurfaceRevealFX, TopsideSubsurfaceRevealTarget } from '../fx/TopsideSubsurfaceRevealFX';
 import { UnderwaterEnvironmentFX } from '../fx/UnderwaterEnvironmentFX';
 import { createOceanUndersideMaterial, UnderwaterReadabilityFX } from '../fx/UnderwaterReadabilityFX';
+import { VibeJamPortalFX } from '../fx/VibeJamPortalFX';
 import {
   createUnderwaterEnvironmentLayout,
   createUnderwaterRockColliders,
@@ -35,6 +36,11 @@ import {
   UnderwaterRockCollider,
 } from '../fx/underwaterRockLayout';
 import { Input } from '../game/Input';
+import {
+  buildVibeJamExitPortalUrl,
+  buildVibeJamReturnPortalUrl,
+  hasVibeJamPortalEntry,
+} from '../game/VibeJamPortalRouting';
 import { DamageSystem } from '../systems/DamageSystem';
 import { ShipAIContext, ShipAISystem } from '../systems/ShipAISystem';
 import { type HUDShipBarSnapshot, UISystem } from '../systems/UISystem';
@@ -58,6 +64,9 @@ const DISTANT_SILHOUETTE_COLOR = new THREE.Color('#081018');
 const ARENA_RADIUS = 182;
 const OCEAN_SIZE = 720;
 const OCEAN_UNDERSIDE_SIZE = 2200;
+const VIBE_PORTAL_TRIGGER_RADIUS = 8.5;
+const VIBE_PORTAL_EXIT_POSITION = new THREE.Vector3(0, 0, 0);
+const VIBE_PORTAL_RETURN_POSITION = new THREE.Vector3(0, 0, -68);
 const FOG_BANK_INNER_RADIUS = ARENA_RADIUS * 1.04;
 const FOG_BANK_MID_RADIUS = ARENA_RADIUS * 1.1;
 const FOG_BANK_OUTER_RADIUS = ARENA_RADIUS * 1.16;
@@ -113,6 +122,7 @@ interface OceanSwellLayer {
 }
 
 const createSwellDirection = (x: number, z: number): THREE.Vector2 => new THREE.Vector2(x, z).normalize();
+const createPortalHeading = (position: THREE.Vector3): number => Math.atan2(-position.x, -position.z);
 
 const OCEAN_SWELL_LAYERS: readonly OceanSwellLayer[] = [
   {
@@ -222,6 +232,22 @@ export class OceanScene {
   private readonly topsideSubsurfaceRevealFx: TopsideSubsurfaceRevealFX;
   private readonly underwaterEnvironmentFx: UnderwaterEnvironmentFX;
   private readonly readabilityFx: UnderwaterReadabilityFX;
+  private readonly vibeJamExitPortal = new VibeJamPortalFX({
+    kind: 'exit',
+    placement: 'floor',
+    position: VIBE_PORTAL_EXIT_POSITION,
+    heading: createPortalHeading(VIBE_PORTAL_EXIT_POSITION),
+  });
+  private readonly startsFromVibeJamPortal = hasVibeJamPortalEntry();
+  private readonly vibeJamReturnPortalUrl = buildVibeJamReturnPortalUrl();
+  private readonly vibeJamReturnPortal = this.vibeJamReturnPortalUrl
+    ? new VibeJamPortalFX({
+        kind: 'return',
+        placement: 'surface',
+        position: VIBE_PORTAL_RETURN_POSITION,
+        heading: createPortalHeading(VIBE_PORTAL_RETURN_POSITION),
+      })
+    : null;
   private readonly underwaterEnvironmentLayout: UnderwaterEnvironmentLayout;
   private readonly shipAiContext: ShipAIContext = {
     arenaRadius: ARENA_RADIUS,
@@ -306,6 +332,9 @@ export class OceanScene {
   private rescueTowBoatIds: string[] = [];
   private rescueInitialExtractionDistance = 1;
   private fleetAlerted = false;
+  private portalRedirectQueued = false;
+  private whaleWasInsideExitPortal = false;
+  private whaleWasInsideReturnPortal = false;
   private viewportWidth = 1;
   private viewportHeight = 1;
 
@@ -348,6 +377,8 @@ export class OceanScene {
       ...this.arenaFogBanks,
       this.captiveWhale.root,
       this.whale.root,
+      this.vibeJamExitPortal.root,
+      ...(this.vibeJamReturnPortal ? [this.vibeJamReturnPortal.root] : []),
       this.camera,
       ...this.ships.map((ship) => ship.root),
     );
@@ -397,6 +428,9 @@ export class OceanScene {
     this.rescueTowBoatIds = [];
     this.rescueInitialExtractionDistance = 1;
     this.fleetAlerted = false;
+    this.portalRedirectQueued = false;
+    this.whaleWasInsideExitPortal = false;
+    this.whaleWasInsideReturnPortal = this.startsFromVibeJamPortal && Boolean(this.vibeJamReturnPortal);
     this.breachLaunchShipIds.clear();
     this.capitalBreachedThisArc.clear();
     this.shipTopsideRevealStates.clear();
@@ -407,6 +441,10 @@ export class OceanScene {
 
     this.captiveWhale.reset();
     this.whale.reset();
+
+    if (this.startsFromVibeJamPortal) {
+      this.placeWhaleAtVibeJamReturnPortal();
+    }
 
     for (const ship of this.ships) {
       ship.reset();
@@ -473,8 +511,10 @@ export class OceanScene {
     this.resolveWhaleUnderwaterEnvironmentCollision();
     this.syncTetherDragState();
     this.syncShipTetherPulls();
+    this.updateVibeJamPortals();
 
     if (this.phase === 'playing') {
+      this.resolveVibeJamPortalTransitions();
       this.updateWhaleAir(deltaSeconds);
       this.resolveArenaOutcome();
     }
@@ -550,6 +590,8 @@ export class OceanScene {
     this.topsideSubsurfaceRevealFx.dispose();
     this.underwaterEnvironmentFx.dispose();
     this.readabilityFx.dispose();
+    this.vibeJamExitPortal.dispose();
+    this.vibeJamReturnPortal?.dispose();
     this.captiveWhale.dispose();
     this.oceanUndersideGeometry.dispose();
     this.skyMaterial.dispose();
@@ -739,6 +781,73 @@ export class OceanScene {
 
   private readonly sampleWaterColumnDepth = (x: number, z: number): number =>
     this.sampleOceanHeight(x, z) - this.sampleOceanFloorHeight(x, z);
+
+  private placeWhaleAtVibeJamReturnPortal(): void {
+    const surfaceHeight = this.sampleOceanHeight(VIBE_PORTAL_RETURN_POSITION.x, VIBE_PORTAL_RETURN_POSITION.z);
+    const headingToCenter = createPortalHeading(VIBE_PORTAL_RETURN_POSITION);
+
+    this.whale.position.set(VIBE_PORTAL_RETURN_POSITION.x, surfaceHeight - 0.18, VIBE_PORTAL_RETURN_POSITION.z);
+    this.whale.depth = -0.18;
+    this.whale.submerged = false;
+    this.whale.yaw = headingToCenter;
+    this.whale.root.rotation.set(0, headingToCenter, 0, 'YXZ');
+    this.whale.root.updateMatrixWorld();
+    this.whale.syncTravelState();
+  }
+
+  private updateVibeJamPortals(): void {
+    this.updateVibeJamPortal(this.vibeJamExitPortal);
+
+    if (this.vibeJamReturnPortal) {
+      this.updateVibeJamPortal(this.vibeJamReturnPortal);
+    }
+  }
+
+  private updateVibeJamPortal(portal: VibeJamPortalFX): void {
+    const anchorHeight =
+      portal === this.vibeJamExitPortal
+        ? this.sampleOceanFloorHeight(portal.root.position.x, portal.root.position.z)
+        : this.sampleOceanHeight(portal.root.position.x, portal.root.position.z);
+    const distanceToWhale = this.getWhaleDistanceToPortal(portal);
+    portal.update(this.elapsedSeconds, anchorHeight, distanceToWhale);
+  }
+
+  private resolveVibeJamPortalTransitions(): void {
+    if (this.portalRedirectQueued) {
+      return;
+    }
+
+    const whaleInsideExitPortal = this.getWhaleDistanceToPortal(this.vibeJamExitPortal) <= VIBE_PORTAL_TRIGGER_RADIUS;
+
+    if (whaleInsideExitPortal && !this.whaleWasInsideExitPortal) {
+      this.redirectThroughVibeJamPortal(buildVibeJamExitPortalUrl(this.whale.speed));
+      return;
+    }
+
+    this.whaleWasInsideExitPortal = whaleInsideExitPortal;
+
+    if (!this.vibeJamReturnPortal || !this.vibeJamReturnPortalUrl) {
+      return;
+    }
+
+    const whaleInsideReturnPortal = this.getWhaleDistanceToPortal(this.vibeJamReturnPortal) <= VIBE_PORTAL_TRIGGER_RADIUS;
+
+    if (whaleInsideReturnPortal && !this.whaleWasInsideReturnPortal) {
+      this.redirectThroughVibeJamPortal(this.vibeJamReturnPortalUrl);
+      return;
+    }
+
+    this.whaleWasInsideReturnPortal = whaleInsideReturnPortal;
+  }
+
+  private getWhaleDistanceToPortal(portal: VibeJamPortalFX): number {
+    return this.whale.position.distanceTo(portal.root.position);
+  }
+
+  private redirectThroughVibeJamPortal(url: string): void {
+    this.portalRedirectQueued = true;
+    window.location.href = url;
+  }
 
   private resolveWhaleUnderwaterEnvironmentCollision(): void {
     let surfaceHeight = this.sampleOceanHeight(this.whale.position.x, this.whale.position.z);

@@ -44,6 +44,7 @@ canvas {
 .hud__top[hidden],
 .hud__bottom[hidden],
 .hud__card[hidden],
+.hud__hint[hidden],
 .hud__status[hidden],
 .hud__debug[hidden] {
   display: none;
@@ -358,6 +359,38 @@ canvas {
   display: none;
 }
 
+.hud__keyboard-guard {
+  display: none;
+  position: absolute;
+  inset: 18px;
+  z-index: 4;
+  max-width: 420px;
+  margin: auto;
+  height: max-content;
+  padding: 18px 20px;
+  border: 1px solid rgba(149, 169, 188, 0.16);
+  background: linear-gradient(180deg, rgba(3, 8, 14, 0.9), rgba(3, 8, 14, 0.68));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 24px 60px rgba(0, 0, 0, 0.48);
+  backdrop-filter: blur(10px);
+  text-align: center;
+}
+
+.hud__keyboard-title {
+  margin: 0;
+  font-size: 2rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.hud__keyboard-copy {
+  margin: 10px auto 0;
+  max-width: 28ch;
+  line-height: 1.5;
+  color: rgba(217, 221, 215, 0.78);
+}
+
 .hud__fade {
   position: absolute;
   inset: 0;
@@ -422,5 +455,25 @@ canvas {
   .hud__controls {
     bottom: 14px;
     max-width: calc(100vw - 16px);
+  }
+}
+
+@media (max-width: 640px), (pointer: coarse) {
+  .hud {
+    --hud-controls-space: 0px;
+    padding: 16px;
+    justify-content: center;
+  }
+
+  .hud__top,
+  .hud__bottom,
+  .hud__controls,
+  .hud__ship-bars,
+  .hud__overlay {
+    display: none;
+  }
+
+  .hud__keyboard-guard {
+    display: block;
   }
 }

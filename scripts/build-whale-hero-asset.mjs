@@ -26,7 +26,7 @@ globalThis.FileReader = NodeFileReader;
 
 const SOURCE_PATH = process.env.WHALE_SOURCE_GLTF
   ? path.resolve(process.env.WHALE_SOURCE_GLTF)
-  : path.resolve('public/models/whale-source.glb');
+  : path.resolve('source-assets/models/whale-source.glb');
 const OUTPUT_PATH = path.resolve('public/models/whale-hero.glb');
 const TARGET_LENGTH = 13.1;
 const TAIL_PIVOT_POSITION = new THREE.Vector3(0, -0.012, -0.235);

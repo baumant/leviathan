@@ -62,6 +62,7 @@ export class UISystem {
   private readonly overlayCard = document.createElement('section');
   private readonly overlayTitle = document.createElement('h2');
   private readonly overlayCopy = document.createElement('p');
+  private readonly keyboardGuard = document.createElement('section');
   private readonly fadeEl = document.createElement('div');
   private readonly shipBars = new Map<string, ShipBarElements>();
   private readonly movementTile: ControlTile;
@@ -77,7 +78,7 @@ export class UISystem {
     this.introCard.className = 'hud__card';
 
     this.eyebrowEl.className = 'hud__eyebrow';
-    this.eyebrowEl.textContent = 'First playable';
+    this.eyebrowEl.textContent = 'The Hunt';
 
     const title = document.createElement('h1');
     title.className = 'hud__title';
@@ -86,7 +87,7 @@ export class UISystem {
     this.objectiveEl.className = 'hud__copy';
 
     this.introHintEl.className = 'hud__subtle hud__hint';
-    this.introHintEl.textContent = 'Enter skip';
+    this.introHintEl.textContent = 'Enter to skip';
 
     this.introCard.append(this.eyebrowEl, title, this.objectiveEl, this.introHintEl);
 
@@ -155,10 +156,34 @@ export class UISystem {
 
     this.overlayCard.append(overlayEyebrow, this.overlayTitle, this.overlayCopy);
 
+    this.keyboardGuard.className = 'hud__keyboard-guard';
+
+    const guardEyebrow = document.createElement('p');
+    guardEyebrow.className = 'hud__eyebrow';
+    guardEyebrow.textContent = 'Desktop build';
+
+    const guardTitle = document.createElement('h2');
+    guardTitle.className = 'hud__keyboard-title';
+    guardTitle.textContent = 'Keyboard Required';
+
+    const guardCopy = document.createElement('p');
+    guardCopy.className = 'hud__keyboard-copy';
+    guardCopy.textContent = 'Open Leviathan on a wider screen with a keyboard to enter the hunt.';
+
+    this.keyboardGuard.append(guardEyebrow, guardTitle, guardCopy);
+
     this.fadeEl.className = 'hud__fade';
     this.fadeEl.hidden = true;
 
-    this.root.append(this.topRow, this.bottomRow, this.shipBarsLayer, this.controlsStrip, this.overlayCard, this.fadeEl);
+    this.root.append(
+      this.topRow,
+      this.bottomRow,
+      this.shipBarsLayer,
+      this.controlsStrip,
+      this.overlayCard,
+      this.keyboardGuard,
+      this.fadeEl,
+    );
     parent.append(this.root);
   }
 
@@ -168,7 +193,7 @@ export class UISystem {
     const showActionControls = snapshot.showActionControls ?? !isIntro;
     const showTailSlapControl = showActionControls && (snapshot.tailSlapAvailable ?? true);
     this.objectiveEl.textContent = snapshot.objective;
-    this.eyebrowEl.textContent = snapshot.eyebrowText ?? 'First playable';
+    this.eyebrowEl.textContent = snapshot.eyebrowText ?? (isIntro ? 'Prologue' : 'The Hunt');
     this.introHintEl.hidden = !isIntro;
     this.controlsStrip.classList.toggle('hud__controls--intro', isIntro);
     this.diveTile.root.hidden = !showActionControls;

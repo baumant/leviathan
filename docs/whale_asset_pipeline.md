@@ -1,7 +1,7 @@
 # Whale Asset Pipeline
 
 ## Source Of Truth
-- Source whale mesh: `public/models/whale-source.glb`
+- Source whale mesh: `source-assets/models/whale-source.glb`
 - Shipping whale asset: `public/models/whale-hero.glb`
 
 The shipped whale stays aligned with the attached source model by rebuilding the runtime-ready asset from `whale-source.glb` rather than editing `whale-hero.glb` by hand.

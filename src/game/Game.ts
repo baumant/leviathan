@@ -87,8 +87,7 @@ export class Game {
         this.oceanScene.update(deltaSeconds, this.time.elapsedSeconds);
 
         if (this.input.consumeRestartRequested()) {
-          this.oceanScene.reset();
-          this.states.change('INTRO_DECK');
+          this.states.change('WHALE_PLAY');
         }
       },
     });
@@ -101,8 +100,7 @@ export class Game {
         this.oceanScene.update(deltaSeconds, this.time.elapsedSeconds);
 
         if (this.input.consumeRestartRequested()) {
-          this.oceanScene.reset();
-          this.states.change('INTRO_DECK');
+          this.states.change('WHALE_PLAY');
         }
       },
     });
