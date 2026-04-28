@@ -247,7 +247,7 @@ export class UnderwaterEnvironmentFX {
     new THREE.IcosahedronGeometry(1.0, 0),
   ];
   private readonly rockMaterial = new THREE.MeshBasicMaterial({
-    color: '#263b37',
+    color: '#080d11',
     transparent: false,
     opacity: 1,
     depthWrite: true,

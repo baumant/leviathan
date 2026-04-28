@@ -64,6 +64,7 @@ const DISTANT_SILHOUETTE_COLOR = new THREE.Color('#081018');
 const ARENA_RADIUS = 182;
 const OCEAN_SIZE = 720;
 const OCEAN_UNDERSIDE_SIZE = 2200;
+const SEABED_DEPTH_MULTIPLIER = 2;
 const VIBE_PORTAL_TRIGGER_RADIUS = 8.5;
 const VIBE_PORTAL_EXIT_POSITION = new THREE.Vector3(0, 0, 0);
 const VIBE_PORTAL_RETURN_POSITION = new THREE.Vector3(0, 0, -68);
@@ -73,7 +74,7 @@ const FOG_BANK_OUTER_RADIUS = ARENA_RADIUS * 1.16;
 const FOG_BANK_INNER_HEIGHT = 72;
 const FOG_BANK_MID_HEIGHT = 92;
 const FOG_BANK_OUTER_HEIGHT = 118;
-const FOG_BANK_UNDERWATER_DEPTH = 132;
+const FOG_BANK_UNDERWATER_DEPTH = 264;
 const WHALE_BOUNDARY_MARGIN = 4;
 const SHIP_BOUNDARY_MARGIN = 3;
 const HARPOON_SPEED = 30;
@@ -776,7 +777,10 @@ export class OceanScene {
     const outerBreakA = Math.sin(radialDistance * 0.074 - 1.1) * 2.8 * outerShelf;
     const outerBreakB = Math.cos(x * 0.014 - z * 0.017 + 2.1) * 2.4 * outerShelf;
 
-    return shelfBase + shelfRelief + (duneA + duneB + duneC) * midDuneStrength * duneWeight + outerBreakA + outerBreakB;
+    const floorHeight =
+      shelfBase + shelfRelief + (duneA + duneB + duneC) * midDuneStrength * duneWeight + outerBreakA + outerBreakB;
+
+    return floorHeight * SEABED_DEPTH_MULTIPLIER;
   };
 
   private readonly sampleWaterColumnDepth = (x: number, z: number): number =>
