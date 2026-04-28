@@ -29,6 +29,7 @@ import { TopsideSubsurfaceRevealFX, TopsideSubsurfaceRevealTarget } from '../fx/
 import { UnderwaterEnvironmentFX } from '../fx/UnderwaterEnvironmentFX';
 import { createOceanUndersideMaterial, UnderwaterReadabilityFX } from '../fx/UnderwaterReadabilityFX';
 import { VibeJamPortalFX } from '../fx/VibeJamPortalFX';
+import { WhaleSurfaceSprayFX } from '../fx/WhaleSurfaceSprayFX';
 import {
   createUnderwaterEnvironmentLayout,
   createUnderwaterRockColliders,
@@ -230,6 +231,7 @@ export class OceanScene {
   private readonly breachSplashFx: BreachSplashFX;
   private readonly tailSlapShockwaveFx: TailSlapShockwaveFX;
   private readonly shipWakeFx: ShipWakeFX;
+  private readonly whaleSurfaceSprayFx: WhaleSurfaceSprayFX;
   private readonly topsideSubsurfaceRevealFx: TopsideSubsurfaceRevealFX;
   private readonly underwaterEnvironmentFx: UnderwaterEnvironmentFX;
   private readonly readabilityFx: UnderwaterReadabilityFX;
@@ -360,6 +362,7 @@ export class OceanScene {
     this.breachSplashFx = new BreachSplashFX(this.scene);
     this.tailSlapShockwaveFx = new TailSlapShockwaveFX(this.scene);
     this.shipWakeFx = new ShipWakeFX(this.scene, this.ships);
+    this.whaleSurfaceSprayFx = new WhaleSurfaceSprayFX(this.scene);
     this.topsideSubsurfaceRevealFx = new TopsideSubsurfaceRevealFX(this.scene);
     this.underwaterEnvironmentFx = new UnderwaterEnvironmentFX(this.scene, {
       arenaRadius: ARENA_RADIUS,
@@ -459,6 +462,7 @@ export class OceanScene {
     this.breachSplashFx.reset();
     this.tailSlapShockwaveFx.reset();
     this.shipWakeFx.reset();
+    this.whaleSurfaceSprayFx.reset();
     this.topsideSubsurfaceRevealFx.reset();
     this.underwaterEnvironmentFx.reset();
     this.readabilityFx.reset();
@@ -547,6 +551,13 @@ export class OceanScene {
       sampleSurfaceHeight: this.sampleOceanHeight,
       ships: this.ships,
     });
+    this.whaleSurfaceSprayFx.update({
+      deltaSeconds,
+      underwaterRatio,
+      sampleSurfaceHeight: this.sampleOceanHeight,
+      whale: this.whale,
+      whaleStrokePulseStrength: movementResult?.strokePulseStrength ?? 0,
+    });
     this.topsideSubsurfaceRevealFx.update({
       underwaterRatio,
       targets: this.collectTopsideRevealTargets(),
@@ -588,6 +599,7 @@ export class OceanScene {
     this.breachSplashFx.dispose();
     this.tailSlapShockwaveFx.dispose();
     this.shipWakeFx.dispose();
+    this.whaleSurfaceSprayFx.dispose();
     this.topsideSubsurfaceRevealFx.dispose();
     this.underwaterEnvironmentFx.dispose();
     this.readabilityFx.dispose();
@@ -1396,6 +1408,8 @@ export class OceanScene {
         continue;
       }
 
+      let splashIntensity = 0.58;
+
       if (this.phase === 'playing') {
         if (directHit) {
           this.tempImpactPoint.copy(cannonball.position);
@@ -1414,9 +1428,19 @@ export class OceanScene {
           this.impactShake = Math.max(this.impactShake, hitResult.intensity);
         }
 
+        splashIntensity = hitResult?.intensity ?? splashIntensity;
         this.audio.playCue(directHit || hitResult ? 'cannon.impact' : 'cannon.splash', this.tempImpactPoint, {
-          intensity: hitResult?.intensity ?? 0.58,
+          intensity: splashIntensity,
         });
+      }
+
+      if (hitsWater) {
+        this.tempImpactPoint.set(cannonball.position.x, surfaceHeight, cannonball.position.z);
+        this.breachSplashFx.spawnImpact(
+          this.tempImpactPoint,
+          splashIntensity,
+          cannonball.splashRadius / CANNON_SPLASH_RADIUS,
+        );
       }
 
       this.removeCannonball(index);

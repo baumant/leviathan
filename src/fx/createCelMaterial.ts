@@ -31,17 +31,28 @@ export interface CelMaterialOptions {
 }
 
 export function createCelMaterial(options: CelMaterialOptions): THREE.MeshToonMaterial {
-  const material = new THREE.MeshToonMaterial({
+  const materialOptions: THREE.MeshToonMaterialParameters = {
     color: options.color,
     emissive: options.emissive ?? '#000000',
     emissiveIntensity: options.emissiveIntensity ?? 0,
     transparent: options.transparent ?? false,
     opacity: options.opacity ?? 1,
-    side: options.side,
-    depthWrite: options.depthWrite,
-    blending: options.blending,
     gradientMap: getSharedGradientMap(),
-  });
+  };
+
+  if (options.side !== undefined) {
+    materialOptions.side = options.side;
+  }
+
+  if (options.depthWrite !== undefined) {
+    materialOptions.depthWrite = options.depthWrite;
+  }
+
+  if (options.blending !== undefined) {
+    materialOptions.blending = options.blending;
+  }
+
+  const material = new THREE.MeshToonMaterial(materialOptions);
 
   material.toneMapped = true;
   return material;

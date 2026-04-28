@@ -13,6 +13,7 @@ export class Game {
   private readonly renderer = new THREE.WebGLRenderer({
     antialias: true,
     powerPreference: 'high-performance',
+    stencil: true,
   });
   private readonly audio = new AudioSystem();
   private readonly input = new Input();
