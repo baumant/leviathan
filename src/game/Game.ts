@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 
+import { AudioSystem } from '../audio/AudioSystem';
 import { OceanScene } from '../scenes/OceanScene';
 import { IntroScene } from '../scenes/IntroScene';
 import { UISystem } from '../systems/UISystem';
@@ -13,6 +14,7 @@ export class Game {
     antialias: true,
     powerPreference: 'high-performance',
   });
+  private readonly audio = new AudioSystem();
   private readonly input = new Input();
   private readonly time = new Time();
   private readonly states = new StateMachine<GameStateId>();
@@ -30,8 +32,8 @@ export class Game {
 
     this.mount.append(this.renderer.domElement);
     this.ui = new UISystem(document.body);
-    this.introScene = new IntroScene(this.input, this.ui, window.innerWidth, window.innerHeight);
-    this.oceanScene = new OceanScene(this.input, this.ui, window.innerWidth, window.innerHeight);
+    this.introScene = new IntroScene(this.input, this.ui, this.audio, window.innerWidth, window.innerHeight);
+    this.oceanScene = new OceanScene(this.input, this.ui, this.audio, window.innerWidth, window.innerHeight);
 
     this.registerStates();
     this.states.change('BOOT');
@@ -42,12 +44,16 @@ export class Game {
 
   private registerStates(): void {
     this.states.add('BOOT', {
-      enter: () => this.states.change('INTRO_DECK'),
+      enter: () => {
+        this.audio.setMusicState('silent');
+        this.states.change('INTRO_DECK');
+      },
       update: () => undefined,
     });
 
     this.states.add('INTRO_DECK', {
       enter: () => {
+        this.audio.setMusicState('intro');
         this.introScene.reset();
       },
       update: (deltaSeconds) => {
@@ -61,6 +67,9 @@ export class Game {
       },
     });
     this.states.add('ATTACK_CINEMATIC', {
+      enter: () => {
+        this.audio.setMusicState('intro');
+      },
       update: (deltaSeconds) => {
         const result = this.introScene.update(deltaSeconds, this.time.elapsedSeconds);
 
@@ -70,6 +79,10 @@ export class Game {
       },
     });
     this.states.add('ENDGAME', {
+      enter: () => {
+        this.audio.setMusicState('victory');
+        this.audio.playCue('victory');
+      },
       update: (deltaSeconds) => {
         this.oceanScene.update(deltaSeconds, this.time.elapsedSeconds);
 
@@ -80,6 +93,10 @@ export class Game {
       },
     });
     this.states.add('GAME_OVER', {
+      enter: () => {
+        this.audio.setMusicState('defeat');
+        this.audio.playCue('defeat');
+      },
       update: (deltaSeconds) => {
         this.oceanScene.update(deltaSeconds, this.time.elapsedSeconds);
 
@@ -92,6 +109,7 @@ export class Game {
 
     this.states.add('WHALE_PLAY', {
       enter: () => {
+        this.audio.setMusicState('combat');
         this.oceanScene.reset();
       },
       update: (deltaSeconds) => {
@@ -125,6 +143,7 @@ export class Game {
     this.ui.dispose();
     this.introScene.dispose();
     this.oceanScene.dispose();
+    this.audio.dispose();
     this.renderer.dispose();
   }
 

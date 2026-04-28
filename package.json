@@ -8,6 +8,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
+    "asset:audio": "node scripts/import-audio-assets.mjs",
     "asset:rowboat": "node scripts/build-rowboat-asset.mjs",
     "asset:whale": "node scripts/build-whale-hero-asset.mjs"
   },

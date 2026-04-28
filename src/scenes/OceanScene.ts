@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { Water } from 'three/addons/objects/Water.js';
 
+import { AudioSystem } from '../audio/AudioSystem';
 import { Cannonball } from '../entities/Cannonball';
 import { CaptiveWhale } from '../entities/CaptiveWhale';
 import { Harpoon } from '../entities/Harpoon';
@@ -98,6 +99,10 @@ const DIVE_CAMERA_SURFACE_CLEARANCE_MAX = 4.8;
 const DIVE_CAMERA_FOLLOW_BOOST = 4.2;
 const WHALE_SEABED_CLEARANCE = 2.4;
 const WHALE_ROCK_COLLISION_PADDING = 0.7;
+const CREW_SHOUT_APPROACH_DISTANCE = 34;
+const CREW_SHOUT_APPROACH_SPEED = 8.5;
+const CREW_SHOUT_APPROACH_ALIGNMENT = 0.62;
+const CREW_SHOUT_NEAR_SURFACE_DEPTH = -2.3;
 interface OceanSwellLayer {
   direction: THREE.Vector2;
   frequency: number;
@@ -255,6 +260,7 @@ export class OceanScene {
   private readonly tempHealthBarAnchor = new THREE.Vector3();
   private readonly tempHealthBarProjection = new THREE.Vector3();
   private readonly tempCameraSpacePoint = new THREE.Vector3();
+  private readonly tempAudioCameraForward = new THREE.Vector3();
   private readonly tempCollisionHalfExtentsA = new THREE.Vector2();
   private readonly tempCollisionHalfExtentsB = new THREE.Vector2();
   private readonly tempCollisionAxisA0 = new THREE.Vector2();
@@ -270,6 +276,8 @@ export class OceanScene {
   private readonly oceanLanternInfluences: ShipLanternInfluence[] = [];
   private readonly oceanRevealWindows: PainterlyOceanSubsurfaceRevealWindow[] = [];
   private readonly topsideRevealTargets: TopsideSubsurfaceRevealTarget[] = [];
+  private readonly shipAudioHealth = new Map<string, number>();
+  private readonly lastCrewShoutByShipId = new Map<string, number>();
   private whaleTopsideRevealState: ActorTopsideRevealState = { ...INACTIVE_WATERLINE_PASSTHROUGH_STATE, cameraAboveWater: true };
   private readonly shipTopsideRevealStates = new Map<string, ActorTopsideRevealState>();
 
@@ -304,6 +312,7 @@ export class OceanScene {
   constructor(
     private readonly input: Input,
     private readonly ui: UISystem,
+    private readonly audio: AudioSystem,
     width: number,
     height: number,
   ) {
@@ -391,6 +400,8 @@ export class OceanScene {
     this.breachLaunchShipIds.clear();
     this.capitalBreachedThisArc.clear();
     this.shipTopsideRevealStates.clear();
+    this.shipAudioHealth.clear();
+    this.lastCrewShoutByShipId.clear();
 
     this.removeDynamicShipsForReset();
 
@@ -401,6 +412,7 @@ export class OceanScene {
       ship.reset();
       ship.setSubmergedReadabilityCue(0);
       ship.setTetherPull(0);
+      this.shipAudioHealth.set(ship.id, ship.health);
     }
 
     this.clearHarpoons();
@@ -446,6 +458,7 @@ export class OceanScene {
 
     this.updateShips(deltaSeconds);
     if (this.phase === 'playing') {
+      this.maybePlayCrewApproachShouts();
       this.resolveWhaleCapitalInteractions();
     }
     this.updateRescueEncounter(deltaSeconds);
@@ -469,6 +482,15 @@ export class OceanScene {
     const underwaterRatio = this.getUnderwaterRatio();
 
     this.updateCamera(deltaSeconds, underwaterRatio);
+    this.audio.updateOceanMix({
+      activeTethers: this.activeTethers,
+      cameraForward: this.camera.getWorldDirection(this.tempAudioCameraForward),
+      cameraPosition: this.camera.position,
+      corporateActive: this.corporateArrivalState === 'active' && Boolean(this.corporateShip && !this.corporateShip.sinking),
+      rescueProgress: this.getRescueExtractionProgress(),
+      underwaterRatio,
+      whaleSpeed: this.whale.speed,
+    });
     const surfaceHeightAtCamera = this.sampleOceanHeight(this.camera.position.x, this.camera.position.z);
     const floorHeightAtCamera = this.sampleOceanFloorHeight(this.camera.position.x, this.camera.position.z);
     const cameraUnderwater = this.camera.position.y < surfaceHeightAtCamera - 0.18;
@@ -964,6 +986,7 @@ export class OceanScene {
     this.shipAiContext.whalePosition.copy(this.whale.position);
 
     for (const ship of this.ships) {
+      const previousHealth = this.shipAudioHealth.get(ship.id) ?? ship.health;
       const activeHarpoon = this.activeHarpoonsByShipId.get(ship.id);
       this.shipAiContext.shipHasActiveHarpoon = Boolean(activeHarpoon?.active);
       this.shipAiContext.shipHasTether = activeHarpoon?.mode === 'tethered';
@@ -988,6 +1011,9 @@ export class OceanScene {
 
           if (aiResult.broadsideTelegraphSide) {
             ship.startBroadsideTelegraph(aiResult.broadsideTelegraphSide);
+            this.audio.playCue('cannon.telegraph', ship.root.position, {
+              intensity: ship.role === 'corporate_whaler' ? 1 : 0.72,
+            });
           }
         }
       }
@@ -1000,6 +1026,7 @@ export class OceanScene {
 
         if (ramResult) {
           this.impactShake = Math.max(this.impactShake, ramResult.intensity);
+          this.audio.playCue('hull.groan', ship.root.position, { intensity: ramResult.intensity });
         }
       }
 
@@ -1014,7 +1041,65 @@ export class OceanScene {
       if (ship.sinking && !ship.scoreAwarded) {
         ship.scoreAwarded = true;
         this.score += ship.scoreValue;
+        this.audio.playCue('ship.sink', ship.root.position, {
+          intensity: ship.role === 'rowboat' ? 0.65 : 1,
+        });
+      } else if (ship.health < previousHealth && !ship.sinking) {
+        const damageAlpha = THREE.MathUtils.clamp((previousHealth - ship.health) / Math.max(ship.maxHealth, 1), 0.18, 1);
+        this.audio.playCue('hull.groan', ship.root.position, { intensity: damageAlpha });
       }
+
+      this.shipAudioHealth.set(ship.id, ship.health);
+    }
+  }
+
+  private maybePlayCrewApproachShouts(): void {
+    if (
+      this.whale.actionState !== 'swim' ||
+      this.whale.depth < CREW_SHOUT_NEAR_SURFACE_DEPTH ||
+      this.whale.speed < CREW_SHOUT_APPROACH_SPEED
+    ) {
+      return;
+    }
+
+    this.tempShipForward.copy(this.whale.travelVelocity).setY(0);
+
+    if (this.tempShipForward.lengthSq() <= 0.0001) {
+      return;
+    }
+
+    this.tempShipForward.normalize();
+
+    for (const ship of this.ships) {
+      if (ship.sinking || ship.sunk) {
+        continue;
+      }
+
+      this.tempShipVector.copy(ship.root.position).sub(this.whale.position).setY(0);
+      const distance = this.tempShipVector.length();
+
+      if (distance <= 0.001 || distance > CREW_SHOUT_APPROACH_DISTANCE) {
+        continue;
+      }
+
+      this.tempShipVector.multiplyScalar(1 / distance);
+
+      if (this.tempShipForward.dot(this.tempShipVector) < CREW_SHOUT_APPROACH_ALIGNMENT) {
+        continue;
+      }
+
+      const lastPlayed = this.lastCrewShoutByShipId.get(ship.id) ?? -Infinity;
+      const cooldownSeconds = ship.role === 'rowboat' ? 5.5 : 4.2;
+
+      if (this.elapsedSeconds - lastPlayed < cooldownSeconds) {
+        continue;
+      }
+
+      this.lastCrewShoutByShipId.set(ship.id, this.elapsedSeconds);
+      this.audio.playCue('crew.shout', ship.root.position, {
+        intensity: ship.role === 'rowboat' ? 0.78 : 0.95,
+      });
+      return;
     }
   }
 
@@ -1139,6 +1224,7 @@ export class OceanScene {
         ) {
           this.getWhaleTetherAttachPoint(this.tempAttachPoint);
           harpoon.attach(this.tempAttachPoint);
+          this.audio.playCue('harpoon.attach', this.tempAttachPoint, { intensity: 0.82 });
           this.impactShake = Math.max(this.impactShake, 0.08);
         }
 
@@ -1158,6 +1244,7 @@ export class OceanScene {
 
       if (this.damageSystem.updateDragUnder(this.whale, owner, true, deltaSeconds, tensionAlpha)) {
         this.impactShake = Math.max(this.impactShake, 0.36);
+        this.audio.playCue('harpoon.snap', this.tempAttachPoint, { intensity: 1 });
         this.removeHarpoon(index);
         continue;
       }
@@ -1167,6 +1254,7 @@ export class OceanScene {
 
       if (snapped) {
         this.impactShake = Math.max(this.impactShake, 0.14);
+        this.audio.playCue('harpoon.snap', this.tempAttachPoint, { intensity: 0.86 });
         this.removeHarpoon(index);
       }
     }
@@ -1212,6 +1300,10 @@ export class OceanScene {
         if (hitResult) {
           this.impactShake = Math.max(this.impactShake, hitResult.intensity);
         }
+
+        this.audio.playCue(directHit || hitResult ? 'cannon.impact' : 'cannon.splash', this.tempImpactPoint, {
+          intensity: hitResult?.intensity ?? 0.58,
+        });
       }
 
       this.removeCannonball(index);
@@ -1232,6 +1324,9 @@ export class OceanScene {
         this.whale.breachOrigin.z,
       );
       this.breachSplashFx.spawnLaunch(this.tempImpactPoint, this.getBreachSplashIntensity());
+      this.audio.playCue('whale.breach.start', this.tempImpactPoint, {
+        intensity: THREE.MathUtils.lerp(0.65, 1, this.getBreachSplashIntensity()),
+      });
     }
 
     if (this.whale.actionState === 'breach' && this.whale.verticalSpeed > 0) {
@@ -1240,6 +1335,9 @@ export class OceanScene {
 
     if (result.breachImpact) {
       this.breachSplashFx.spawnReentry(result.breachImpact.position, this.getBreachSplashIntensity());
+      this.audio.playCue('whale.breach.impact', result.breachImpact.position, {
+        intensity: THREE.MathUtils.lerp(0.7, 1, this.getBreachSplashIntensity()),
+      });
 
       for (const ship of this.ships) {
         if (ship.isCapitalShip && this.capitalBreachedThisArc.has(ship.id)) {
@@ -1279,6 +1377,7 @@ export class OceanScene {
         result.tailSlap.halfAngle,
       );
       this.impactShake = Math.max(this.impactShake, 0.14);
+      this.audio.playCue('whale.tail.slap', result.tailSlap.origin, { intensity: 0.9 });
 
       for (const ship of this.ships) {
         const hitResult = this.damageSystem.resolveTailSlap(
@@ -1392,6 +1491,7 @@ export class OceanScene {
 
     harpoon.launch(origin, target.normalize(), HARPOON_SPEED);
     ship.markHarpoonFired();
+    this.audio.playCue('harpoon.fire', origin, { intensity: 0.75 });
 
     this.harpoons.push(harpoon);
     this.activeHarpoonsByShipId.set(ship.id, harpoon);
@@ -1401,6 +1501,9 @@ export class OceanScene {
   private spawnBroadside(ship: Ship, side: 'port' | 'starboard'): void {
     const origins = ship.getBroadsideOrigins(side);
     ship.getForward(this.tempShipForward);
+    this.audio.playCue('cannon.fire', ship.root.position, {
+      intensity: ship.role === 'corporate_whaler' ? 1 : 0.78,
+    });
 
     for (let index = 0; index < origins.length; index += 1) {
       const origin = origins[index];
@@ -1524,6 +1627,7 @@ export class OceanScene {
 
       if (interaction?.kind === 'ram_hit') {
         this.impactShake = Math.max(this.impactShake, interaction.intensity);
+        this.audio.playCue('hull.groan', ship.root.position, { intensity: interaction.intensity });
       }
     }
   }
@@ -1735,6 +1839,7 @@ export class OceanScene {
   private addShip(ship: Ship): void {
     this.ships.push(ship);
     this.shipById.set(ship.id, ship);
+    this.shipAudioHealth.set(ship.id, ship.health);
     ship.setSubmergedReadabilityCue(0);
     ship.setTetherPull(0);
     this.scene.add(ship.root);
@@ -1751,6 +1856,8 @@ export class OceanScene {
       this.removeHarpoonByShipId(ship.id);
       ship.root.removeFromParent();
       this.shipById.delete(ship.id);
+      this.shipAudioHealth.delete(ship.id);
+      this.lastCrewShoutByShipId.delete(ship.id);
       this.ships.splice(index, 1);
     }
   }
@@ -1825,6 +1932,8 @@ export class OceanScene {
     this.addShip(ship);
     this.corporateShip = ship;
     this.corporateArrivalState = 'active';
+    this.audio.setMusicState('corporate');
+    this.audio.playCue('corporate.arrival', ship.root.position, { intensity: 1 });
     this.beginRescueEncounter(ship);
   }
 
@@ -1978,6 +2087,7 @@ export class OceanScene {
 
     this.rescueEncounterState = 'escaping';
     this.rescueTowBoatIds = [];
+    this.audio.playCue('rescue.success', this.captiveWhale.position, { intensity: 0.92 });
 
     if (!this.corporateShip) {
       this.captiveWhale.release(this.tempRescueDirection.set(0, 0, -1));
@@ -2001,6 +2111,7 @@ export class OceanScene {
     }
 
     this.rescueEncounterState = 'failed';
+    this.audio.playCue('rescue.failure', this.captiveWhale.position, { intensity: 1 });
 
     if (this.corporateShip) {
       this.corporateShip.getExtractionAnchor(this.tempRescueAnchor);

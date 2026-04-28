@@ -1,0 +1,300 @@
+{
+  "version": 1,
+  "assets": {
+    "music.shanty": {
+      "src": "/audio/music/sailors-chant.ogg",
+      "bus": "music",
+      "loop": true,
+      "volume": 0.08,
+      "playbackRate": 0.76
+    },
+    "music.dread": {
+      "src": "/audio/music/lost-in-a-bad-place.ogg",
+      "bus": "music",
+      "loop": true,
+      "volume": 0.48
+    },
+    "ambience.surface": {
+      "src": "/audio/ambience/ocean-waves.ogg",
+      "bus": "ambience",
+      "loop": true,
+      "volume": 0.42
+    },
+    "ambience.underwater": {
+      "src": "/audio/ambience/underwater-rumble.ogg",
+      "bus": "ambience",
+      "loop": true,
+      "volume": 0.5
+    },
+    "ambience.deepRumble": {
+      "src": "/audio/ambience/deep-rumble.ogg",
+      "bus": "ambience",
+      "loop": true,
+      "volume": 0.34
+    },
+    "sfx.cannon.fire": {
+      "src": "/audio/sfx/cannon-fire.ogg",
+      "bus": "sfx",
+      "volume": 0.52,
+      "refDistance": 18,
+      "maxDistance": 150
+    },
+    "sfx.cannon.hit": {
+      "src": "/audio/sfx/cannon-hit.ogg",
+      "bus": "sfx",
+      "volume": 0.46,
+      "refDistance": 15,
+      "maxDistance": 130
+    },
+    "sfx.cannon.miss": {
+      "src": "/audio/sfx/cannon-miss.ogg",
+      "bus": "sfx",
+      "volume": 0.4,
+      "refDistance": 12,
+      "maxDistance": 125
+    },
+    "sfx.hull.hit": {
+      "src": "/audio/sfx/hull-hit.ogg",
+      "bus": "sfx",
+      "volume": 0.45,
+      "refDistance": 16,
+      "maxDistance": 120
+    },
+    "sfx.ship.destroyed": {
+      "src": "/audio/sfx/ship-destroyed.ogg",
+      "bus": "sfx",
+      "volume": 0.56,
+      "refDistance": 20,
+      "maxDistance": 160
+    },
+    "sfx.hull.groan": {
+      "src": "/audio/sfx/hull-groan.ogg",
+      "bus": "sfx",
+      "volume": 0.26,
+      "refDistance": 18,
+      "maxDistance": 115
+    },
+    "sfx.harpoon.throw": {
+      "src": "/audio/sfx/harpoon-throw.wav",
+      "bus": "sfx",
+      "volume": 0.34,
+      "playbackRate": 1.35,
+      "refDistance": 10,
+      "maxDistance": 90
+    },
+    "sfx.harpoon.throwShort": {
+      "src": "/audio/sfx/harpoon-throw-short.wav",
+      "bus": "sfx",
+      "volume": 0.22,
+      "playbackRate": 1.1,
+      "refDistance": 10,
+      "maxDistance": 90
+    },
+    "sfx.tether.snapA": {
+      "src": "/audio/sfx/tether-snap-a.wav",
+      "bus": "sfx",
+      "volume": 0.32,
+      "playbackRate": 0.82,
+      "refDistance": 12,
+      "maxDistance": 105
+    },
+    "sfx.tether.snapB": {
+      "src": "/audio/sfx/tether-snap-b.wav",
+      "bus": "sfx",
+      "volume": 0.28,
+      "playbackRate": 0.78,
+      "refDistance": 12,
+      "maxDistance": 105
+    },
+    "sfx.tail.thwack": {
+      "src": "/audio/sfx/tail-slap-thwack.wav",
+      "bus": "sfx",
+      "volume": 0.42,
+      "playbackRate": 0.62,
+      "refDistance": 18,
+      "maxDistance": 145
+    },
+    "sfx.crew.scream": {
+      "src": "/audio/sfx/crew-screams.ogg",
+      "bus": "sfx",
+      "volume": 0.18,
+      "refDistance": 12,
+      "maxDistance": 95
+    },
+    "sfx.crew.shoutA": {
+      "src": "/audio/sfx/crew-shout-a.wav",
+      "bus": "sfx",
+      "volume": 0.13,
+      "playbackRate": 0.92,
+      "refDistance": 16,
+      "maxDistance": 118
+    },
+    "sfx.crew.shoutB": {
+      "src": "/audio/sfx/crew-shout-b.wav",
+      "bus": "sfx",
+      "volume": 0.12,
+      "playbackRate": 1.04,
+      "refDistance": 16,
+      "maxDistance": 118
+    },
+    "sfx.crew.shoutC": {
+      "src": "/audio/sfx/crew-shout-c.wav",
+      "bus": "sfx",
+      "volume": 0.11,
+      "playbackRate": 0.86,
+      "refDistance": 16,
+      "maxDistance": 118
+    },
+    "sfx.stinger.corporate": {
+      "src": "/audio/sfx/corporate-stinger.ogg",
+      "bus": "sfx",
+      "volume": 0.64,
+      "playbackRate": 0.76
+    },
+    "vocal.whale.sperm": {
+      "src": "/audio/vocals/sperm-whale-clicks.mp3",
+      "bus": "vocals",
+      "volume": 0.3,
+      "playbackRate": 0.72,
+      "refDistance": 20,
+      "maxDistance": 180
+    },
+    "vocal.whale.humpback": {
+      "src": "/audio/vocals/humpback-whale-song.mp3",
+      "bus": "vocals",
+      "volume": 0.42,
+      "playbackRate": 0.66,
+      "refDistance": 26,
+      "maxDistance": 210
+    },
+    "vocal.whale.fin": {
+      "src": "/audio/vocals/fin-whale-song.mp3",
+      "bus": "vocals",
+      "volume": 0.34,
+      "playbackRate": 0.68,
+      "refDistance": 28,
+      "maxDistance": 220
+    },
+    "vocal.whale.right": {
+      "src": "/audio/vocals/right-whale-upcall.mp3",
+      "bus": "vocals",
+      "volume": 0.3,
+      "playbackRate": 0.72,
+      "refDistance": 24,
+      "maxDistance": 190
+    }
+  },
+  "music": {
+    "silent": [],
+    "intro": [
+      "music.dread",
+      "ambience.deepRumble"
+    ],
+    "combat": [
+      "music.dread",
+      "music.shanty"
+    ],
+    "corporate": [
+      "music.dread",
+      "ambience.deepRumble"
+    ],
+    "victory": [
+      "music.dread",
+      "music.shanty"
+    ],
+    "defeat": [
+      "ambience.deepRumble"
+    ]
+  },
+  "ambience": [
+    "ambience.surface",
+    "ambience.underwater"
+  ],
+  "cues": {
+    "intro.oar.stroke": [
+      "sfx.harpoon.throwShort"
+    ],
+    "whale.vocal.near": [
+      "vocal.whale.humpback",
+      "vocal.whale.fin",
+      "vocal.whale.right"
+    ],
+    "whale.vocal.deep": [
+      "vocal.whale.sperm",
+      "vocal.whale.humpback"
+    ],
+    "whale.breach.start": [
+      "vocal.whale.humpback",
+      "sfx.cannon.miss"
+    ],
+    "whale.breach.impact": [
+      "sfx.cannon.hit",
+      "sfx.hull.hit",
+      "vocal.whale.fin"
+    ],
+    "whale.tail.slap": [
+      "sfx.tail.thwack",
+      "sfx.cannon.miss"
+    ],
+    "harpoon.fire": [
+      "sfx.harpoon.throw",
+      "sfx.harpoon.throwShort"
+    ],
+    "harpoon.attach": [
+      "sfx.hull.hit",
+      "sfx.tether.snapA"
+    ],
+    "harpoon.snap": [
+      "sfx.tether.snapA",
+      "sfx.tether.snapB"
+    ],
+    "cannon.telegraph": [
+      "sfx.hull.groan"
+    ],
+    "cannon.fire": [
+      "sfx.cannon.fire"
+    ],
+    "cannon.impact": [
+      "sfx.cannon.hit"
+    ],
+    "cannon.splash": [
+      "sfx.cannon.miss"
+    ],
+    "hull.groan": [
+      "sfx.hull.groan"
+    ],
+    "ship.sink": [
+      "sfx.ship.destroyed",
+      "sfx.crew.scream"
+    ],
+    "crew.shout": [
+      "sfx.crew.shoutA",
+      "sfx.crew.shoutB",
+      "sfx.crew.shoutC"
+    ],
+    "crew.scream": [
+      "sfx.crew.scream"
+    ],
+    "corporate.arrival": [
+      "sfx.stinger.corporate",
+      "ambience.deepRumble"
+    ],
+    "rescue.success": [
+      "sfx.tail.thwack",
+      "vocal.whale.humpback",
+      "vocal.whale.right"
+    ],
+    "rescue.failure": [
+      "sfx.stinger.corporate",
+      "sfx.crew.scream"
+    ],
+    "victory": [
+      "vocal.whale.fin",
+      "music.dread"
+    ],
+    "defeat": [
+      "sfx.stinger.corporate",
+      "ambience.deepRumble"
+    ]
+  }
+}

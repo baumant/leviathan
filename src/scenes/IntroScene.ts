@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { Water } from 'three/addons/objects/Water.js';
 
+import { AudioSystem } from '../audio/AudioSystem';
 import { PlayerWhale } from '../entities/PlayerWhale';
 import { preloadRowboatAsset } from '../entities/RowboatVisualAsset';
 import { preloadWhaleHeroAsset } from '../entities/WhaleHeroAsset';
@@ -159,6 +160,7 @@ export class IntroScene {
   private cameraInitialized = false;
   private introDistanceTravelled = 0;
   private underpassVisible = false;
+  private underpassVocalPlayed = false;
   private launchSplashSpawned = false;
   private breachImpactResolved = false;
   private skipStarted = false;
@@ -166,6 +168,7 @@ export class IntroScene {
   constructor(
     private readonly input: Input,
     private readonly ui: UISystem,
+    private readonly audio: AudioSystem,
     width: number,
     height: number,
   ) {
@@ -209,6 +212,7 @@ export class IntroScene {
     this.cameraInitialized = false;
     this.introDistanceTravelled = 0;
     this.underpassVisible = false;
+    this.underpassVocalPlayed = false;
     this.launchSplashSpawned = false;
     this.breachImpactResolved = false;
     this.skipStarted = false;
@@ -331,7 +335,12 @@ export class IntroScene {
       this.rowboat.root.position.z,
     );
 
-    this.rowboatMovement.update(this.rowboat, this.input, deltaSeconds);
+    const rowingResult = this.rowboatMovement.update(this.rowboat, this.input, deltaSeconds);
+    if (rowingResult.strokePulseFired) {
+      this.audio.playCue('intro.oar.stroke', this.rowboat.root.position, {
+        intensity: THREE.MathUtils.clamp(rowingResult.strokePulseStrength / 2.08, 0.45, 1),
+      });
+    }
     this.introDistanceTravelled = this.introStartPosition.distanceTo(this.rowboat.root.position);
 
     if (
@@ -340,6 +349,7 @@ export class IntroScene {
     ) {
       this.phase = 'underpass';
       this.phaseElapsed = 0;
+      this.underpassVocalPlayed = false;
     }
 
     return 'continue';
@@ -347,7 +357,12 @@ export class IntroScene {
 
   private updateUnderpass(deltaSeconds: number): IntroSceneResult {
     this.phaseElapsed += deltaSeconds;
-    this.rowboatMovement.update(this.rowboat, this.input, deltaSeconds);
+    const rowingResult = this.rowboatMovement.update(this.rowboat, this.input, deltaSeconds);
+    if (rowingResult.strokePulseFired) {
+      this.audio.playCue('intro.oar.stroke', this.rowboat.root.position, {
+        intensity: THREE.MathUtils.clamp(rowingResult.strokePulseStrength / 2.08, 0.45, 1),
+      });
+    }
 
     this.underpassVisible = this.phaseElapsed <= UNDERPASS_VISIBLE_DURATION;
 
@@ -372,6 +387,11 @@ export class IntroScene {
       this.whale.yaw = this.rowboat.heading - Math.PI / 2;
       this.whale.root.rotation.set(0, this.whale.yaw, 0, 'YXZ');
       this.whale.root.updateMatrixWorld();
+      if (!this.underpassVocalPlayed) {
+        this.underpassVocalPlayed = true;
+        this.audio.playCue('whale.vocal.deep', this.whale.position, { intensity: 0.85 });
+        this.audio.playCue('crew.shout', this.rowboat.root.position, { intensity: 0.72 });
+      }
     } else {
       this.whale.root.visible = false;
       this.whale.position.set(
@@ -396,6 +416,7 @@ export class IntroScene {
       );
       this.whale.root.rotation.set(-0.34, this.rowboat.heading + 0.08, -0.08, 'YXZ');
       this.whale.root.updateMatrixWorld();
+      this.audio.playCue('whale.breach.start', this.whale.position, { intensity: 0.9 });
       return 'start_attack';
     }
 
@@ -447,6 +468,7 @@ export class IntroScene {
     if (!this.launchSplashSpawned && this.phaseElapsed >= 0.12) {
       this.tempPoint.set(rowboatPosition.x, surfaceHeight, rowboatPosition.z);
       this.breachSplashFx.spawnLaunch(this.tempPoint, 1);
+      this.audio.playCue('cannon.splash', this.tempPoint, { intensity: 0.6 });
       this.launchSplashSpawned = true;
     }
 
@@ -472,6 +494,8 @@ export class IntroScene {
       this.breachImpactResolved = true;
       this.rowboat.applyDamage(this.rowboat.maxHealth);
       this.rowboat.launchIntoAir(this.rowboatForward, 8.4, 4.2, 0.42);
+      this.audio.playCue('whale.breach.impact', this.rowboat.root.position, { intensity: 1 });
+      this.audio.playCue('crew.scream', this.rowboat.root.position, { intensity: 0.8 });
       this.phase = 'fade_out';
       this.phaseElapsed = BREACH_CUT_IMPACT_TIME;
       this.fadeAlpha = 0;
@@ -551,6 +575,16 @@ export class IntroScene {
   }
 
   private updateHud(): void {
+    this.audio.updateOceanMix({
+      activeTethers: 0,
+      cameraForward: this.rowboatForward,
+      cameraPosition: this.camera.position,
+      corporateActive: false,
+      rescueProgress: 0,
+      underwaterRatio: 0,
+      whaleSpeed: this.rowboat.travelSpeed,
+    });
+
     this.ui.update({
       capitalShipBars: [],
       objective: 'Row for open water. The fog is wrong.',
