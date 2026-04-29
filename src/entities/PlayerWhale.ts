@@ -48,6 +48,9 @@ const TOPSIDE_SUBSURFACE_EYE_OPACITY_MAX = 0.18;
 const TOPSIDE_SUBSURFACE_TINT = 0.84;
 const TOPSIDE_SUBSURFACE_EMISSIVE_INTENSITY = 0.036;
 const TOPSIDE_SUBSURFACE_RENDER_ORDER = 24;
+const HEAL_VISUAL_FLASH_DURATION = 0.64;
+const HEAL_VISUAL_FLASH_COLOR = new THREE.Color('#5feb76');
+const HEAL_VISUAL_FLASH_EMISSIVE = new THREE.Color('#9dd9e2');
 
 export type WhaleActionState = 'swim' | 'breach' | 'tail_slap' | 'recovery';
 export type WhaleVisualPresentation = 'surface' | 'topside_subsurface';
@@ -154,6 +157,7 @@ export class PlayerWhale {
   private visualPresentation: WhaleVisualPresentation = 'surface';
   private visualPresentationStrength = 0;
   private waterlinePassthroughState: WaterlinePassthroughState = INACTIVE_WATERLINE_PASSTHROUGH_STATE;
+  private healFlashTime = 0;
 
   constructor() {
     const fallbackRig = createSpermWhaleVisual({
@@ -280,17 +284,29 @@ export class PlayerWhale {
     this.directionalSpeedWeight = 0;
     this.directionalTurn = 0;
     this.directionalClimb = 0;
+    this.healFlashTime = 0;
     this.breachDirection.set(0, 0, 1);
     this.breachOrigin.set(0, SURFACED_START_DEPTH, 0);
     this.root.position.set(0, SURFACED_START_DEPTH, 0);
     this.root.rotation.set(0, 0, 0, 'YXZ');
     this.clearTailSlapVisual();
     this.setWaterlinePassthrough(INACTIVE_WATERLINE_PASSTHROUGH_STATE);
+    this.applyVisualPresentation();
     this.root.updateMatrixWorld();
   }
 
   applyDamage(amount: number): void {
     this.health = Math.max(0, this.health - amount);
+  }
+
+  restoreHealth(amount: number): number {
+    if (amount <= 0) {
+      return 0;
+    }
+
+    const previousHealth = this.health;
+    this.health = Math.min(this.maxHealth, this.health + amount);
+    return this.health - previousHealth;
   }
 
   consumeAir(amount: number): void {
@@ -299,6 +315,11 @@ export class PlayerWhale {
 
   restoreAir(amount: number): void {
     this.air = Math.min(this.maxAir, this.air + amount);
+  }
+
+  triggerHealFlash(): void {
+    this.healFlashTime = HEAL_VISUAL_FLASH_DURATION;
+    this.applyVisualPresentation();
   }
 
   setTetherDrag(tetherCount: number): void {
@@ -414,6 +435,11 @@ export class PlayerWhale {
   }
 
   updateVisual(deltaSeconds: number): void {
+    const previousHealFlashTime = this.healFlashTime;
+    if (this.healFlashTime > 0) {
+      this.healFlashTime = Math.max(0, this.healFlashTime - deltaSeconds);
+    }
+
     if (this.tailVisualImpactTimer > 0) {
       this.tailVisualImpactTimer = Math.max(0, this.tailVisualImpactTimer - deltaSeconds);
     }
@@ -494,6 +520,10 @@ export class PlayerWhale {
         finRoll: finRollOffset,
       },
     );
+
+    if (this.healFlashTime > 0 || previousHealFlashTime > 0) {
+      this.applyVisualPresentation();
+    }
   }
 
   private updateSwimPulse(deltaSeconds: number) {
@@ -704,6 +734,17 @@ export class PlayerWhale {
             state.opacity,
             THREE.MathUtils.lerp(TOPSIDE_SUBSURFACE_OPACITY_MIN * 0.24, TOPSIDE_SUBSURFACE_EYE_OPACITY_MAX, strength),
           );
+        }
+      }
+
+      if (this.healFlashTime > 0) {
+        const flashAlpha =
+          Math.pow(THREE.MathUtils.clamp(this.healFlashTime / HEAL_VISUAL_FLASH_DURATION, 0, 1), 1.45) * 0.68;
+        material.color.lerp(HEAL_VISUAL_FLASH_COLOR, flashAlpha * 0.5);
+
+        if (material instanceof THREE.MeshToonMaterial && state.emissiveIntensity !== null) {
+          material.emissive.lerp(HEAL_VISUAL_FLASH_EMISSIVE, flashAlpha);
+          material.emissiveIntensity = Math.max(material.emissiveIntensity, state.emissiveIntensity + flashAlpha * 0.22);
         }
       }
 

@@ -5,6 +5,7 @@ import { AudioSystem } from '../audio/AudioSystem';
 import { Cannonball } from '../entities/Cannonball';
 import { CaptiveWhale } from '../entities/CaptiveWhale';
 import { Harpoon } from '../entities/Harpoon';
+import { OverboardCrew, preloadOverboardCrewAsset } from '../entities/OverboardCrew';
 import { PlayerWhale } from '../entities/PlayerWhale';
 import { preloadCapitalShipAsset } from '../entities/CapitalShipVisualAsset';
 import { preloadRowboatAsset } from '../entities/RowboatVisualAsset';
@@ -116,6 +117,18 @@ const CREW_SHOUT_APPROACH_DISTANCE = 34;
 const CREW_SHOUT_APPROACH_SPEED = 8.5;
 const CREW_SHOUT_APPROACH_ALIGNMENT = 0.62;
 const CREW_SHOUT_NEAR_SURFACE_DEPTH = -2.3;
+const CREW_HEAL_AMOUNT = 15;
+const CREW_EAT_RADIUS = 4.2;
+const CREW_EAT_VERTICAL_WINDOW = 5.2;
+const CREW_DROP_COOLDOWN_SECONDS = 7;
+const MAX_OVERBOARD_CREW = 8;
+const CREW_WATER_ENTRY_SPLASH_INTENSITY = 0.16;
+const CREW_HEAL_FEEDBACK_DURATION = 1.1;
+const CREW_DROP_CHANCES: Record<ShipSpawnConfig['role'], number> = {
+  rowboat: 0.2,
+  flagship: 0.4,
+  corporate_whaler: 0.62,
+};
 const SURVIVAL_BEST_RUN_KEY = 'leviathan.survival.best.v1';
 const SURVIVAL_TIME_SCORE_PER_SECOND = 5;
 const SURVIVAL_SPAWN_MIN_WHALE_DISTANCE = 70;
@@ -287,6 +300,7 @@ export class OceanScene {
   private readonly harpoons: Harpoon[] = [];
   private readonly activeHarpoonsByShipId = new Map<string, Harpoon>();
   private readonly cannonballs: Cannonball[] = [];
+  private readonly overboardCrew: OverboardCrew[] = [];
   private readonly tempTargetPoint = new THREE.Vector3();
   private readonly tempHarpoonDirection = new THREE.Vector3();
   private readonly tempShipVector = new THREE.Vector3();
@@ -320,6 +334,9 @@ export class OceanScene {
   private readonly tempCollisionAxisB1 = new THREE.Vector2();
   private readonly tempCollisionDelta = new THREE.Vector2();
   private readonly tempCollisionNormal = new THREE.Vector2();
+  private readonly tempCrewOrigin = new THREE.Vector3();
+  private readonly tempCrewLaunchDirection = new THREE.Vector3();
+  private readonly tempCrewSplashPoint = new THREE.Vector3();
   private readonly underwaterRockColliders: readonly UnderwaterRockCollider[];
   private readonly rescueTowOrigins = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
   private readonly breachLaunchShipIds = new Set<string>();
@@ -329,6 +346,7 @@ export class OceanScene {
   private readonly topsideRevealTargets: TopsideSubsurfaceRevealTarget[] = [];
   private readonly shipAudioHealth = new Map<string, number>();
   private readonly lastCrewShoutByShipId = new Map<string, number>();
+  private readonly lastCrewDropByShipId = new Map<string, number>();
   private whaleTopsideRevealState: ActorTopsideRevealState = { ...INACTIVE_WATERLINE_PASSTHROUGH_STATE, cameraAboveWater: true };
   private readonly shipTopsideRevealStates = new Map<string, ActorTopsideRevealState>();
 
@@ -347,6 +365,8 @@ export class OceanScene {
   private tailSlapCameraActive = false;
   private tailSlapCameraWasActive = false;
   private tailSlapPresentationActive = false;
+  private crewHealFeedbackTime = 0;
+  private crewHealFeedbackText = '';
   private phase: ArenaPhase = 'playing';
   private score = 0;
   private shipsDestroyed = 0;
@@ -404,6 +424,7 @@ export class OceanScene {
       preloadRowboatAsset(),
       preloadCapitalShipAsset('flagship'),
       preloadCapitalShipAsset('corporate_whaler'),
+      preloadOverboardCrewAsset(),
     ]);
 
     this.setupLights();
@@ -463,6 +484,7 @@ export class OceanScene {
     this.tailSlapCameraActive = false;
     this.tailSlapCameraWasActive = false;
     this.tailSlapPresentationActive = false;
+    this.clearCrewHealFeedback();
     this.activeTethers = 0;
     this.corporateArrivalState = 'pending';
     this.corporateRowboatsLaunched = false;
@@ -482,6 +504,7 @@ export class OceanScene {
     this.shipTopsideRevealStates.clear();
     this.shipAudioHealth.clear();
     this.lastCrewShoutByShipId.clear();
+    this.lastCrewDropByShipId.clear();
 
     this.removeDynamicShipsForReset();
 
@@ -501,6 +524,7 @@ export class OceanScene {
 
     this.clearHarpoons();
     this.clearCannonballs();
+    this.clearOverboardCrew();
     this.breachSplashFx.reset();
     this.tailSlapShockwaveFx.reset();
     this.shipWakeFx.reset();
@@ -558,6 +582,8 @@ export class OceanScene {
     }
     this.updateHarpoons(deltaSeconds);
     this.updateCannonballs(deltaSeconds);
+    this.updateOverboardCrew(deltaSeconds);
+    this.updateCrewHealFeedback(deltaSeconds);
     this.clampArenaBodies();
     this.resolveWhaleUnderwaterEnvironmentCollision();
     this.syncTetherDragState();
@@ -663,6 +689,7 @@ export class OceanScene {
 
     this.clearHarpoons();
     this.clearCannonballs();
+    this.clearOverboardCrew();
   }
 
   private createOcean(): Water {
@@ -702,6 +729,33 @@ export class OceanScene {
     const underside = new THREE.Mesh(this.oceanUndersideGeometry, createOceanUndersideMaterial(ARENA_RADIUS));
     underside.renderOrder = -2;
     return underside;
+  }
+
+  private triggerCrewHealFeedback(restoredHealth: number): void {
+    const restoredTextAmount = Math.max(1, Math.round(restoredHealth));
+    this.crewHealFeedbackTime = CREW_HEAL_FEEDBACK_DURATION;
+    this.crewHealFeedbackText = restoredHealth > 0 ? `+${restoredTextAmount} HULL` : 'HULL FULL';
+  }
+
+  private updateCrewHealFeedback(deltaSeconds: number): void {
+    if (this.crewHealFeedbackTime <= 0) {
+      return;
+    }
+
+    this.crewHealFeedbackTime = Math.max(0, this.crewHealFeedbackTime - deltaSeconds);
+
+    if (this.crewHealFeedbackTime <= 0) {
+      this.crewHealFeedbackText = '';
+    }
+  }
+
+  private clearCrewHealFeedback(): void {
+    this.crewHealFeedbackTime = 0;
+    this.crewHealFeedbackText = '';
+  }
+
+  private getCrewHealFeedbackAlpha(): number {
+    return this.crewHealFeedbackTime > 0 ? THREE.MathUtils.smoothstep(this.crewHealFeedbackTime, 0, 0.24) : 0;
   }
 
   private setupLights(): void {
@@ -1079,6 +1133,12 @@ export class OceanScene {
         cannonball.active ? this.evaluateWaterlinePassthrough(cannonball) : INACTIVE_WATERLINE_PASSTHROUGH_STATE,
       );
     }
+
+    for (const crew of this.overboardCrew) {
+      crew.setWaterlinePassthrough(
+        crew.active ? this.evaluateWaterlinePassthrough(crew) : INACTIVE_WATERLINE_PASSTHROUGH_STATE,
+      );
+    }
   }
 
   private evaluateWaterlinePassthrough(subject: WaterlinePassthroughSubject): ActorTopsideRevealState {
@@ -1200,6 +1260,7 @@ export class OceanScene {
         if (ramResult) {
           this.impactShake = Math.max(this.impactShake, ramResult.intensity);
           this.audio.playCue('hull.groan', ship.root.position, { intensity: ramResult.intensity });
+          this.maybeSpawnOverboardCrew(ship, ramResult.damage);
         }
       }
 
@@ -1547,6 +1608,7 @@ export class OceanScene {
         }
 
         this.impactShake = Math.max(this.impactShake, hitResult.intensity);
+        this.maybeSpawnOverboardCrew(ship, hitResult.damage);
 
         if (ship.role === 'rowboat') {
           this.removeHarpoonByShipId(ship.id);
@@ -1585,6 +1647,7 @@ export class OceanScene {
         }
 
         this.impactShake = Math.max(this.impactShake, hitResult.intensity);
+        this.maybeSpawnOverboardCrew(ship, hitResult.damage);
 
         if (ship.role === 'rowboat') {
           this.removeHarpoonByShipId(ship.id);
@@ -1656,6 +1719,7 @@ export class OceanScene {
       }
 
       this.impactShake = Math.max(this.impactShake, hitResult.intensity);
+      this.maybeSpawnOverboardCrew(ship, hitResult.damage);
 
       if (ship.role === 'rowboat') {
         this.breachLaunchShipIds.add(ship.id);
@@ -1770,6 +1834,121 @@ export class OceanScene {
     this.cannonballs.length = 0;
   }
 
+  private updateOverboardCrew(deltaSeconds: number): void {
+    for (let index = this.overboardCrew.length - 1; index >= 0; index -= 1) {
+      const crew = this.overboardCrew[index];
+      crew.update(deltaSeconds, this.elapsedSeconds, this.sampleOceanHeight, this.sampleOceanFloorHeight);
+
+      const splashPoint = crew.consumeWaterEntrySplash(this.tempCrewSplashPoint);
+      if (splashPoint) {
+        this.breachSplashFx.spawnImpact(splashPoint, CREW_WATER_ENTRY_SPLASH_INTENSITY, 0.62);
+      }
+
+      if (this.phase === 'playing' && crew.canBeEaten && this.isWhaleEatingCrew(crew)) {
+        const restoredHealth = this.whale.restoreHealth(CREW_HEAL_AMOUNT);
+        this.whale.triggerHealFlash();
+        this.triggerCrewHealFeedback(restoredHealth);
+        this.tempCrewSplashPoint.set(
+          crew.position.x,
+          this.sampleOceanHeight(crew.position.x, crew.position.z),
+          crew.position.z,
+        );
+        this.breachSplashFx.spawnImpact(this.tempCrewSplashPoint, 0.2, 0.78);
+        this.audio.playCue('crew.scream', crew.position, { intensity: 0.38 });
+        this.audio.playCue('whale.vocal.near', this.whale.position, { intensity: 0.32, playbackRate: 1.08 });
+        this.removeOverboardCrew(index);
+        continue;
+      }
+
+      if (crew.expired) {
+        this.removeOverboardCrew(index);
+      }
+    }
+  }
+
+  private isWhaleEatingCrew(crew: OverboardCrew): boolean {
+    const horizontalDistance = Math.hypot(
+      crew.position.x - this.whale.position.x,
+      crew.position.z - this.whale.position.z,
+    );
+    const verticalDistance = Math.abs(crew.position.y - this.whale.position.y);
+    return horizontalDistance <= CREW_EAT_RADIUS && verticalDistance <= CREW_EAT_VERTICAL_WINDOW;
+  }
+
+  private maybeSpawnOverboardCrew(ship: Ship, damageTaken: number): void {
+    if (this.phase !== 'playing' || damageTaken <= 0) {
+      return;
+    }
+
+    const lastDropAt = this.lastCrewDropByShipId.get(ship.id) ?? -Infinity;
+    if (this.elapsedSeconds - lastDropAt < CREW_DROP_COOLDOWN_SECONDS) {
+      return;
+    }
+
+    if (Math.random() > CREW_DROP_CHANCES[ship.role]) {
+      return;
+    }
+
+    while (this.overboardCrew.length >= MAX_OVERBOARD_CREW) {
+      this.removeOverboardCrew(0);
+    }
+
+    this.computeOverboardCrewLaunch(ship, this.tempCrewOrigin, this.tempCrewLaunchDirection);
+    const crew = new OverboardCrew();
+    crew.launch(
+      this.tempCrewOrigin,
+      this.tempCrewLaunchDirection,
+      this.sampleOceanHeight(this.tempCrewOrigin.x, this.tempCrewOrigin.z),
+    );
+    this.overboardCrew.push(crew);
+    this.scene.add(crew.root);
+    this.lastCrewDropByShipId.set(ship.id, this.elapsedSeconds);
+    this.audio.playCue('crew.scream', this.tempCrewOrigin, {
+      intensity: ship.role === 'corporate_whaler' ? 0.68 : ship.role === 'flagship' ? 0.54 : 0.42,
+    });
+  }
+
+  private computeOverboardCrewLaunch(ship: Ship, origin: THREE.Vector3, direction: THREE.Vector3): void {
+    direction.copy(ship.root.position).sub(this.whale.position).setY(0);
+
+    if (direction.lengthSq() <= 0.0001) {
+      ship.getForward(direction).setY(0);
+    }
+
+    if (direction.lengthSq() <= 0.0001) {
+      direction.set(Math.random() - 0.5, 0, Math.random() - 0.5);
+    }
+
+    direction.normalize();
+    this.tempTargetPoint.set(-direction.z, 0, direction.x);
+
+    const hullOffset = ship.role === 'rowboat' ? 1.4 : ship.role === 'flagship' ? 4.2 : 6.8;
+    const lateralOffset = THREE.MathUtils.randFloatSpread(ship.role === 'rowboat' ? 1.2 : ship.role === 'flagship' ? 4.2 : 7.4);
+    const heightOffset = ship.role === 'rowboat' ? 0.92 : ship.role === 'flagship' ? 2.4 : 3.2;
+    origin
+      .copy(ship.root.position)
+      .addScaledVector(direction, hullOffset)
+      .addScaledVector(this.tempTargetPoint, lateralOffset);
+    origin.y = Math.max(
+      ship.root.position.y + heightOffset,
+      this.sampleOceanHeight(origin.x, origin.z) + 1.2,
+    );
+  }
+
+  private removeOverboardCrew(index: number): void {
+    const crew = this.overboardCrew[index];
+    crew.dispose();
+    this.overboardCrew.splice(index, 1);
+  }
+
+  private clearOverboardCrew(): void {
+    for (const crew of this.overboardCrew) {
+      crew.dispose();
+    }
+
+    this.overboardCrew.length = 0;
+  }
+
   private syncTetherDragState(): void {
     this.activeTethers = this.harpoons.filter((harpoon) => harpoon.active && harpoon.mode === 'tethered').length;
     this.whale.setTetherDrag(this.activeTethers);
@@ -1819,6 +1998,7 @@ export class OceanScene {
       if (interaction?.kind === 'ram_hit') {
         this.impactShake = Math.max(this.impactShake, interaction.intensity);
         this.audio.playCue('hull.groan', ship.root.position, { intensity: interaction.intensity });
+        this.maybeSpawnOverboardCrew(ship, interaction.damage);
       }
     }
   }
@@ -3062,6 +3242,8 @@ export class OceanScene {
       timeSurvivedSeconds: this.runElapsedSeconds,
       shipsDestroyed: this.shipsDestroyed,
       activeTethers: this.activeTethers,
+      whaleHealFeedbackAlpha: this.getCrewHealFeedbackAlpha(),
+      whaleHealFeedbackText: this.crewHealFeedbackText,
       overlayTitle,
       overlayCopy,
       showActionControls: this.phase === 'playing',

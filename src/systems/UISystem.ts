@@ -31,6 +31,8 @@ export interface HUDSnapshot {
   timeSurvivedSeconds: number;
   shipsDestroyed: number;
   activeTethers: number;
+  whaleHealFeedbackAlpha?: number;
+  whaleHealFeedbackText?: string;
   overlayTitle?: string;
   overlayCopy?: string;
   presentation?: 'combat' | 'intro';
@@ -54,6 +56,7 @@ export class UISystem {
   private readonly airFill = document.createElement('div');
   private readonly whaleValue = document.createElement('span');
   private readonly airValue = document.createElement('span');
+  private readonly whaleHealFeedbackEl = document.createElement('span');
   private readonly statusEl = document.createElement('div');
   private readonly debugEl = document.createElement('p');
   private readonly scoreValueEl = document.createElement('div');
@@ -98,7 +101,7 @@ export class UISystem {
     bars.className = 'hud__bars';
 
     bars.append(
-      this.createBarRow('Whale hull', this.whaleFill, this.whaleValue, 'hud__bar-fill--whale'),
+      this.createBarRow('Whale hull', this.whaleFill, this.whaleValue, 'hud__bar-fill--whale', this.whaleHealFeedbackEl),
       this.createBarRow('Air', this.airFill, this.airValue, 'hud__bar-fill--air'),
     );
 
@@ -202,6 +205,7 @@ export class UISystem {
     this.tailSlapTile.root.hidden = !showTailSlapControl;
     this.setBar(this.whaleFill, this.whaleValue, snapshot.whaleHealth);
     this.setBar(this.airFill, this.airValue, snapshot.whaleAir);
+    this.updateWhaleHealFeedback(snapshot.whaleHealFeedbackText, snapshot.whaleHealFeedbackAlpha ?? 0);
     this.syncCapitalShipBars(snapshot.capitalShipBars);
 
     this.statusEl.textContent = snapshot.shipStatus;
@@ -245,6 +249,7 @@ export class UISystem {
     fill: HTMLDivElement,
     value: HTMLSpanElement,
     fillClassName: string,
+    feedback?: HTMLSpanElement,
     detail?: HTMLSpanElement,
   ): HTMLElement {
     const row = document.createElement('div');
@@ -255,7 +260,17 @@ export class UISystem {
     const name = document.createElement('span');
     name.textContent = label;
 
-    labelRow.append(name, value);
+    const valueGroup = document.createElement('span');
+    valueGroup.className = 'hud__bar-value-group';
+
+    if (feedback) {
+      feedback.className = 'hud__bar-feedback';
+      feedback.hidden = true;
+      valueGroup.append(feedback);
+    }
+
+    valueGroup.append(value);
+    labelRow.append(name, valueGroup);
 
     if (detail) {
       detail.className = 'hud__subtle';
@@ -278,6 +293,19 @@ export class UISystem {
     const clamped = Math.max(0, Math.min(1, normalizedValue));
     fill.style.transform = `scaleX(${clamped})`;
     value.textContent = `${Math.round(clamped * 100)}%`;
+  }
+
+  private updateWhaleHealFeedback(text: string | undefined, alpha: number): void {
+    const clampedAlpha = THREE.MathUtils.clamp(alpha, 0, 1);
+    this.whaleFill.style.setProperty('--hud-whale-heal-alpha', `${clampedAlpha.toFixed(3)}`);
+
+    if (text) {
+      this.whaleHealFeedbackEl.textContent = text;
+    }
+
+    this.whaleHealFeedbackEl.hidden = clampedAlpha <= 0.001;
+    this.whaleHealFeedbackEl.style.opacity = `${clampedAlpha}`;
+    this.whaleHealFeedbackEl.style.transform = `translateY(${(1 - clampedAlpha) * 3}px)`;
   }
 
   private syncCapitalShipBars(shipBars: readonly HUDShipBarSnapshot[]): void {

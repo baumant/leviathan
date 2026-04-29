@@ -11,7 +11,8 @@
     "asset:audio": "node scripts/import-audio-assets.mjs",
     "asset:capital-ships": "node scripts/build-capital-ship-assets.mjs",
     "asset:rowboat": "node scripts/build-rowboat-asset.mjs",
-    "asset:whale": "node scripts/build-whale-hero-asset.mjs"
+    "asset:whale": "node scripts/build-whale-hero-asset.mjs",
+    "asset:overboard-crew": "node scripts/build-overboard-crew-asset.mjs"
   },
   "dependencies": {
     "three": "^0.180.0"

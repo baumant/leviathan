@@ -106,11 +106,30 @@ canvas {
 .hud__bar-label {
   display: flex;
   justify-content: space-between;
+  align-items: center;
   gap: 12px;
   margin-bottom: 4px;
   font-size: 0.8rem;
   letter-spacing: 0.1em;
   text-transform: uppercase;
+}
+
+.hud__bar-value-group {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.hud__bar-feedback {
+  color: #e8fbff;
+  letter-spacing: 0.12em;
+  text-shadow:
+    0 0 10px rgba(160, 218, 228, 0.42),
+    0 1px 12px rgba(0, 0, 0, 0.72);
+  transition: opacity 80ms linear, transform 120ms ease-out;
+  white-space: nowrap;
 }
 
 .hud__bar {
@@ -128,7 +147,12 @@ canvas {
 }
 
 .hud__bar-fill--whale {
+  --hud-whale-heal-alpha: 0;
   background: linear-gradient(90deg, #d7e1ec, #a8bccb);
+  filter: brightness(calc(1 + var(--hud-whale-heal-alpha) * 0.34));
+  box-shadow:
+    0 0 calc(20px * var(--hud-whale-heal-alpha)) rgba(191, 238, 247, 0.58),
+    inset 0 0 calc(10px * var(--hud-whale-heal-alpha)) rgba(244, 251, 255, 0.45);
 }
 
 .hud__bar-fill--air {
