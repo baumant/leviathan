@@ -28,7 +28,8 @@ export interface HUDSnapshot {
   depth: number;
   submerged: boolean;
   score: number;
-  fleetRemaining: number;
+  timeSurvivedSeconds: number;
+  shipsDestroyed: number;
   activeTethers: number;
   overlayTitle?: string;
   overlayCopy?: string;
@@ -56,8 +57,8 @@ export class UISystem {
   private readonly statusEl = document.createElement('div');
   private readonly debugEl = document.createElement('p');
   private readonly scoreValueEl = document.createElement('div');
-  private readonly fleetValueEl = document.createElement('div');
-  private readonly tetherValueEl = document.createElement('div');
+  private readonly timeValueEl = document.createElement('div');
+  private readonly shipsDestroyedValueEl = document.createElement('div');
   private readonly shipBarsLayer = document.createElement('div');
   private readonly overlayCard = document.createElement('section');
   private readonly overlayTitle = document.createElement('h2');
@@ -113,8 +114,8 @@ export class UISystem {
     scoreCard.className = 'hud__card hud__card--compact';
     scoreCard.append(
       this.createFact('Score', this.scoreValueEl),
-      this.createFact('Fleet remaining', this.fleetValueEl),
-      this.createFact('Tethers', this.tetherValueEl),
+      this.createFact('Time', this.timeValueEl),
+      this.createFact('Ships sunk', this.shipsDestroyedValueEl),
     );
     this.bottomRow.append(scoreCard);
 
@@ -213,8 +214,8 @@ export class UISystem {
     ].join('  /  ');
 
     this.scoreValueEl.textContent = `${snapshot.score}`;
-    this.fleetValueEl.textContent = `${snapshot.fleetRemaining}`;
-    this.tetherValueEl.textContent = `${snapshot.activeTethers}`;
+    this.timeValueEl.textContent = this.formatTime(snapshot.timeSurvivedSeconds);
+    this.shipsDestroyedValueEl.textContent = `${snapshot.shipsDestroyed}`;
 
     const showOverlay = Boolean(snapshot.overlayTitle && snapshot.overlayCopy);
     this.overlayCard.hidden = !showOverlay;
@@ -339,6 +340,13 @@ export class UISystem {
 
     row.append(labelEl, valueEl);
     return row;
+  }
+
+  private formatTime(seconds: number): string {
+    const safeSeconds = Math.max(0, Math.floor(seconds));
+    const minutes = Math.floor(safeSeconds / 60);
+    const remainingSeconds = safeSeconds % 60;
+    return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
   }
 
   private createControlTile(options: {

@@ -199,6 +199,17 @@ export class ShipWakeFX {
     }
   }
 
+  removeShip(shipId: string): void {
+    const slot = this.slots.get(shipId);
+
+    if (!slot) {
+      return;
+    }
+
+    this.disposeSlot(slot);
+    this.slots.delete(shipId);
+  }
+
   dispose(): void {
     this.root.removeFromParent();
     for (const geometry of this.trailFoamGeometries) {
@@ -209,13 +220,24 @@ export class ShipWakeFX {
     this.bubbleGeometry.dispose();
 
     for (const slot of this.slots.values()) {
-      for (const trailFoam of slot.trailFoam) {
-        trailFoam.material.dispose();
-      }
-      slot.trailCutouts.material.dispose();
-      slot.underwaterRibbon.material.dispose();
-      slot.bubbles.material.dispose();
+      this.disposeSlot(slot);
     }
+
+    this.slots.clear();
+  }
+
+  private disposeSlot(slot: WakeSlot): void {
+    slot.root.removeFromParent();
+
+    for (const trailFoam of slot.trailFoam) {
+      trailFoam.removeFromParent();
+      trailFoam.material.dispose();
+    }
+
+    slot.trailCutouts.removeFromParent();
+    slot.trailCutouts.material.dispose();
+    slot.underwaterRibbon.material.dispose();
+    slot.bubbles.material.dispose();
   }
 
   private createSlot(ship: Ship): WakeSlot {

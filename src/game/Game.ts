@@ -79,19 +79,6 @@ export class Game {
         }
       },
     });
-    this.states.add('ENDGAME', {
-      enter: () => {
-        this.audio.setMusicState('victory');
-        this.audio.playCue('victory');
-      },
-      update: (deltaSeconds) => {
-        this.oceanScene.update(deltaSeconds, this.time.elapsedSeconds);
-
-        if (this.input.consumeRestartRequested()) {
-          this.states.change('WHALE_PLAY');
-        }
-      },
-    });
     this.states.add('GAME_OVER', {
       enter: () => {
         this.audio.setMusicState('defeat');
@@ -114,9 +101,7 @@ export class Game {
       update: (deltaSeconds) => {
         this.oceanScene.update(deltaSeconds, this.time.elapsedSeconds);
 
-        if (this.oceanScene.outcome === 'victory') {
-          this.states.change('ENDGAME');
-        } else if (this.oceanScene.outcome === 'defeat') {
+        if (this.oceanScene.outcome === 'defeat') {
           this.states.change('GAME_OVER');
         }
       },
