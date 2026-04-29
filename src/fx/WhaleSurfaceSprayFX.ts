@@ -476,7 +476,11 @@ export class WhaleSurfaceSprayFX {
       const laneBias = Math.sin(this.phase * 1.27 + index * 2.33 + Math.random() * 0.4);
       const centerBias = index < 2 ? THREE.MathUtils.randFloatSpread(0.24) : laneBias;
       const spread = baseWidth * centerBias * THREE.MathUtils.lerp(0.24, 0.84, Math.random());
-      const back = baseLength * THREE.MathUtils.lerp(0.42, 2.1, Math.random());
+      const longitudinal =
+        baseLength *
+        (index < 3
+          ? THREE.MathUtils.lerp(-0.5, 0.24, Math.random())
+          : THREE.MathUtils.lerp(0.08, 1.72, Math.random()));
       const noise = THREE.MathUtils.randFloatSpread(baseWidth * 0.16);
       const centerWeight = 1 - Math.min(1, Math.abs(centerBias));
       const stamp = this.trailStamps[this.nextTrailStamp];
@@ -486,9 +490,9 @@ export class WhaleSurfaceSprayFX {
       stamp.age = 0;
       stamp.lifetime = THREE.MathUtils.lerp(3.1, 5.6, speedRatio) * THREE.MathUtils.lerp(0.82, 1.16, trailStrength);
       stamp.position.set(
-        x - forwardX * back + rightX * (spread + noise),
+        x - forwardX * longitudinal + rightX * (spread + noise),
         0,
-        z - forwardZ * back + rightZ * (spread + noise),
+        z - forwardZ * longitudinal + rightZ * (spread + noise),
       );
       stamp.yaw = yaw + Math.PI * 0.5 + THREE.MathUtils.randFloatSpread(0.96) + centerBias * 0.24;
       const stampSize = THREE.MathUtils.lerp(0.46 + centerWeight * 0.22, 1.08 + centerWeight * 0.28, Math.random());

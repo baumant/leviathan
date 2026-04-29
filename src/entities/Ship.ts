@@ -753,6 +753,15 @@ export class Ship {
     return this.root.localToWorld(target.copy(this.wakeOriginLocal));
   }
 
+  getBowWakeOrigin(target = new THREE.Vector3()): THREE.Vector3 {
+    target.set(0, this.wakeOriginLocal.y, this.capitalContactBoundsMaxLocal.z);
+    return this.root.localToWorld(target);
+  }
+
+  getBowWakeTrailLength(): number {
+    return Math.max(1, (this.capitalContactBoundsMaxLocal.z - this.wakeOriginLocal.z) * this.root.scale.z);
+  }
+
   getTowAnchorOrigin(target = new THREE.Vector3()): THREE.Vector3 {
     target.copy(this.towPortOriginLocal).lerp(this.towStarboardOriginLocal, 0.5);
     return this.root.localToWorld(target);

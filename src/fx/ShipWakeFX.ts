@@ -115,6 +115,7 @@ interface WakeSlot {
   readonly bubbles: THREE.InstancedMesh<THREE.IcosahedronGeometry, THREE.MeshBasicMaterial>;
   strength: number;
   phase: number;
+  bowWakeTrailLength: number;
   nextTrailStamp: number;
   hasTrailPoint: boolean;
 }
@@ -174,7 +175,8 @@ export class ShipWakeFX {
         this.slots.set(ship.id, slot);
       }
 
-      ship.getWakeOrigin(this.sternOrigin);
+      ship.getBowWakeOrigin(this.sternOrigin);
+      slot.bowWakeTrailLength = ship.getBowWakeTrailLength();
       const surfaceHeight = snapshot.sampleSurfaceHeight(this.sternOrigin.x, this.sternOrigin.z);
       const floatOffset = ship.root.position.y - surfaceHeight;
       const speedRatio = THREE.MathUtils.clamp(ship.travelSpeed / Math.max(ship.fleeSpeed, 0.0001), 0, 1);
@@ -426,6 +428,7 @@ export class ShipWakeFX {
       bubbles,
       strength: 0,
       phase: Math.random() * Math.PI * 2,
+      bowWakeTrailLength: ship.getBowWakeTrailLength(),
       nextTrailStamp: 0,
       hasTrailPoint: false,
     };
@@ -771,14 +774,18 @@ export class ShipWakeFX {
     const rightZ = -Math.sin(heading);
     const roleScale = Math.max(0.9, Math.sqrt(slot.roleConfig.sternPatchScale.x * slot.roleConfig.sternPatchScale.y) * 0.38);
     const wakeWidth = slot.roleConfig.surfaceFanWidth * (0.74 + speedRatio * 0.62);
-    const wakeLength = slot.roleConfig.surfaceFanLength * 0.18;
-    const stampCount = speedRatio > 0.42 ? 7 : 5;
+    const wakeLength = Math.max(slot.roleConfig.surfaceFanLength * 0.24, slot.bowWakeTrailLength);
+    const stampCount = Math.min(18, (speedRatio > 0.42 ? 7 : 5) + Math.floor(wakeLength / 12));
+    const bowStampCount = Math.max(3, Math.ceil(stampCount * 0.32));
 
     for (let index = 0; index < stampCount; index += 1) {
       const laneBias = Math.sin(slot.phase * 1.37 + index * 2.41 + Math.random() * 0.4);
-      const centerBias = index < 2 ? THREE.MathUtils.randFloatSpread(0.22) : laneBias;
+      const centerBias = index < bowStampCount ? THREE.MathUtils.randFloatSpread(0.22) : laneBias;
       const spread = wakeWidth * centerBias * THREE.MathUtils.lerp(0.24, 0.82, Math.random());
-      const back = wakeLength * THREE.MathUtils.lerp(0.18, 1.85, Math.random());
+      const longitudinal =
+        (index < bowStampCount
+          ? THREE.MathUtils.lerp(0, wakeLength * 0.42, Math.random())
+          : THREE.MathUtils.lerp(wakeLength * 0.22, wakeLength * 1.05, Math.random()));
       const noise = THREE.MathUtils.randFloatSpread(wakeWidth * 0.18);
       const centerWeight = 1 - Math.min(1, Math.abs(centerBias));
       const stamp = slot.trailStamps[slot.nextTrailStamp];
@@ -788,9 +795,9 @@ export class ShipWakeFX {
       stamp.age = 0;
       stamp.lifetime = THREE.MathUtils.lerp(2.9, 5.2, speedRatio) * THREE.MathUtils.lerp(0.82, 1.18, surfaceOpacity);
       stamp.position.set(
-        x - forwardX * back + rightX * (spread + noise),
+        x - forwardX * longitudinal + rightX * (spread + noise),
         0,
-        z - forwardZ * back + rightZ * (spread + noise),
+        z - forwardZ * longitudinal + rightZ * (spread + noise),
       );
       stamp.yaw = heading + Math.PI * 0.5 + THREE.MathUtils.randFloatSpread(0.92) + centerBias * 0.26;
       const stampSize =
