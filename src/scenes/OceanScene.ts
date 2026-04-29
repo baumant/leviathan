@@ -98,7 +98,7 @@ const CORPORATE_ROWBOAT_ID_PREFIX = 'corporate-rowboat';
 const RESCUE_TOW_BOAT_ID_PREFIX = 'rescue-towboat';
 const RESCUE_TOW_BOAT_COUNT = 3;
 const RESCUE_SPAWN_DELTA_SECONDS = 1 / 60;
-const RESCUE_TOW_BOAT_START_DISTANCE = 70;
+const RESCUE_TOW_BOAT_START_DISTANCE = 200;
 const RESCUE_TOW_BOAT_TARGET_DISTANCE = 8.5;
 const RESCUE_CONVOY_CAPTURE_RADIUS = 10.5;
 const RESCUE_CORPORATE_CREEP_SPEED = 2.2;
@@ -3032,12 +3032,18 @@ export class OceanScene {
     if (this.phase === 'defeat') {
       const bestRun = this.bestRun;
       const bestCopy = bestRun
-        ? ` Best ${this.formatRunTime(bestRun.timeSurvivedSeconds)}, ${bestRun.shipsDestroyed} sunk, ${bestRun.score} score.`
+        ? `\nBest: ${this.formatRunTime(bestRun.timeSurvivedSeconds)} / ${bestRun.shipsDestroyed} sunk / ${bestRun.score} score`
         : '';
       objective = 'They bought a moment with iron. Press R to rise again.';
       shipStatus = 'Whale driven off';
       overlayTitle = 'Driven Back';
-      overlayCopy = `Survived ${this.formatRunTime(this.runElapsedSeconds)}. Sank ${this.shipsDestroyed}. Score ${this.getDisplayedScore()}.${bestCopy} Press R to return beneath them.`;
+      overlayCopy = [
+        `Survived: ${this.formatRunTime(this.runElapsedSeconds)}`,
+        `Ships sunk: ${this.shipsDestroyed}`,
+        `Score: ${this.getDisplayedScore()}${bestCopy}`,
+        '',
+        'Press R to return beneath them.',
+      ].join('\n');
     }
 
     const tailSlapAvailable =

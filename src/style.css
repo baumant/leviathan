@@ -350,8 +350,9 @@ canvas {
 
 .hud__overlay-copy {
   margin: 12px auto 0;
-  max-width: 34ch;
-  line-height: 1.55;
+  max-width: 40ch;
+  line-height: 1.65;
+  white-space: pre-line;
   color: rgba(217, 221, 215, 0.8);
 }
 
