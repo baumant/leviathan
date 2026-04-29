@@ -1,0 +1,18 @@
+{
+  "name": "leviathan-leaderboard-worker",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --local --port 8787",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "d1:migrate:local": "wrangler d1 migrations apply leviathan-leaderboard --local",
+    "d1:migrate:remote": "wrangler d1 migrations apply leviathan-leaderboard --remote"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260429.0",
+    "typescript": "^5.9.3",
+    "wrangler": "^4.14.4"
+  }
+}

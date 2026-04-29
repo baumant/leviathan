@@ -39,6 +39,12 @@ import {
   UnderwaterRockCollider,
 } from '../fx/underwaterRockLayout';
 import { Input } from '../game/Input';
+import { createLeaderboardClient, type LeaderboardEntry } from '../game/LeaderboardClient';
+import {
+  getPreferredLeaderboardUsername,
+  sanitizeLeaderboardUsername,
+  writeStoredLeaderboardUsername,
+} from '../game/PlayerIdentity';
 import {
   buildVibeJamExitPortalUrl,
   buildVibeJamReturnPortalUrl,
@@ -47,7 +53,14 @@ import {
 import { DamageSystem } from '../systems/DamageSystem';
 import { ShipAIContext, ShipAISystem } from '../systems/ShipAISystem';
 import { SurvivalDirector, SurvivalSpawnRole } from '../systems/SurvivalDirector';
-import { type HUDShipBarSnapshot, UISystem } from '../systems/UISystem';
+import {
+  type HUDLeaderboardEntrySnapshot,
+  type HUDLeaderboardSnapshot,
+  type HUDLeaderboardStatus,
+  type HUDRunSummarySnapshot,
+  type HUDShipBarSnapshot,
+  UISystem,
+} from '../systems/UISystem';
 import { WhaleMovementResult, WhaleMovementSystem } from '../systems/WhaleMovementSystem';
 import { WHALE_SPEED_PROFILE } from '../tuning/whaleSpeedProfile';
 
@@ -131,6 +144,7 @@ const CREW_DROP_CHANCES: Record<ShipSpawnConfig['role'], number> = {
 };
 const SURVIVAL_BEST_RUN_KEY = 'leviathan.survival.best.v1';
 const SURVIVAL_TIME_SCORE_PER_SECOND = 5;
+const LEADERBOARD_LIMIT = 10;
 const SURVIVAL_SPAWN_MIN_WHALE_DISTANCE = 70;
 const SURVIVAL_MAX_ROWBOATS = 16;
 interface OceanSwellLayer {
@@ -234,6 +248,7 @@ export class OceanScene {
   private readonly damageSystem = new DamageSystem();
   private readonly shipAiSystem = new ShipAISystem();
   private readonly survivalDirector = new SurvivalDirector();
+  private readonly leaderboardClient = createLeaderboardClient();
   private readonly oceanGeometry = new THREE.PlaneGeometry(OCEAN_SIZE, OCEAN_SIZE, 144, 144);
   private readonly oceanUndersideGeometry = new THREE.PlaneGeometry(
     OCEAN_UNDERSIDE_SIZE,
@@ -387,6 +402,13 @@ export class OceanScene {
   private portalRedirectQueued = false;
   private whaleWasInsideExitPortal = false;
   private whaleWasInsideReturnPortal = false;
+  private leaderboardRun: SurvivalBestRun | null = null;
+  private leaderboardRunSequence = 0;
+  private leaderboardStatus: HUDLeaderboardStatus = 'unavailable';
+  private leaderboardEntries: HUDLeaderboardEntrySnapshot[] = [];
+  private leaderboardMessage = '';
+  private leaderboardUsernameFormVisible = false;
+  private leaderboardUsernameInputValue = '';
   private viewportWidth = 1;
   private viewportHeight = 1;
 
@@ -397,6 +419,7 @@ export class OceanScene {
     width: number,
     height: number,
   ) {
+    this.ui.setLeaderboardSubmitHandler(this.handleLeaderboardUsernameSubmit);
     this.scene.background = this.backgroundColor;
     this.scene.fog = new THREE.FogExp2(this.atmosphereColor, SURFACE_FOG_DENSITY);
     this.underwaterEnvironmentLayout = createUnderwaterEnvironmentLayout(this.sampleOceanFloorHeight);
@@ -499,6 +522,7 @@ export class OceanScene {
     this.portalRedirectQueued = false;
     this.whaleWasInsideExitPortal = false;
     this.whaleWasInsideReturnPortal = this.startsFromVibeJamPortal && Boolean(this.vibeJamReturnPortal);
+    this.resetLeaderboardState();
     this.breachLaunchShipIds.clear();
     this.capitalBreachedThisArc.clear();
     this.shipTopsideRevealStates.clear();
@@ -669,6 +693,7 @@ export class OceanScene {
   }
 
   dispose(): void {
+    this.ui.setLeaderboardSubmitHandler(null);
     this.breachSplashFx.dispose();
     this.tailSlapShockwaveFx.dispose();
     this.shipWakeFx.dispose();
@@ -2640,6 +2665,8 @@ export class OceanScene {
       this.bestRun = run;
       this.writeBestRun(run);
     }
+
+    this.startLeaderboardForDefeat(run);
   }
 
   private getDisplayedScore(): number {
@@ -2690,6 +2717,180 @@ export class OceanScene {
     } catch {
       // Storage can be unavailable in private or embedded browser contexts.
     }
+  }
+
+  private resetLeaderboardState(): void {
+    this.leaderboardRunSequence += 1;
+    this.leaderboardRun = null;
+    this.leaderboardStatus = this.leaderboardClient ? 'loading' : 'unavailable';
+    this.leaderboardEntries = [];
+    this.leaderboardMessage = '';
+    this.leaderboardUsernameFormVisible = false;
+    this.leaderboardUsernameInputValue = '';
+  }
+
+  private startLeaderboardForDefeat(run: SurvivalBestRun): void {
+    this.leaderboardRunSequence += 1;
+    const sequence = this.leaderboardRunSequence;
+    this.leaderboardRun = run;
+    this.leaderboardEntries = [];
+    this.leaderboardUsernameFormVisible = false;
+    this.leaderboardUsernameInputValue = '';
+
+    if (!this.leaderboardClient) {
+      this.leaderboardStatus = 'unavailable';
+      this.leaderboardMessage = 'Leaderboard unavailable.';
+      return;
+    }
+
+    const username = getPreferredLeaderboardUsername();
+
+    if (username) {
+      this.leaderboardUsernameInputValue = username.username;
+      void this.submitLeaderboardRun(username.username, sequence, 'auto');
+      return;
+    }
+
+    this.leaderboardStatus = 'needs_name';
+    this.leaderboardMessage = 'Enter a name to post this run.';
+    this.leaderboardUsernameFormVisible = true;
+    void this.refreshLeaderboardEntries(null, sequence);
+  }
+
+  private async refreshLeaderboardEntries(username: string | null, sequence: number): Promise<void> {
+    if (!this.leaderboardClient) {
+      return;
+    }
+
+    try {
+      const entries = await this.leaderboardClient.list(username, LEADERBOARD_LIMIT);
+
+      if (!this.isCurrentLeaderboardRun(sequence)) {
+        return;
+      }
+
+      this.leaderboardEntries = this.toHudLeaderboardEntries(entries, username);
+
+      if (this.leaderboardStatus === 'loading') {
+        this.leaderboardStatus = 'ready';
+        this.leaderboardMessage = 'Leaderboard loaded.';
+      }
+    } catch {
+      if (!this.isCurrentLeaderboardRun(sequence)) {
+        return;
+      }
+
+      this.leaderboardStatus = 'error';
+      this.leaderboardMessage = 'Leaderboard unavailable.';
+      this.leaderboardUsernameFormVisible = false;
+    }
+  }
+
+  private async submitLeaderboardRun(
+    username: string,
+    sequence: number,
+    source: 'auto' | 'manual',
+  ): Promise<void> {
+    if (!this.leaderboardClient || !this.leaderboardRun) {
+      return;
+    }
+
+    this.leaderboardStatus = 'submitting';
+    this.leaderboardMessage = `Submitting as ${username}.`;
+    this.leaderboardUsernameInputValue = username;
+    this.leaderboardUsernameFormVisible = source === 'manual';
+
+    try {
+      const result = await this.leaderboardClient.submit({
+        username,
+        score: this.leaderboardRun.score,
+        timeSurvivedSeconds: this.leaderboardRun.timeSurvivedSeconds,
+        shipsDestroyed: this.leaderboardRun.shipsDestroyed,
+      });
+
+      if (!this.isCurrentLeaderboardRun(sequence)) {
+        return;
+      }
+
+      this.leaderboardStatus = 'ready';
+      this.leaderboardEntries = this.toHudLeaderboardEntries(result.entries, username);
+      this.leaderboardUsernameFormVisible = false;
+      this.leaderboardMessage = result.accepted
+        ? `Recorded for ${username}.`
+        : `Best run for ${username} still stands.`;
+    } catch {
+      if (!this.isCurrentLeaderboardRun(sequence)) {
+        return;
+      }
+
+      this.leaderboardStatus = 'error';
+      this.leaderboardMessage = 'Leaderboard unavailable. Your run is recorded locally.';
+      this.leaderboardUsernameFormVisible = source === 'manual';
+    }
+  }
+
+  private readonly handleLeaderboardUsernameSubmit = (rawUsername: string): void => {
+    if (!this.leaderboardRun || !this.leaderboardClient) {
+      return;
+    }
+
+    const username = sanitizeLeaderboardUsername(rawUsername);
+
+    if (!username) {
+      this.leaderboardStatus = 'needs_name';
+      this.leaderboardMessage = 'Enter a name to post this run.';
+      this.leaderboardUsernameFormVisible = true;
+      return;
+    }
+
+    this.leaderboardUsernameInputValue = username;
+    writeStoredLeaderboardUsername(username);
+    void this.submitLeaderboardRun(username, this.leaderboardRunSequence, 'manual');
+  };
+
+  private isCurrentLeaderboardRun(sequence: number): boolean {
+    return this.phase === 'defeat' && this.leaderboardRunSequence === sequence;
+  }
+
+  private toHudLeaderboardEntries(
+    entries: readonly LeaderboardEntry[],
+    currentUsername: string | null,
+  ): HUDLeaderboardEntrySnapshot[] {
+    const currentUsernameKey = currentUsername?.toLocaleLowerCase('en-US') ?? null;
+
+    return entries.map((entry) => ({
+      rank: entry.rank,
+      username: entry.username,
+      score: entry.score,
+      timeSurvivedSeconds: entry.timeSurvivedSeconds,
+      shipsDestroyed: entry.shipsDestroyed,
+      isCurrentPlayer:
+        entry.isCurrentPlayer === true ||
+        (currentUsernameKey !== null && entry.username.toLocaleLowerCase('en-US') === currentUsernameKey),
+    }));
+  }
+
+  private buildDefeatSummarySnapshot(): HUDRunSummarySnapshot {
+    const bestText = this.bestRun
+      ? `Best: ${this.formatRunTime(this.bestRun.timeSurvivedSeconds)} / ${this.bestRun.shipsDestroyed} sunk / ${this.bestRun.score} score`
+      : undefined;
+
+    return {
+      bestText,
+      score: this.getDisplayedScore(),
+      shipsDestroyed: this.shipsDestroyed,
+      timeSurvivedSeconds: this.runElapsedSeconds,
+    };
+  }
+
+  private buildDefeatLeaderboardSnapshot(): HUDLeaderboardSnapshot {
+    return {
+      entries: this.leaderboardEntries,
+      message: this.leaderboardMessage,
+      showUsernameForm: this.leaderboardUsernameFormVisible,
+      status: this.leaderboardStatus,
+      usernameInputValue: this.leaderboardUsernameInputValue,
+    };
   }
 
   private formatRunTime(seconds: number): string {
@@ -3134,6 +3335,8 @@ export class OceanScene {
     let shipStatus = `${rowboatsRemaining}/${directorSnapshot.rowboatCap} rowboats hunting / ${livingCapitals.length}/${directorSnapshot.flagshipCap} capital ships armed`;
     let overlayTitle: string | undefined;
     let overlayCopy: string | undefined;
+    let overlaySummary: HUDRunSummarySnapshot | undefined;
+    let overlayLeaderboard: HUDLeaderboardSnapshot | undefined;
     const airPercent = this.whale.air / this.whale.maxAir;
     const towBoatsRemaining = this.getAliveRescueTowBoats().length;
     const extractionProgress = Math.round(this.getRescueExtractionProgress() * 100);
@@ -3210,20 +3413,12 @@ export class OceanScene {
     }
 
     if (this.phase === 'defeat') {
-      const bestRun = this.bestRun;
-      const bestCopy = bestRun
-        ? `\nBest: ${this.formatRunTime(bestRun.timeSurvivedSeconds)} / ${bestRun.shipsDestroyed} sunk / ${bestRun.score} score`
-        : '';
       objective = 'They bought a moment with iron. Press R to rise again.';
       shipStatus = 'Whale driven off';
       overlayTitle = 'Driven Back';
-      overlayCopy = [
-        `Survived: ${this.formatRunTime(this.runElapsedSeconds)}`,
-        `Ships sunk: ${this.shipsDestroyed}`,
-        `Score: ${this.getDisplayedScore()}${bestCopy}`,
-        '',
-        'Press R to return beneath them.',
-      ].join('\n');
+      overlaySummary = this.buildDefeatSummarySnapshot();
+      overlayLeaderboard = this.buildDefeatLeaderboardSnapshot();
+      overlayCopy = 'Press R to return beneath them.';
     }
 
     const tailSlapAvailable =
@@ -3246,6 +3441,8 @@ export class OceanScene {
       whaleHealFeedbackText: this.crewHealFeedbackText,
       overlayTitle,
       overlayCopy,
+      overlaySummary,
+      overlayLeaderboard,
       showActionControls: this.phase === 'playing',
       tailSlapAvailable,
     });

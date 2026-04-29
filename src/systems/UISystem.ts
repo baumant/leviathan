@@ -18,6 +18,32 @@ export interface HUDShipBarSnapshot {
   width: number;
 }
 
+export type HUDLeaderboardStatus = 'unavailable' | 'loading' | 'needs_name' | 'submitting' | 'ready' | 'error';
+
+export interface HUDRunSummarySnapshot {
+  bestText?: string;
+  score: number;
+  shipsDestroyed: number;
+  timeSurvivedSeconds: number;
+}
+
+export interface HUDLeaderboardEntrySnapshot {
+  isCurrentPlayer?: boolean;
+  rank: number;
+  score: number;
+  shipsDestroyed: number;
+  timeSurvivedSeconds: number;
+  username: string;
+}
+
+export interface HUDLeaderboardSnapshot {
+  entries: HUDLeaderboardEntrySnapshot[];
+  message: string;
+  showUsernameForm: boolean;
+  status: HUDLeaderboardStatus;
+  usernameInputValue?: string;
+}
+
 export interface HUDSnapshot {
   capitalShipBars: HUDShipBarSnapshot[];
   objective: string;
@@ -35,6 +61,8 @@ export interface HUDSnapshot {
   whaleHealFeedbackText?: string;
   overlayTitle?: string;
   overlayCopy?: string;
+  overlaySummary?: HUDRunSummarySnapshot;
+  overlayLeaderboard?: HUDLeaderboardSnapshot;
   presentation?: 'combat' | 'intro';
   showActionControls?: boolean;
   tailSlapAvailable?: boolean;
@@ -66,6 +94,13 @@ export class UISystem {
   private readonly overlayCard = document.createElement('section');
   private readonly overlayTitle = document.createElement('h2');
   private readonly overlayCopy = document.createElement('p');
+  private readonly overlaySummary = document.createElement('div');
+  private readonly overlayLeaderboard = document.createElement('section');
+  private readonly overlayLeaderboardList = document.createElement('ol');
+  private readonly overlayLeaderboardMessage = document.createElement('p');
+  private readonly overlayLeaderboardForm = document.createElement('form');
+  private readonly overlayUsernameInput = document.createElement('input');
+  private readonly overlayUsernameButton = document.createElement('button');
   private readonly keyboardGuard = document.createElement('section');
   private readonly fadeEl = document.createElement('div');
   private readonly shipBars = new Map<string, ShipBarElements>();
@@ -73,6 +108,8 @@ export class UISystem {
   private readonly diveTile: ControlTile;
   private readonly riseTile: ControlTile;
   private readonly tailSlapTile: ControlTile;
+  private leaderboardFormWasVisible = false;
+  private leaderboardSubmitHandler: ((username: string) => void) | null = null;
 
   constructor(parent: HTMLElement) {
     this.root.className = 'hud';
@@ -158,7 +195,49 @@ export class UISystem {
     this.overlayTitle.className = 'hud__overlay-title';
     this.overlayCopy.className = 'hud__overlay-copy';
 
-    this.overlayCard.append(overlayEyebrow, this.overlayTitle, this.overlayCopy);
+    this.overlaySummary.className = 'hud__overlay-summary';
+    this.overlaySummary.hidden = true;
+
+    this.overlayLeaderboard.className = 'hud__leaderboard';
+    this.overlayLeaderboard.hidden = true;
+
+    const leaderboardHeader = document.createElement('div');
+    leaderboardHeader.className = 'hud__leaderboard-header';
+
+    const leaderboardTitle = document.createElement('h3');
+    leaderboardTitle.className = 'hud__leaderboard-title';
+    leaderboardTitle.textContent = 'Leaderboard';
+
+    this.overlayLeaderboardMessage.className = 'hud__leaderboard-message';
+    leaderboardHeader.append(leaderboardTitle, this.overlayLeaderboardMessage);
+
+    this.overlayLeaderboardList.className = 'hud__leaderboard-list';
+
+    this.overlayLeaderboardForm.className = 'hud__leaderboard-form';
+    this.overlayLeaderboardForm.hidden = true;
+    this.overlayLeaderboardForm.addEventListener('submit', this.handleLeaderboardFormSubmit);
+
+    this.overlayUsernameInput.className = 'hud__leaderboard-input';
+    this.overlayUsernameInput.type = 'text';
+    this.overlayUsernameInput.name = 'leaderboardUsername';
+    this.overlayUsernameInput.maxLength = 24;
+    this.overlayUsernameInput.setAttribute('autocomplete', 'nickname');
+    this.overlayUsernameInput.placeholder = 'Name';
+
+    this.overlayUsernameButton.className = 'hud__leaderboard-button';
+    this.overlayUsernameButton.type = 'submit';
+    this.overlayUsernameButton.textContent = 'Submit';
+
+    this.overlayLeaderboardForm.append(this.overlayUsernameInput, this.overlayUsernameButton);
+    this.overlayLeaderboard.append(leaderboardHeader, this.overlayLeaderboardList, this.overlayLeaderboardForm);
+
+    this.overlayCard.append(
+      overlayEyebrow,
+      this.overlayTitle,
+      this.overlaySummary,
+      this.overlayCopy,
+      this.overlayLeaderboard,
+    );
 
     this.keyboardGuard.className = 'hud__keyboard-guard';
 
@@ -191,6 +270,10 @@ export class UISystem {
     parent.append(this.root);
   }
 
+  setLeaderboardSubmitHandler(handler: ((username: string) => void) | null): void {
+    this.leaderboardSubmitHandler = handler;
+  }
+
   update(snapshot: HUDSnapshot): void {
     const presentation = snapshot.presentation ?? 'combat';
     const isIntro = presentation === 'intro';
@@ -221,12 +304,25 @@ export class UISystem {
     this.timeValueEl.textContent = this.formatTime(snapshot.timeSurvivedSeconds);
     this.shipsDestroyedValueEl.textContent = `${snapshot.shipsDestroyed}`;
 
-    const showOverlay = Boolean(snapshot.overlayTitle && snapshot.overlayCopy);
+    const showOverlay = Boolean(
+      snapshot.overlayTitle ||
+        snapshot.overlayCopy ||
+        snapshot.overlaySummary ||
+        snapshot.overlayLeaderboard,
+    );
     this.overlayCard.hidden = !showOverlay;
+    this.overlayCard.classList.toggle('hud__overlay--leaderboard', Boolean(snapshot.overlayLeaderboard));
 
     if (showOverlay) {
       this.overlayTitle.textContent = snapshot.overlayTitle ?? '';
       this.overlayCopy.textContent = snapshot.overlayCopy ?? '';
+      this.overlayCopy.hidden = !snapshot.overlayCopy;
+      this.updateOverlaySummary(snapshot.overlaySummary);
+      this.updateOverlayLeaderboard(snapshot.overlayLeaderboard);
+    } else {
+      this.overlaySummary.hidden = true;
+      this.overlayLeaderboard.hidden = true;
+      this.leaderboardFormWasVisible = false;
     }
 
     this.metricsCard.hidden = isIntro;
@@ -241,8 +337,129 @@ export class UISystem {
   }
 
   dispose(): void {
+    this.overlayLeaderboardForm.removeEventListener('submit', this.handleLeaderboardFormSubmit);
     this.root.remove();
   }
+
+  private updateOverlaySummary(summary: HUDRunSummarySnapshot | undefined): void {
+    this.overlaySummary.hidden = !summary;
+
+    if (!summary) {
+      this.overlaySummary.replaceChildren();
+      return;
+    }
+
+    const facts = [
+      this.createOverlaySummaryFact('Survived', this.formatTime(summary.timeSurvivedSeconds)),
+      this.createOverlaySummaryFact('Ships sunk', `${summary.shipsDestroyed}`),
+      this.createOverlaySummaryFact('Score', `${summary.score}`),
+    ];
+
+    if (summary.bestText) {
+      const best = document.createElement('p');
+      best.className = 'hud__overlay-best';
+      best.textContent = summary.bestText;
+      this.overlaySummary.replaceChildren(...facts, best);
+      return;
+    }
+
+    this.overlaySummary.replaceChildren(...facts);
+  }
+
+  private updateOverlayLeaderboard(leaderboard: HUDLeaderboardSnapshot | undefined): void {
+    this.overlayLeaderboard.hidden = !leaderboard;
+
+    if (!leaderboard) {
+      this.overlayLeaderboardList.replaceChildren();
+      this.overlayLeaderboardMessage.textContent = '';
+      this.overlayLeaderboardForm.hidden = true;
+      this.leaderboardFormWasVisible = false;
+      return;
+    }
+
+    this.overlayLeaderboard.dataset.status = leaderboard.status;
+    this.overlayLeaderboardMessage.textContent = leaderboard.message;
+    this.updateOverlayLeaderboardRows(leaderboard.entries);
+
+    const showForm = leaderboard.showUsernameForm;
+
+    if (showForm && !this.leaderboardFormWasVisible) {
+      this.overlayUsernameInput.value = leaderboard.usernameInputValue ?? '';
+    }
+
+    this.overlayLeaderboardForm.hidden = !showForm;
+    this.leaderboardFormWasVisible = showForm;
+
+    const submitting = leaderboard.status === 'submitting';
+    this.overlayUsernameInput.disabled = submitting;
+    this.overlayUsernameButton.disabled = submitting;
+    this.overlayUsernameButton.textContent = submitting ? 'Submitting' : 'Submit';
+  }
+
+  private updateOverlayLeaderboardRows(entries: readonly HUDLeaderboardEntrySnapshot[]): void {
+    if (entries.length <= 0) {
+      const emptyRow = document.createElement('li');
+      emptyRow.className = 'hud__leaderboard-empty';
+      emptyRow.textContent = 'No recorded runs yet.';
+      this.overlayLeaderboardList.replaceChildren(emptyRow);
+      return;
+    }
+
+    this.overlayLeaderboardList.replaceChildren(
+      ...entries.map((entry) => this.createOverlayLeaderboardRow(entry)),
+    );
+  }
+
+  private createOverlaySummaryFact(label: string, value: string): HTMLElement {
+    const fact = document.createElement('div');
+    fact.className = 'hud__overlay-fact';
+
+    const labelEl = document.createElement('span');
+    labelEl.className = 'hud__overlay-fact-label';
+    labelEl.textContent = label;
+
+    const valueEl = document.createElement('span');
+    valueEl.className = 'hud__overlay-fact-value';
+    valueEl.textContent = value;
+
+    fact.append(labelEl, valueEl);
+    return fact;
+  }
+
+  private createOverlayLeaderboardRow(entry: HUDLeaderboardEntrySnapshot): HTMLElement {
+    const row = document.createElement('li');
+    row.className = 'hud__leaderboard-row';
+    row.classList.toggle('hud__leaderboard-row--current', entry.isCurrentPlayer === true);
+
+    const rank = document.createElement('span');
+    rank.className = 'hud__leaderboard-rank';
+    rank.textContent = `${entry.rank}`;
+
+    const nameGroup = document.createElement('span');
+    nameGroup.className = 'hud__leaderboard-name-group';
+
+    const username = document.createElement('span');
+    username.className = 'hud__leaderboard-name';
+    username.textContent = entry.username;
+
+    const detail = document.createElement('span');
+    detail.className = 'hud__leaderboard-detail';
+    detail.textContent = `${this.formatTime(entry.timeSurvivedSeconds)} / ${entry.shipsDestroyed} sunk`;
+
+    nameGroup.append(username, detail);
+
+    const score = document.createElement('span');
+    score.className = 'hud__leaderboard-score';
+    score.textContent = `${entry.score}`;
+
+    row.append(rank, nameGroup, score);
+    return row;
+  }
+
+  private readonly handleLeaderboardFormSubmit = (event: SubmitEvent): void => {
+    event.preventDefault();
+    this.leaderboardSubmitHandler?.(this.overlayUsernameInput.value);
+  };
 
   private createBarRow(
     label: string,

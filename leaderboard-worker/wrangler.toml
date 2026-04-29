@@ -1,0 +1,9 @@
+name = "leviathan-leaderboard"
+main = "src/index.ts"
+compatibility_date = "2026-04-29"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "leviathan-leaderboard"
+database_id = "c6b3ed9b-2f27-4373-9f08-3fd4ec98e328"
+migrations_dir = "migrations"

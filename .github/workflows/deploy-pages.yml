@@ -37,6 +37,8 @@ jobs:
 
       - name: Build
         run: npm run build
+        env:
+          VITE_LEADERBOARD_API_URL: ${{ vars.VITE_LEADERBOARD_API_URL }}
 
       - name: Upload GitHub Pages artifact
         uses: actions/upload-pages-artifact@v4
