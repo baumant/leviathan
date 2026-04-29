@@ -3,6 +3,7 @@ import { Water } from 'three/addons/objects/Water.js';
 
 import { AudioSystem } from '../audio/AudioSystem';
 import { PlayerWhale } from '../entities/PlayerWhale';
+import { preloadCapitalShipAsset } from '../entities/CapitalShipVisualAsset';
 import { preloadRowboatAsset } from '../entities/RowboatVisualAsset';
 import { preloadWhaleHeroAsset } from '../entities/WhaleHeroAsset';
 import { Ship, ShipLanternInfluence, ShipSpawnConfig } from '../entities/Ship';
@@ -48,8 +49,11 @@ const MAX_OCEAN_LANTERN_INFLUENCES = 4;
 
 const FLAGSHIP_START = new THREE.Vector3(0, 0.62, 54);
 const INTRO_HEADING = Math.PI;
-const INTRO_LAUNCH_OFFSET_RIGHT = 2.4;
-const INTRO_LAUNCH_OFFSET_BACK = 1.2;
+const INTRO_LAUNCH_OFFSET_RIGHT = 8.1;
+const INTRO_LAUNCH_OFFSET_FORWARD = 10.8;
+const INTRO_FLAGSHIP_FOCUS_DISTANCE_NEAR = 34;
+const INTRO_FLAGSHIP_FOCUS_DISTANCE_FAR = 70;
+const INTRO_FLAGSHIP_LOOK_BLEND = 0.18;
 const ROWING_TRIGGER_MIN_TIME = 3.6;
 const ROWING_TRIGGER_DISTANCE = 12;
 const ROWING_TRIGGER_FAILSAFE = 8;
@@ -180,7 +184,7 @@ export class IntroScene {
     this.breachSplashFx = new BreachSplashFX(this.scene);
     this.shipWakeFx = new ShipWakeFX(this.scene, this.ships);
     this.topsideSubsurfaceRevealFx = new TopsideSubsurfaceRevealFX(this.scene);
-    void Promise.all([preloadWhaleHeroAsset(), preloadRowboatAsset()]);
+    void Promise.all([preloadWhaleHeroAsset(), preloadRowboatAsset(), preloadCapitalShipAsset('flagship')]);
 
     this.setupLights();
     this.setupSky();
@@ -232,20 +236,15 @@ export class IntroScene {
     this.flagship.root.rotation.set(0, INTRO_HEADING, 0, 'YXZ');
     this.flagship.root.updateMatrixWorld();
 
-    this.flagship.getWakeOrigin(this.tempPoint);
     this.flagship.getForward(this.rowboatForward);
     this.rowboatRight.set(this.rowboatForward.z, 0, -this.rowboatForward.x).normalize();
     this.tempPoint
+      .copy(this.flagship.root.position)
       .addScaledVector(this.rowboatRight, INTRO_LAUNCH_OFFSET_RIGHT)
-      .addScaledVector(this.rowboatForward, -INTRO_LAUNCH_OFFSET_BACK);
+      .addScaledVector(this.rowboatForward, INTRO_LAUNCH_OFFSET_FORWARD);
     this.rowboat.root.position.copy(this.tempPoint);
     this.rowboat.root.position.y = this.sampleOceanHeight(this.tempPoint.x, this.tempPoint.z) + 0.18;
-    this.rowboatForward
-      .copy(this.rowboat.root.position)
-      .sub(this.flagship.root.position)
-      .setY(0)
-      .normalize();
-    this.rowboat.heading = Math.atan2(this.rowboatForward.x, this.rowboatForward.z);
+    this.rowboat.heading = INTRO_HEADING;
     this.rowboat.root.rotation.set(0, this.rowboat.heading, 0, 'YXZ');
     this.introStartPosition.copy(this.rowboat.root.position);
 
@@ -541,10 +540,13 @@ export class IntroScene {
     } else {
       const distanceFromFlagship = this.flagship.root.position.distanceTo(this.rowboat.root.position);
       const launchBias = this.phase === 'rowing' ? 1 - THREE.MathUtils.smoothstep(this.phaseElapsed, 0.2, 1.2) : 0;
-      const flagshipPresence = Math.max(launchBias, 1 - THREE.MathUtils.smoothstep(distanceFromFlagship, 28, 58));
-      const chaseDistance = THREE.MathUtils.lerp(11.2, 14.4, flagshipPresence);
-      const chaseHeight = THREE.MathUtils.lerp(4.6, 5.4, flagshipPresence);
-      const lateral = THREE.MathUtils.lerp(2.2, 6.4, flagshipPresence);
+      const flagshipPresence = Math.max(
+        launchBias * 0.48,
+        1 - THREE.MathUtils.smoothstep(distanceFromFlagship, INTRO_FLAGSHIP_FOCUS_DISTANCE_NEAR, INTRO_FLAGSHIP_FOCUS_DISTANCE_FAR),
+      );
+      const chaseDistance = THREE.MathUtils.lerp(11.6, 14.2, flagshipPresence);
+      const chaseHeight = THREE.MathUtils.lerp(4.8, 5.6, flagshipPresence);
+      const lateral = THREE.MathUtils.lerp(2.6, 4.2, flagshipPresence);
 
       this.cameraTarget
         .copy(this.rowboat.root.position)
@@ -556,7 +558,7 @@ export class IntroScene {
       this.lookTarget.y = this.sampleOceanHeight(this.lookTarget.x, this.lookTarget.z) + 1;
       this.tempPointB.copy(this.flagship.root.position);
       this.tempPointB.y = this.sampleOceanHeight(this.tempPointB.x, this.tempPointB.z) + 1.8;
-      this.lookTarget.lerp(this.tempPointB, flagshipPresence * 0.2);
+      this.lookTarget.lerp(this.tempPointB, flagshipPresence * INTRO_FLAGSHIP_LOOK_BLEND);
 
       if (!this.cameraInitialized) {
         this.camera.position.copy(this.cameraTarget);

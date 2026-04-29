@@ -6,6 +6,7 @@ import { Cannonball } from '../entities/Cannonball';
 import { CaptiveWhale } from '../entities/CaptiveWhale';
 import { Harpoon } from '../entities/Harpoon';
 import { PlayerWhale } from '../entities/PlayerWhale';
+import { preloadCapitalShipAsset } from '../entities/CapitalShipVisualAsset';
 import { preloadRowboatAsset } from '../entities/RowboatVisualAsset';
 import { preloadWhaleHeroAsset } from '../entities/WhaleHeroAsset';
 import { Ship, ShipLanternInfluence, ShipSpawnConfig } from '../entities/Ship';
@@ -384,7 +385,12 @@ export class OceanScene {
       layout: this.underwaterEnvironmentLayout,
     });
     this.readabilityFx = new UnderwaterReadabilityFX(this.scene, this.camera);
-    void Promise.all([preloadWhaleHeroAsset(), preloadRowboatAsset()]);
+    void Promise.all([
+      preloadWhaleHeroAsset(),
+      preloadRowboatAsset(),
+      preloadCapitalShipAsset('flagship'),
+      preloadCapitalShipAsset('corporate_whaler'),
+    ]);
 
     this.setupLights();
     this.setupSky();

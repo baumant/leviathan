@@ -6,6 +6,7 @@ import {
   WaterlinePassthroughState,
 } from '../fx/calculateWhaleTopsideRevealState';
 import { createCelMaterial } from '../fx/createCelMaterial';
+import { createCapitalShipVisualAsset, type CapitalShipVisualAsset } from './CapitalShipVisualAsset';
 import { createRowboatVisualAsset } from './RowboatVisualAsset';
 
 export type ShipRole = 'rowboat' | 'flagship' | 'corporate_whaler';
@@ -252,6 +253,7 @@ export class Ship {
   private airborneHeight = 0;
   private airborneVelocity = 0;
   private readonly tempMarkerPoint = new THREE.Vector3();
+  private capitalShipVisualAsset: CapitalShipVisualAsset | null = null;
   private rowboatVisualAssetRoot: THREE.Group | null = null;
   private rowboatWakeOriginNode: THREE.Object3D | null = null;
   private rowboatHarpoonOriginNode: THREE.Object3D | null = null;
@@ -352,6 +354,8 @@ export class Ship {
 
     if (this.role === 'rowboat') {
       void this.loadRowboatVisualAsset();
+    } else if (this.isCapitalShip) {
+      void this.loadCapitalShipVisualAsset();
     }
   }
 
@@ -1226,6 +1230,29 @@ export class Ship {
     }
   }
 
+  private async loadCapitalShipVisualAsset(): Promise<void> {
+    if (!this.isCapitalShip || this.capitalShipVisualAsset) {
+      return;
+    }
+
+    try {
+      const asset = await createCapitalShipVisualAsset(
+        this.role === 'corporate_whaler' ? 'corporate_whaler' : 'flagship',
+      );
+
+      this.capitalShipVisualAsset = asset;
+      this.visualRoot.add(asset.root);
+      this.registerTintMaterials(asset.root);
+      this.fallbackVisualRoot.visible = false;
+      this.syncCapitalShipMarkerOffsets();
+      this.buildTopsideSubsurfaceOverlay(asset.root);
+      this.updateDamageLook();
+      this.root.updateMatrixWorld(true);
+    } catch (error) {
+      console.warn(`Failed to load ${this.displayName.toLowerCase()} asset, keeping procedural fallback.`, error);
+    }
+  }
+
   private registerTintMaterials(root: THREE.Object3D): void {
     root.traverse((object) => {
       if (!(object instanceof THREE.Mesh)) {
@@ -1247,9 +1274,28 @@ export class Ship {
 
   private getTintMaterialBucket(name: string): THREE.MeshToonMaterial[] {
     const normalized = name.toLowerCase();
-    return normalized.includes('trim') || normalized.includes('wood')
-      ? this.mastTintMaterials
-      : this.hullTintMaterials;
+
+    if (normalized.includes('sail') || normalized.includes('canvas') || normalized.includes('flag')) {
+      return this.sailTintMaterials;
+    }
+
+    if (
+      normalized.includes('trim') ||
+      normalized.includes('wood') ||
+      normalized.includes('mast') ||
+      normalized.includes('gantry') ||
+      normalized.includes('boom') ||
+      normalized.includes('crossbar') ||
+      normalized.includes('brace') ||
+      normalized.includes('deck') ||
+      normalized.includes('cabin') ||
+      normalized.includes('funnel') ||
+      normalized.includes('stack')
+    ) {
+      return this.mastTintMaterials;
+    }
+
+    return this.hullTintMaterials;
   }
 
   private syncRowboatMarkerOffsets(): void {
@@ -1270,6 +1316,62 @@ export class Ship {
     }
   }
 
+  private syncCapitalShipMarkerOffsets(): void {
+    const asset = this.capitalShipVisualAsset;
+
+    if (!this.isCapitalShip || !asset) {
+      return;
+    }
+
+    this.visualRoot.updateMatrixWorld(true);
+    this.root.updateMatrixWorld(true);
+
+    this.copyMarkerToLocal(asset.wakeOrigin, this.root, this.wakeOriginLocal);
+    this.copyMarkerToLocal(asset.harpoonOrigin, this.root, this.harpoonOriginLocal);
+    this.copyMarkerToLocal(asset.towPortOrigin, this.root, this.towPortOriginLocal);
+    this.copyMarkerToLocal(asset.towStarboardOrigin, this.root, this.towStarboardOriginLocal);
+    this.copyMarkerToLocal(asset.healthBarAnchor, this.root, this.healthBarAnchorLocal);
+    this.syncLanternMarkerOffsets(asset.lanternOrigins);
+    this.syncCannonMarkerOffsets(asset.portCannonOrigins, 'port');
+    this.syncCannonMarkerOffsets(asset.starboardCannonOrigins, 'starboard');
+    this.syncReinforcementLaunchMarkers(asset.reinforcementLaunchOrigins);
+  }
+
+  private syncLanternMarkerOffsets(markers: readonly THREE.Object3D[]): void {
+    const markerCount = Math.min(markers.length, this.lanternMeshes.length);
+
+    for (let index = 0; index < markerCount; index += 1) {
+      this.copyMarkerToLocal(markers[index], this.visualRoot, this.tempMarkerPoint);
+      this.setLanternOffsetAt(index, this.tempMarkerPoint);
+    }
+  }
+
+  private syncCannonMarkerOffsets(markers: readonly THREE.Object3D[], side: BroadsideSide): void {
+    const offsets = side === 'port' ? this.portCannonOffsets : this.starboardCannonOffsets;
+    const cannons = side === 'port' ? this.portCannons : this.starboardCannons;
+    const markerCount = Math.min(markers.length, offsets.length);
+
+    for (let index = 0; index < markerCount; index += 1) {
+      this.copyMarkerToLocal(markers[index], this.root, offsets[index]);
+      this.copyMarkerToLocal(markers[index], this.visualRoot, this.tempMarkerPoint);
+      cannons[index]?.position.copy(this.tempMarkerPoint);
+    }
+  }
+
+  private syncReinforcementLaunchMarkers(markers: readonly THREE.Object3D[]): void {
+    if (markers.length <= 0) {
+      return;
+    }
+
+    this.reinforcementLaunchOffsets.length = 0;
+
+    for (const marker of markers) {
+      const offset = new THREE.Vector3();
+      this.copyMarkerToLocal(marker, this.root, offset);
+      this.reinforcementLaunchOffsets.push(offset);
+    }
+  }
+
   private copyMarkerToLocal(
     marker: THREE.Object3D | null,
     targetParent: THREE.Object3D,
@@ -1285,9 +1387,13 @@ export class Ship {
 
   private setLanternOffset(offset: THREE.Vector3): void {
     for (let index = 0; index < this.lanternMeshes.length; index += 1) {
-      this.lanternMeshes[index].position.copy(offset);
-      this.lanternHalos[index].position.copy(offset);
-      this.lanternLights[index].position.copy(offset);
+      this.setLanternOffsetAt(index, offset);
     }
+  }
+
+  private setLanternOffsetAt(index: number, offset: THREE.Vector3): void {
+    this.lanternMeshes[index]?.position.copy(offset);
+    this.lanternHalos[index]?.position.copy(offset);
+    this.lanternLights[index]?.position.copy(offset);
   }
 }
