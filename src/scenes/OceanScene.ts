@@ -120,6 +120,7 @@ interface OceanSwellLayer {
   speed: number;
   amplitude: number;
   phase: number;
+  harmonic: number;
   waveform: 'sin' | 'cos';
 }
 
@@ -129,35 +130,48 @@ const createPortalHeading = (position: THREE.Vector3): number => Math.atan2(-pos
 const OCEAN_SWELL_LAYERS: readonly OceanSwellLayer[] = [
   {
     direction: createSwellDirection(1, 0.22),
-    frequency: 0.014,
-    speed: 0.24,
-    amplitude: 1.18,
+    frequency: 0.052,
+    speed: 0.58,
+    amplitude: 1.24,
     phase: 0.45,
+    harmonic: 0.18,
     waveform: 'sin',
   },
   {
     direction: createSwellDirection(-0.28, 1),
-    frequency: 0.011,
-    speed: -0.16,
-    amplitude: 0.9,
+    frequency: 0.037,
+    speed: -0.42,
+    amplitude: 0.94,
     phase: 1.8,
+    harmonic: 0.14,
     waveform: 'cos',
   },
   {
     direction: createSwellDirection(0.84, 0.54),
-    frequency: 0.022,
-    speed: 0.32,
-    amplitude: 0.4,
+    frequency: 0.078,
+    speed: 0.86,
+    amplitude: 0.52,
     phase: 2.6,
+    harmonic: 0.24,
     waveform: 'sin',
   },
   {
     direction: createSwellDirection(-0.92, 0.38),
-    frequency: 0.038,
-    speed: 0.48,
-    amplitude: 0.14,
+    frequency: 0.118,
+    speed: -1.1,
+    amplitude: 0.3,
     phase: 0.94,
+    harmonic: 0.18,
     waveform: 'cos',
+  },
+  {
+    direction: createSwellDirection(0.18, 1),
+    frequency: 0.019,
+    speed: 0.22,
+    amplitude: 0.72,
+    phase: 3.4,
+    harmonic: 0.04,
+    waveform: 'sin',
   },
 ] as const;
 
@@ -199,7 +213,7 @@ export class OceanScene {
   private readonly whaleMovement = new WhaleMovementSystem();
   private readonly damageSystem = new DamageSystem();
   private readonly shipAiSystem = new ShipAISystem();
-  private readonly oceanGeometry = new THREE.PlaneGeometry(OCEAN_SIZE, OCEAN_SIZE, 72, 72);
+  private readonly oceanGeometry = new THREE.PlaneGeometry(OCEAN_SIZE, OCEAN_SIZE, 144, 144);
   private readonly oceanUndersideGeometry = new THREE.PlaneGeometry(
     OCEAN_UNDERSIDE_SIZE,
     OCEAN_UNDERSIDE_SIZE,
@@ -758,7 +772,8 @@ export class OceanScene {
         this.elapsedSeconds * layer.speed +
         layer.phase;
       const wave = layer.waveform === 'sin' ? Math.sin(waveInput) : Math.cos(waveInput);
-      height += wave * layer.amplitude;
+      const shapedWave = wave + Math.sin(waveInput * 2 + layer.phase * 0.37) * layer.harmonic;
+      height += shapedWave * layer.amplitude;
     }
 
     return height;

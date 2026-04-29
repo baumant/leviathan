@@ -43,6 +43,15 @@ const OCEAN_SURFACE_TUNING = {
     secondarySpeed: -0.48,
     bandStrength: 0.08,
     sheenStrength: 0.045,
+    crestColor: new THREE.Color('#466577'),
+    whitecapColor: new THREE.Color('#c4d4d2'),
+    crestPrimaryScale: 0.112,
+    crestSecondaryScale: 0.086,
+    crestPrimarySpeed: 0.72,
+    crestSecondarySpeed: -0.58,
+    crestStrength: 0.18,
+    whitecapStrength: 0.11,
+    whitecapThreshold: 0.74,
   },
   reflection: {
     textureSize: 1024,
@@ -178,6 +187,16 @@ export function createPainterlyOceanMaterial(geometry: THREE.PlaneGeometry, aren
   material.uniforms.uWaveSecondarySpeed = { value: OCEAN_SURFACE_TUNING.waveMotion.secondarySpeed };
   material.uniforms.uWaveBandStrength = { value: OCEAN_SURFACE_TUNING.waveMotion.bandStrength };
   material.uniforms.uWaveSheenStrength = { value: OCEAN_SURFACE_TUNING.waveMotion.sheenStrength };
+  material.uniforms.uWaveUnscaledTime = { value: 0 };
+  material.uniforms.uWaveCrestColor = { value: OCEAN_SURFACE_TUNING.waveMotion.crestColor.clone() };
+  material.uniforms.uWaveWhitecapColor = { value: OCEAN_SURFACE_TUNING.waveMotion.whitecapColor.clone() };
+  material.uniforms.uWaveCrestPrimaryScale = { value: OCEAN_SURFACE_TUNING.waveMotion.crestPrimaryScale };
+  material.uniforms.uWaveCrestSecondaryScale = { value: OCEAN_SURFACE_TUNING.waveMotion.crestSecondaryScale };
+  material.uniforms.uWaveCrestPrimarySpeed = { value: OCEAN_SURFACE_TUNING.waveMotion.crestPrimarySpeed };
+  material.uniforms.uWaveCrestSecondarySpeed = { value: OCEAN_SURFACE_TUNING.waveMotion.crestSecondarySpeed };
+  material.uniforms.uWaveCrestStrength = { value: OCEAN_SURFACE_TUNING.waveMotion.crestStrength };
+  material.uniforms.uWaveWhitecapStrength = { value: OCEAN_SURFACE_TUNING.waveMotion.whitecapStrength };
+  material.uniforms.uWaveWhitecapThreshold = { value: OCEAN_SURFACE_TUNING.waveMotion.whitecapThreshold };
   material.uniforms.uSurfaceFresnelPower = { value: OCEAN_SURFACE_TUNING.fresnel.surface.power };
   material.uniforms.uSurfaceFresnelNormalStrength = {
     value: OCEAN_SURFACE_TUNING.fresnel.surface.normalStrength,
@@ -229,6 +248,16 @@ uniform float uWavePrimarySpeed;
 uniform float uWaveSecondarySpeed;
 uniform float uWaveBandStrength;
 uniform float uWaveSheenStrength;
+uniform float uWaveUnscaledTime;
+uniform vec3 uWaveCrestColor;
+uniform vec3 uWaveWhitecapColor;
+uniform float uWaveCrestPrimaryScale;
+uniform float uWaveCrestSecondaryScale;
+uniform float uWaveCrestPrimarySpeed;
+uniform float uWaveCrestSecondarySpeed;
+uniform float uWaveCrestStrength;
+uniform float uWaveWhitecapStrength;
+uniform float uWaveWhitecapThreshold;
 uniform float uSurfaceFresnelPower;
 uniform float uSurfaceFresnelNormalStrength;
 uniform float uSurfaceFresnelFadeStart;
@@ -340,6 +369,26 @@ float primaryWave = sin( dot( worldPosition.xz, uWavePrimaryDirection ) * uWaveP
 float secondaryWave = cos( dot( worldPosition.xz, uWaveSecondaryDirection ) * uWaveSecondaryScale + time * uWaveSecondarySpeed );
 float waveMotion = primaryWave * 0.58 + secondaryWave * 0.42;
 float waveLift = waveMotion * 0.5 + 0.5;
+vec2 crossWaveDirection = normalize( uWavePrimaryDirection + uWaveSecondaryDirection * 0.55 );
+float crestWaveA =
+  sin( dot( worldPosition.xz, uWavePrimaryDirection ) * uWaveCrestPrimaryScale + uWaveUnscaledTime * uWaveCrestPrimarySpeed );
+float crestWaveB =
+  cos( dot( worldPosition.xz, uWaveSecondaryDirection ) * uWaveCrestSecondaryScale + uWaveUnscaledTime * uWaveCrestSecondarySpeed );
+float crestWaveC =
+  sin( dot( worldPosition.xz, crossWaveDirection ) * ( uWaveCrestSecondaryScale * 0.72 ) - uWaveUnscaledTime * 0.42 );
+float brokenCrestNoise =
+  sin( dot( worldPosition.xz, vec2( 0.037, -0.051 ) ) + uWaveUnscaledTime * 0.31 ) * 0.5 + 0.5;
+float shortWave = crestWaveA * 0.52 + crestWaveB * 0.34 + crestWaveC * 0.14;
+float waveCrestMask =
+  smoothstep( 0.42, 0.9, shortWave ) *
+  smoothstep( 0.28, 0.78, waveLift ) *
+  ( 0.42 + smoothstep( 0.18, 0.82, brokenCrestNoise ) * 0.58 ) *
+  smoothstep( -0.15, 1.55, worldPosition.y );
+float waveWhitecapMask =
+  waveCrestMask *
+  smoothstep( uWaveWhitecapThreshold, 1.0, shortWave * 0.74 + waveLift * 0.26 ) *
+  smoothstep( 0.48, 0.92, brokenCrestNoise ) *
+  smoothstep( 0.55, 2.2, worldPosition.y );
 bodyDensity = clamp( bodyDensity + ( waveLift - 0.5 ) * uWaveBandStrength, uMinimumDensity, 1.0 );
 float aboveWaterReveal = 1.0 - smoothstep( 0.05, 0.34, uUnderwaterRatio );
 float translucencyWindow = subsurfaceRevealWindow( worldPosition.xz ) * aboveWaterReveal;
@@ -348,6 +397,7 @@ bodyDensity = mix( bodyDensity, max( uMinimumDensity * 0.82, bodyDensity * ( 1.0
 vec3 bodyColor = mix( uShallowColor, uMidColor, clamp( distanceDensity * 0.72 + viewGrazing * 0.18, 0.0, 1.0 ) );
 bodyColor = mix( bodyColor, uDeepColor, clamp( bodyDensity * 0.88 + troughBias * 0.18, 0.0, 1.0 ) );
 bodyColor = mix( bodyColor, uShallowColor, waveLift * uWaveBandStrength * 0.6 );
+bodyColor = mix( bodyColor, uShallowColor, crestBias * 0.08 );
 vec3 scatter = bodyColor * bodyDensity;`,
   );
 
@@ -382,6 +432,11 @@ vec3 moonSheen =
   specularLight * sunColor * uSpecularStrength * moonSheenMask;
 moonSheen += sunColor * waveLift * uWaveSheenStrength * moonSheenMask;
 vec3 albedo = shadowedScatter + transmission + moonSheen;
+float crestVisibility = aboveWaterReveal * ( 1.0 - uUnderwaterRatio * 0.62 ) * ( 1.0 - horizonFade * 0.86 );
+float crestAlpha = waveCrestMask * uWaveCrestStrength * crestVisibility;
+float whitecapAlpha = waveWhitecapMask * uWaveWhitecapStrength * crestVisibility;
+albedo = mix( albedo, uWaveCrestColor, crestAlpha );
+albedo += uWaveWhitecapColor * whitecapAlpha * ( 0.48 + moonSheenMask * 0.22 );
 albedo += uLanternColor * lanternGlow * uLanternWarmBlend;
 albedo = mix( albedo, fogColor, horizonFade * clamp( 0.34 + fogDensity * 10.0, 0.0, 0.74 ) );
 albedo = max( albedo, uDeepColor * uMinimumDensity * 0.68 );
@@ -406,6 +461,7 @@ export function updatePainterlyOceanMaterial(
   const material = water.material as OceanWaterShader;
 
   (material.uniforms.time.value as number) = snapshot.elapsedSeconds * OCEAN_SURFACE_TUNING.lighting.timeScale;
+  (material.uniforms.uWaveUnscaledTime.value as number) = snapshot.elapsedSeconds;
   (material.uniforms.sunDirection.value as THREE.Vector3).copy(snapshot.moonDirection).negate().normalize();
   (material.uniforms.sunColor.value as THREE.Color).copy(OCEAN_SURFACE_TUNING.lighting.moonColor);
   (material.uniforms.waterColor.value as THREE.Color)

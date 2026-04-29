@@ -3,26 +3,15 @@ import * as THREE from 'three';
 import { Ship, ShipRole } from '../entities/Ship';
 
 const MAX_BUBBLES = 24;
-const MAX_SURFACE_SPRAY = 24;
-const MAX_SURFACE_FOAM = 72;
 const MAX_WAKE_TRAIL_STAMPS = 220;
 const MAX_WAKE_TRAIL_CUTOUTS = MAX_WAKE_TRAIL_STAMPS * 3;
 const TRAIL_FOAM_VARIANTS = 5;
 const FOAM_GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
-const SURFACE_OFFSET = 0.05;
 const UNDERWATER_OFFSET = -0.18;
 const TRAIL_SURFACE_OFFSET = 0.075;
 const SURFACE_WAKE_LOOK = {
-  sternColor: '#eef7ea',
-  fanColor: '#d8e5e2',
-  foamColor: '#f2f8f1',
-  trailColor: '#e8f1ee',
-  sprayColor: '#f4fffb',
-  sternOpacity: 0.026,
-  fanOpacity: 0.006,
-  foamOpacity: 0.96,
-  trailOpacity: 0.86,
-  sprayOpacity: 0.72,
+  trailColor: '#d7e6e2',
+  trailOpacity: 0.42,
 } as const;
 const UNDERWATER_WAKE_LOOK = {
   ribbonColor: '#173742',
@@ -35,7 +24,6 @@ interface WakeRoleConfig {
   sternPatchScale: THREE.Vector2;
   surfaceFanLength: number;
   surfaceFanWidth: number;
-  surfaceSpread: number;
   underwaterRibbonLength: number;
   underwaterRibbonWidth: number;
   bubbleCount: number;
@@ -52,7 +40,6 @@ const WAKE_ROLE_CONFIGS: Record<ShipRole, WakeRoleConfig> = {
     sternPatchScale: new THREE.Vector2(1.32, 2.05),
     surfaceFanLength: 5.2,
     surfaceFanWidth: 1.18,
-    surfaceSpread: 0.44,
     underwaterRibbonLength: 5.4,
     underwaterRibbonWidth: 2.1,
     bubbleCount: 12,
@@ -67,7 +54,6 @@ const WAKE_ROLE_CONFIGS: Record<ShipRole, WakeRoleConfig> = {
     sternPatchScale: new THREE.Vector2(3.8, 5.2),
     surfaceFanLength: 12.8,
     surfaceFanWidth: 3.1,
-    surfaceSpread: 0.3,
     underwaterRibbonLength: 13.4,
     underwaterRibbonWidth: 5.2,
     bubbleCount: 18,
@@ -82,7 +68,6 @@ const WAKE_ROLE_CONFIGS: Record<ShipRole, WakeRoleConfig> = {
     sternPatchScale: new THREE.Vector2(6.4, 8.8),
     surfaceFanLength: 20.8,
     surfaceFanWidth: 5.4,
-    surfaceSpread: 0.22,
     underwaterRibbonLength: 23.5,
     underwaterRibbonWidth: 8.8,
     bubbleCount: 24,
@@ -99,13 +84,7 @@ interface WakeSlot {
   readonly shipId: string;
   readonly roleConfig: WakeRoleConfig;
   readonly root: THREE.Group;
-  readonly surfaceRoot: THREE.Group;
   readonly underwaterRoot: THREE.Group;
-  readonly sternPatch: THREE.Mesh<THREE.CircleGeometry, THREE.MeshBasicMaterial>;
-  readonly leftFan: THREE.Mesh<THREE.ShapeGeometry, THREE.MeshBasicMaterial>;
-  readonly rightFan: THREE.Mesh<THREE.ShapeGeometry, THREE.MeshBasicMaterial>;
-  readonly surfaceFoam: THREE.InstancedMesh<THREE.ShapeGeometry, THREE.MeshBasicMaterial>;
-  readonly surfaceSpray: THREE.InstancedMesh<THREE.IcosahedronGeometry, THREE.MeshBasicMaterial>;
   readonly trailFoam: readonly THREE.InstancedMesh<THREE.ShapeGeometry, THREE.MeshBasicMaterial>[];
   readonly trailCutouts: THREE.InstancedMesh<THREE.CircleGeometry, THREE.Material>;
   readonly trailVariantCounts: number[];
@@ -141,16 +120,12 @@ export interface ShipWakeSnapshot {
 
 export class ShipWakeFX {
   private readonly root = new THREE.Group();
-  private readonly sternPatchGeometry = new THREE.CircleGeometry(1, 24);
-  private readonly wakeFanGeometry = this.createWakeFanGeometry();
-  private readonly surfaceFoamGeometry = this.createFoamFleckGeometry();
   private readonly trailFoamGeometries = Array.from({ length: TRAIL_FOAM_VARIANTS }, (_, index) =>
     this.createTrailFoamGeometry(index),
   );
   private readonly trailCutoutGeometry = new THREE.CircleGeometry(1, 18);
   private readonly underwaterRibbonGeometry = this.createUnderwaterRibbonGeometry();
   private readonly bubbleGeometry = new THREE.IcosahedronGeometry(0.12, 0);
-  private readonly surfaceSprayGeometry = new THREE.IcosahedronGeometry(0.1, 0);
   private readonly bubbleDummy = new THREE.Object3D();
   private readonly cutoutDummy = new THREE.Object3D();
   private readonly trailPrevious = new THREE.Vector3();
@@ -196,7 +171,6 @@ export class ShipWakeFX {
       slot.root.rotation.set(0, ship.heading, 0, 'YXZ');
       slot.root.visible = slot.strength > 0.01;
 
-      this.updateSurfaceLayer(slot, speedRatio, snapshot.underwaterRatio);
       this.updateTrailLayer(slot, speedRatio, targetStrength * (1 - THREE.MathUtils.smoothstep(snapshot.underwaterRatio, 0.08, 0.78)), snapshot);
       this.updateUnderwaterLayer(slot, speedRatio, snapshot.underwaterRatio);
     }
@@ -207,13 +181,6 @@ export class ShipWakeFX {
       slot.strength = 0;
       slot.phase = Math.random() * Math.PI * 2;
       slot.root.visible = false;
-      slot.sternPatch.material.opacity = 0;
-      slot.leftFan.material.opacity = 0;
-      slot.rightFan.material.opacity = 0;
-      slot.surfaceFoam.material.opacity = 0;
-      slot.surfaceFoam.count = 0;
-      slot.surfaceSpray.material.opacity = 0;
-      slot.surfaceSpray.count = 0;
       for (const trailFoam of slot.trailFoam) {
         trailFoam.material.opacity = 0;
         trailFoam.count = 0;
@@ -234,23 +201,14 @@ export class ShipWakeFX {
 
   dispose(): void {
     this.root.removeFromParent();
-    this.sternPatchGeometry.dispose();
-    this.wakeFanGeometry.dispose();
-    this.surfaceFoamGeometry.dispose();
     for (const geometry of this.trailFoamGeometries) {
       geometry.dispose();
     }
     this.trailCutoutGeometry.dispose();
     this.underwaterRibbonGeometry.dispose();
     this.bubbleGeometry.dispose();
-    this.surfaceSprayGeometry.dispose();
 
     for (const slot of this.slots.values()) {
-      slot.sternPatch.material.dispose();
-      slot.leftFan.material.dispose();
-      slot.rightFan.material.dispose();
-      slot.surfaceFoam.material.dispose();
-      slot.surfaceSpray.material.dispose();
       for (const trailFoam of slot.trailFoam) {
         trailFoam.material.dispose();
       }
@@ -263,73 +221,7 @@ export class ShipWakeFX {
   private createSlot(ship: Ship): WakeSlot {
     const roleConfig = WAKE_ROLE_CONFIGS[ship.role];
     const root = new THREE.Group();
-    const surfaceRoot = new THREE.Group();
     const underwaterRoot = new THREE.Group();
-
-    const sternPatchMaterial = this.createWakeMaterial(
-      SURFACE_WAKE_LOOK.sternColor,
-      SURFACE_WAKE_LOOK.sternOpacity,
-      THREE.NormalBlending,
-      true,
-    );
-    const sternPatch = new THREE.Mesh(this.sternPatchGeometry, sternPatchMaterial);
-    sternPatch.rotation.x = -Math.PI / 2;
-    sternPatch.position.y = SURFACE_OFFSET;
-    sternPatch.frustumCulled = false;
-    sternPatch.renderOrder = 22;
-
-    const leftFanMaterial = this.createWakeMaterial(
-      SURFACE_WAKE_LOOK.fanColor,
-      SURFACE_WAKE_LOOK.fanOpacity,
-      THREE.NormalBlending,
-      true,
-    );
-    const leftFan = new THREE.Mesh(this.wakeFanGeometry, leftFanMaterial);
-    leftFan.rotation.x = -Math.PI / 2;
-    leftFan.position.set(-0.08, SURFACE_OFFSET + 0.01, -0.24);
-    leftFan.frustumCulled = false;
-    leftFan.renderOrder = 22;
-
-    const rightFanMaterial = this.createWakeMaterial(
-      SURFACE_WAKE_LOOK.fanColor,
-      SURFACE_WAKE_LOOK.fanOpacity,
-      THREE.NormalBlending,
-      true,
-    );
-    const rightFan = new THREE.Mesh(this.wakeFanGeometry, rightFanMaterial);
-    rightFan.rotation.x = -Math.PI / 2;
-    rightFan.position.set(0.08, SURFACE_OFFSET + 0.01, -0.24);
-    rightFan.frustumCulled = false;
-    rightFan.renderOrder = 22;
-
-    const surfaceFoamMaterial = this.createWakeMaterial(
-      SURFACE_WAKE_LOOK.foamColor,
-      SURFACE_WAKE_LOOK.foamOpacity,
-      THREE.NormalBlending,
-      true,
-    );
-    const surfaceFoam = new THREE.InstancedMesh(this.surfaceFoamGeometry, surfaceFoamMaterial, MAX_SURFACE_FOAM);
-    surfaceFoam.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    surfaceFoam.count = 0;
-    surfaceFoam.frustumCulled = false;
-    surfaceFoam.renderOrder = 24;
-
-    const surfaceSprayMaterial = new THREE.MeshBasicMaterial({
-      color: new THREE.Color(SURFACE_WAKE_LOOK.sprayColor),
-      transparent: true,
-      opacity: 0,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending,
-    });
-    surfaceSprayMaterial.fog = true;
-    surfaceSprayMaterial.toneMapped = false;
-    surfaceSprayMaterial.userData.baseOpacity = SURFACE_WAKE_LOOK.sprayOpacity;
-
-    const surfaceSpray = new THREE.InstancedMesh(this.surfaceSprayGeometry, surfaceSprayMaterial, MAX_SURFACE_SPRAY);
-    surfaceSpray.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    surfaceSpray.count = 0;
-    surfaceSpray.frustumCulled = false;
-    surfaceSpray.renderOrder = 23;
 
     const trailFoam = this.trailFoamGeometries.map((geometry, index) => {
       const mesh = new THREE.InstancedMesh(
@@ -402,9 +294,8 @@ export class ShipWakeFX {
     bubbles.frustumCulled = false;
     bubbles.renderOrder = 4;
 
-    surfaceRoot.add(sternPatch, leftFan, rightFan, surfaceFoam, surfaceSpray);
     underwaterRoot.add(underwaterRibbon, bubbles);
-    root.add(surfaceRoot, underwaterRoot);
+    root.add(underwaterRoot);
     root.visible = false;
     this.root.add(root);
 
@@ -412,13 +303,7 @@ export class ShipWakeFX {
       shipId: ship.id,
       roleConfig,
       root,
-      surfaceRoot,
       underwaterRoot,
-      sternPatch,
-      leftFan,
-      rightFan,
-      surfaceFoam,
-      surfaceSpray,
       trailFoam,
       trailCutouts,
       trailVariantCounts,
@@ -496,38 +381,6 @@ export class ShipWakeFX {
     return material;
   }
 
-  private createWakeFanGeometry(): THREE.ShapeGeometry {
-    const shape = new THREE.Shape();
-    shape.moveTo(-0.12, 0);
-    shape.lineTo(0.12, 0);
-    shape.lineTo(1.08, 1);
-    shape.lineTo(-1.08, 1);
-    shape.closePath();
-    return new THREE.ShapeGeometry(shape, 1);
-  }
-
-  private createFoamFleckGeometry(): THREE.ShapeGeometry {
-    const shape = new THREE.Shape();
-    const points = [
-      new THREE.Vector2(-0.56, -0.1),
-      new THREE.Vector2(-0.42, 0.13),
-      new THREE.Vector2(-0.16, 0.22),
-      new THREE.Vector2(0.2, 0.18),
-      new THREE.Vector2(0.54, 0.07),
-      new THREE.Vector2(0.62, -0.12),
-      new THREE.Vector2(0.32, -0.24),
-      new THREE.Vector2(-0.06, -0.22),
-      new THREE.Vector2(-0.38, -0.18),
-    ];
-
-    shape.moveTo(points[0].x, points[0].y);
-    for (let index = 1; index < points.length; index += 1) {
-      shape.lineTo(points[index].x, points[index].y);
-    }
-    shape.closePath();
-    return new THREE.ShapeGeometry(shape, 1);
-  }
-
   private createTrailFoamGeometry(variant: number): THREE.ShapeGeometry {
     const shape = new THREE.Shape();
     const basePoints = [
@@ -583,19 +436,6 @@ export class ShipWakeFX {
     shape.lineTo(-1.4, 1);
     shape.closePath();
     return new THREE.ShapeGeometry(shape, 1);
-  }
-
-  private updateSurfaceLayer(slot: WakeSlot, speedRatio: number, underwaterRatio: number): void {
-    void speedRatio;
-    void underwaterRatio;
-    slot.surfaceRoot.visible = false;
-    slot.sternPatch.material.opacity = 0;
-    slot.leftFan.material.opacity = 0;
-    slot.rightFan.material.opacity = 0;
-    slot.surfaceFoam.material.opacity = 0;
-    slot.surfaceFoam.count = 0;
-    slot.surfaceSpray.material.opacity = 0;
-    slot.surfaceSpray.count = 0;
   }
 
   private updateTrailLayer(
@@ -775,8 +615,8 @@ export class ShipWakeFX {
     const roleScale = Math.max(0.9, Math.sqrt(slot.roleConfig.sternPatchScale.x * slot.roleConfig.sternPatchScale.y) * 0.38);
     const wakeWidth = slot.roleConfig.surfaceFanWidth * (0.74 + speedRatio * 0.62);
     const wakeLength = Math.max(slot.roleConfig.surfaceFanLength * 0.24, slot.bowWakeTrailLength);
-    const stampCount = Math.min(18, (speedRatio > 0.42 ? 7 : 5) + Math.floor(wakeLength / 12));
-    const bowStampCount = Math.max(3, Math.ceil(stampCount * 0.32));
+    const stampCount = Math.min(12, (speedRatio > 0.42 ? 5 : 3) + Math.floor(wakeLength / 16));
+    const bowStampCount = Math.max(2, Math.ceil(stampCount * 0.3));
 
     for (let index = 0; index < stampCount; index += 1) {
       const laneBias = Math.sin(slot.phase * 1.37 + index * 2.41 + Math.random() * 0.4);
@@ -793,7 +633,7 @@ export class ShipWakeFX {
       slot.nextTrailStamp = (slot.nextTrailStamp + 1) % slot.trailStamps.length;
       stamp.active = true;
       stamp.age = 0;
-      stamp.lifetime = THREE.MathUtils.lerp(2.9, 5.2, speedRatio) * THREE.MathUtils.lerp(0.82, 1.18, surfaceOpacity);
+      stamp.lifetime = THREE.MathUtils.lerp(2.4, 4.1, speedRatio) * THREE.MathUtils.lerp(0.74, 1.02, surfaceOpacity);
       stamp.position.set(
         x - forwardX * longitudinal + rightX * (spread + noise),
         0,
@@ -802,7 +642,7 @@ export class ShipWakeFX {
       stamp.yaw = heading + Math.PI * 0.5 + THREE.MathUtils.randFloatSpread(0.92) + centerBias * 0.26;
       const stampSize =
         roleScale *
-        THREE.MathUtils.lerp(0.36 + centerWeight * 0.2, 0.92 + centerWeight * 0.24, Math.random());
+        THREE.MathUtils.lerp(0.3 + centerWeight * 0.16, 0.74 + centerWeight * 0.18, Math.random());
       stamp.width = stampSize * THREE.MathUtils.lerp(0.9, 1.12, Math.random());
       stamp.length = stampSize * THREE.MathUtils.lerp(0.86, 1.08, Math.random());
       stamp.phase = slot.phase + index * FOAM_GOLDEN_ANGLE + Math.random() * 0.08;
