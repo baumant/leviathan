@@ -70,6 +70,7 @@ const CAPITAL_TOPSIDE_SUBSURFACE_OPACITY_MIN = 0.1;
 const CAPITAL_TOPSIDE_SUBSURFACE_OPACITY_MAX = 0.48;
 const CAPITAL_TOPSIDE_SUBSURFACE_HULL_BLEND = 0.14;
 const ROWBOAT_TOPSIDE_SUBSURFACE_HULL_BLEND = 0.24;
+const ROWBOAT_BILGE_OCCLUDER_Y = 0.08;
 
 type ShipDamageReactionProfile = 'default' | 'capital_ram' | 'capital_breach';
 
@@ -921,7 +922,37 @@ export class Ship {
     rightOar.rotation.z *= -1;
 
     this.fallbackVisualRoot.add(hullBottom, hullTop, gunwale, bench, bow, stern, leftOar, rightOar);
+    this.visualRoot.add(this.createRowboatBilgeOccluder());
     this.addLantern(new THREE.Vector3(0, 0.62, -0.08));
+  }
+
+  private createRowboatBilgeOccluder(): THREE.Mesh<THREE.ShapeGeometry, THREE.MeshToonMaterial> {
+    const shape = new THREE.Shape();
+    shape.moveTo(0, 1.78);
+    shape.lineTo(0.42, 1.48);
+    shape.lineTo(0.58, 0.7);
+    shape.lineTo(0.55, -1.2);
+    shape.lineTo(0.32, -1.76);
+    shape.lineTo(0, -1.94);
+    shape.lineTo(-0.32, -1.76);
+    shape.lineTo(-0.55, -1.2);
+    shape.lineTo(-0.58, 0.7);
+    shape.lineTo(-0.42, 1.48);
+    shape.closePath();
+
+    const material = createCelMaterial({
+      color: '#2b211a',
+      emissive: '#0b1116',
+      emissiveIntensity: 0.03,
+      side: THREE.DoubleSide,
+    });
+    const occluder = new THREE.Mesh(new THREE.ShapeGeometry(shape), material);
+    occluder.name = 'Rowboat_Bilge_Occluder';
+    occluder.rotation.x = Math.PI / 2;
+    occluder.position.set(0, ROWBOAT_BILGE_OCCLUDER_Y, 0.02);
+    occluder.receiveShadow = true;
+    occluder.frustumCulled = false;
+    return occluder;
   }
 
   private buildFlagship(): void {
