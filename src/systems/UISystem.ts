@@ -20,6 +20,14 @@ export interface HUDShipBarSnapshot {
   width: number;
 }
 
+export interface HUDCrewPointerSnapshot {
+  alpha: number;
+  angleRadians: number;
+  mode: 'edge' | 'marker';
+  screenX: number;
+  screenY: number;
+}
+
 export type HUDLeaderboardStatus = 'unavailable' | 'loading' | 'needs_name' | 'submitting' | 'ready' | 'error';
 
 export interface HUDRunSummarySnapshot {
@@ -48,6 +56,7 @@ export interface HUDLeaderboardSnapshot {
 
 export interface HUDSnapshot {
   capitalShipBars: HUDShipBarSnapshot[];
+  crewPointer?: HUDCrewPointerSnapshot;
   objective: string;
   whaleHealth: number;
   whaleAir: number;
@@ -102,6 +111,7 @@ export class UISystem {
   private readonly timeValueEl = document.createElement('div');
   private readonly shipsDestroyedValueEl = document.createElement('div');
   private readonly shipBarsLayer = document.createElement('div');
+  private readonly crewPointerEl = document.createElement('div');
   private readonly overlayCard = document.createElement('section');
   private readonly overlayTitle = document.createElement('h2');
   private readonly overlayCopy = document.createElement('p');
@@ -203,6 +213,10 @@ export class UISystem {
 
     this.shipBarsLayer.className = 'hud__ship-bars';
 
+    this.crewPointerEl.className = 'hud__crew-pointer';
+    this.crewPointerEl.hidden = true;
+    this.crewPointerEl.setAttribute('aria-hidden', 'true');
+
     this.goalFlashEl.className = 'hud__goal-flash';
     this.goalFlashTitleEl.className = 'hud__goal-flash-title';
     this.goalFlashCopyEl.className = 'hud__goal-flash-copy';
@@ -287,6 +301,7 @@ export class UISystem {
       this.topRow,
       this.bottomRow,
       this.shipBarsLayer,
+      this.crewPointerEl,
       this.goalFlashEl,
       this.controlsStrip,
       this.overlayCard,
@@ -332,6 +347,7 @@ export class UISystem {
     this.setBar(this.airFill, this.airValue, snapshot.whaleAir);
     this.updateWhaleHealFeedback(snapshot.whaleHealFeedbackText, snapshot.whaleHealFeedbackAlpha ?? 0);
     this.syncCapitalShipBars(snapshot.capitalShipBars);
+    this.updateCrewPointer(snapshot.crewPointer);
     this.updateGoalFlash(snapshot.goalFlashTitle, snapshot.goalFlashText, snapshot.goalFlashAlpha ?? 0);
 
     this.scoreValueEl.textContent = `${snapshot.score}`;
@@ -597,6 +613,24 @@ export class UISystem {
     this.goalFlashEl.hidden = !visible;
     this.goalFlashEl.style.opacity = `${clampedAlpha}`;
     this.goalFlashEl.style.transform = `translate(-50%, ${THREE.MathUtils.lerp(-8, 0, clampedAlpha).toFixed(1)}px)`;
+  }
+
+  private updateCrewPointer(pointer: HUDCrewPointerSnapshot | undefined): void {
+    const alpha = THREE.MathUtils.clamp(pointer?.alpha ?? 0, 0, 1);
+    const visible = Boolean(pointer) && alpha > 0.001;
+
+    this.crewPointerEl.hidden = !visible;
+
+    if (!pointer || !visible) {
+      return;
+    }
+
+    this.crewPointerEl.classList.toggle('hud__crew-pointer--edge', pointer.mode === 'edge');
+    this.crewPointerEl.classList.toggle('hud__crew-pointer--marker', pointer.mode === 'marker');
+    this.crewPointerEl.style.left = `${pointer.screenX}px`;
+    this.crewPointerEl.style.top = `${pointer.screenY}px`;
+    this.crewPointerEl.style.opacity = `${alpha}`;
+    this.crewPointerEl.style.setProperty('--hud-crew-pointer-angle', `${pointer.angleRadians}rad`);
   }
 
   private syncCapitalShipBars(shipBars: readonly HUDShipBarSnapshot[]): void {

@@ -64,6 +64,7 @@ import {
   type HUDLeaderboardSnapshot,
   type HUDLeaderboardStatus,
   type HUDRunSummarySnapshot,
+  type HUDCrewPointerSnapshot,
   type HUDShipBarSnapshot,
   UISystem,
 } from '../systems/UISystem';
@@ -120,6 +121,13 @@ const GOAL_FLASH_TEXT = 'Take your revenge on the whalers.';
 const GOAL_FLASH_FADE_IN_SECONDS = 0.28;
 const GOAL_FLASH_HOLD_SECONDS = 2.8;
 const GOAL_FLASH_DURATION_SECONDS = 4.2;
+const CREW_EAT_FLASH_TEXT = 'Let the fallen return to the sea. Feed, and be restored.';
+const CREW_EAT_FLASH_FADE_IN_SECONDS = 0.24;
+const CREW_EAT_FLASH_HOLD_SECONDS = 4.4;
+const CREW_EAT_FLASH_DURATION_SECONDS = 6.2;
+const CREW_POINTER_SAFE_MARGIN_X = 52;
+const CREW_POINTER_SAFE_MARGIN_TOP = 122;
+const CREW_POINTER_SAFE_MARGIN_BOTTOM = 154;
 const MAX_OCEAN_LANTERN_INFLUENCES = 4;
 const MAX_OCEAN_LANTERN_INFLUENCE_POOL = 48;
 const MAX_OCEAN_REVEAL_WINDOWS = 8;
@@ -380,6 +388,8 @@ export class OceanScene {
   private readonly tempCrewOrigin = new THREE.Vector3();
   private readonly tempCrewLaunchDirection = new THREE.Vector3();
   private readonly tempCrewSplashPoint = new THREE.Vector3();
+  private readonly tempCrewPointerPoint = new THREE.Vector3();
+  private readonly tempCrewPointerProjection = new THREE.Vector3();
   private readonly tempLanternPosition = new THREE.Vector3();
   private readonly underwaterRockColliders: readonly UnderwaterRockCollider[];
   private readonly rescueTowOrigins = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
@@ -440,6 +450,9 @@ export class OceanScene {
   private crewHealFeedbackTime = 0;
   private crewHealFeedbackText = '';
   private goalFlashElapsed = 0;
+  private crewEatFlashElapsed = CREW_EAT_FLASH_DURATION_SECONDS;
+  private crewEatHintShown = false;
+  private crewPointerTarget: OverboardCrew | null = null;
   private phase: ArenaPhase = 'playing';
   private score = 0;
   private shipsDestroyed = 0;
@@ -570,6 +583,9 @@ export class OceanScene {
     this.tailSlapPresentationActive = false;
     this.clearCrewHealFeedback();
     this.goalFlashElapsed = 0;
+    this.crewEatFlashElapsed = CREW_EAT_FLASH_DURATION_SECONDS;
+    this.crewEatHintShown = false;
+    this.clearCrewPointer();
     this.activeTethers = 0;
     this.corporateArrivalState = 'pending';
     this.corporateRowboatsLaunched = false;
@@ -629,6 +645,11 @@ export class OceanScene {
     if (this.phase === 'playing') {
       this.runElapsedSeconds += deltaSeconds;
       this.goalFlashElapsed = Math.min(this.goalFlashElapsed + deltaSeconds, GOAL_FLASH_DURATION_SECONDS);
+      this.crewEatFlashElapsed = Math.min(
+        this.crewEatFlashElapsed + deltaSeconds,
+        CREW_EAT_FLASH_DURATION_SECONDS,
+      );
+      this.updateCrewPointerTarget();
     }
 
     let movementResult: WhaleMovementResult | null = null;
@@ -2229,9 +2250,20 @@ export class OceanScene {
     this.overboardCrew.push(crew);
     this.scene.add(crew.root);
     this.lastCrewDropByShipId.set(ship.id, this.elapsedSeconds);
+    this.triggerCrewEatHintFlash(crew);
     this.audio.playCue('crew.scream', this.tempCrewOrigin, {
       intensity: ship.role === 'corporate_whaler' ? 0.68 : ship.role === 'flagship' ? 0.54 : 0.42,
     });
+  }
+
+  private triggerCrewEatHintFlash(crew: OverboardCrew): void {
+    if (this.crewEatHintShown) {
+      return;
+    }
+
+    this.crewEatHintShown = true;
+    this.crewEatFlashElapsed = 0;
+    this.crewPointerTarget = crew;
   }
 
   private computeOverboardCrewLaunch(ship: Ship, origin: THREE.Vector3, direction: THREE.Vector3): void {
@@ -2263,16 +2295,40 @@ export class OceanScene {
 
   private removeOverboardCrew(index: number): void {
     const crew = this.overboardCrew[index];
+    if (crew === this.crewPointerTarget) {
+      this.clearCrewPointer();
+    }
+
     crew.dispose();
     this.overboardCrew.splice(index, 1);
   }
 
   private clearOverboardCrew(): void {
+    this.clearCrewPointer();
+
     for (const crew of this.overboardCrew) {
       crew.dispose();
     }
 
     this.overboardCrew.length = 0;
+  }
+
+  private updateCrewPointerTarget(): void {
+    if (!this.crewPointerTarget) {
+      return;
+    }
+
+    if (
+      !this.crewPointerTarget.active ||
+      this.crewEatFlashElapsed >= CREW_EAT_FLASH_DURATION_SECONDS
+    ) {
+      this.clearCrewPointer();
+      return;
+    }
+  }
+
+  private clearCrewPointer(): void {
+    this.crewPointerTarget = null;
   }
 
   private syncTetherDragState(): void {
@@ -3622,6 +3678,81 @@ export class OceanScene {
     return visibleBars;
   }
 
+  private collectCrewPointer(alpha: number): HUDCrewPointerSnapshot | undefined {
+    if (this.phase !== 'playing' || !this.crewPointerTarget?.active || alpha <= 0.001) {
+      return undefined;
+    }
+
+    this.tempCrewPointerPoint.copy(this.crewPointerTarget.position);
+    this.tempCameraSpacePoint.copy(this.tempCrewPointerPoint).applyMatrix4(this.camera.matrixWorldInverse);
+    this.tempCrewPointerProjection.copy(this.tempCrewPointerPoint).project(this.camera);
+
+    const centerX = this.viewportWidth * 0.5;
+    const centerY = this.viewportHeight * 0.5;
+    const safeLeft = CREW_POINTER_SAFE_MARGIN_X;
+    const safeRight = Math.max(safeLeft + 1, this.viewportWidth - CREW_POINTER_SAFE_MARGIN_X);
+    const safeTop = CREW_POINTER_SAFE_MARGIN_TOP;
+    const safeBottom = Math.max(safeTop + 1, this.viewportHeight - CREW_POINTER_SAFE_MARGIN_BOTTOM);
+    const projectedX = (this.tempCrewPointerProjection.x * 0.5 + 0.5) * this.viewportWidth;
+    const projectedY = (-this.tempCrewPointerProjection.y * 0.5 + 0.5) * this.viewportHeight;
+    const behindCamera = this.tempCameraSpacePoint.z >= -this.camera.near;
+    const finiteProjection = Number.isFinite(projectedX) && Number.isFinite(projectedY);
+
+    if (
+      !behindCamera &&
+      finiteProjection &&
+      this.tempCrewPointerProjection.z >= -1 &&
+      this.tempCrewPointerProjection.z <= 1 &&
+      projectedX >= safeLeft &&
+      projectedX <= safeRight &&
+      projectedY >= safeTop &&
+      projectedY <= safeBottom
+    ) {
+      return {
+        alpha,
+        angleRadians: 0,
+        mode: 'marker',
+        screenX: projectedX,
+        screenY: projectedY,
+      };
+    }
+
+    let directionX = finiteProjection ? projectedX - centerX : this.tempCameraSpacePoint.x;
+    let directionY = finiteProjection ? projectedY - centerY : -this.tempCameraSpacePoint.y;
+
+    if (behindCamera) {
+      directionX *= -1;
+      directionY *= -1;
+    }
+
+    if (!Number.isFinite(directionX) || !Number.isFinite(directionY) || Math.hypot(directionX, directionY) <= 0.001) {
+      directionX = 0;
+      directionY = -1;
+    }
+
+    const scaleX =
+      directionX > 0
+        ? (safeRight - centerX) / directionX
+        : directionX < 0
+          ? (safeLeft - centerX) / directionX
+          : Number.POSITIVE_INFINITY;
+    const scaleY =
+      directionY > 0
+        ? (safeBottom - centerY) / directionY
+        : directionY < 0
+          ? (safeTop - centerY) / directionY
+          : Number.POSITIVE_INFINITY;
+    const edgeScale = Math.max(0, Math.min(scaleX, scaleY));
+
+    return {
+      alpha,
+      angleRadians: Math.atan2(directionY, directionX),
+      mode: 'edge',
+      screenX: THREE.MathUtils.clamp(centerX + directionX * edgeScale, safeLeft, safeRight),
+      screenY: THREE.MathUtils.clamp(centerY + directionY * edgeScale, safeTop, safeBottom),
+    };
+  }
+
   private updateHud(): void {
     const livingShips = this.ships.filter((ship) => !ship.sinking);
     const rowboatsRemaining = livingShips.filter((ship) => ship.role === 'rowboat').length;
@@ -3732,9 +3863,14 @@ export class OceanScene {
 
     const tailSlapAvailable =
       this.phase === 'playing' && !this.whale.submerged && this.whale.actionState === 'swim';
+    const crewEatFlashAlpha = this.phase === 'playing' ? this.getCrewEatFlashAlpha() : 0;
+    const openingFlashAlpha = this.phase === 'playing' ? this.getGoalFlashAlpha() : 0;
+    const showCrewEatFlash = crewEatFlashAlpha > 0;
+    const crewPointer = this.collectCrewPointer(crewEatFlashAlpha);
 
     this.ui.update({
       capitalShipBars,
+      crewPointer,
       objective,
       whaleHealth: this.whale.health / this.whale.maxHealth,
       whaleAir: airPercent,
@@ -3754,16 +3890,39 @@ export class OceanScene {
       overlayLeaderboard,
       showActionControls: this.phase === 'playing',
       tailSlapAvailable,
-      goalFlashTitle: this.phase === 'playing' ? GOAL_FLASH_TITLE : undefined,
-      goalFlashText: this.phase === 'playing' ? GOAL_FLASH_TEXT : undefined,
-      goalFlashAlpha: this.phase === 'playing' ? this.getGoalFlashAlpha() : 0,
+      goalFlashTitle: !showCrewEatFlash && openingFlashAlpha > 0 ? GOAL_FLASH_TITLE : undefined,
+      goalFlashText: showCrewEatFlash ? CREW_EAT_FLASH_TEXT : GOAL_FLASH_TEXT,
+      goalFlashAlpha: showCrewEatFlash ? crewEatFlashAlpha : openingFlashAlpha,
     });
   }
 
   private getGoalFlashAlpha(): number {
-    const fadeInAlpha = THREE.MathUtils.smoothstep(this.goalFlashElapsed, 0, GOAL_FLASH_FADE_IN_SECONDS);
+    return this.getHudFlashAlpha(
+      this.goalFlashElapsed,
+      GOAL_FLASH_FADE_IN_SECONDS,
+      GOAL_FLASH_HOLD_SECONDS,
+      GOAL_FLASH_DURATION_SECONDS,
+    );
+  }
+
+  private getCrewEatFlashAlpha(): number {
+    return this.getHudFlashAlpha(
+      this.crewEatFlashElapsed,
+      CREW_EAT_FLASH_FADE_IN_SECONDS,
+      CREW_EAT_FLASH_HOLD_SECONDS,
+      CREW_EAT_FLASH_DURATION_SECONDS,
+    );
+  }
+
+  private getHudFlashAlpha(
+    elapsedSeconds: number,
+    fadeInSeconds: number,
+    holdSeconds: number,
+    durationSeconds: number,
+  ): number {
+    const fadeInAlpha = THREE.MathUtils.smoothstep(elapsedSeconds, 0, fadeInSeconds);
     const fadeOutAlpha =
-      1 - THREE.MathUtils.smoothstep(this.goalFlashElapsed, GOAL_FLASH_HOLD_SECONDS, GOAL_FLASH_DURATION_SECONDS);
+      1 - THREE.MathUtils.smoothstep(elapsedSeconds, holdSeconds, durationSeconds);
 
     return THREE.MathUtils.clamp(fadeInAlpha * fadeOutAlpha, 0, 1);
   }
