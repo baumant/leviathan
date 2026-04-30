@@ -71,6 +71,8 @@ const CAPITAL_TOPSIDE_SUBSURFACE_OPACITY_MAX = 0.48;
 const CAPITAL_TOPSIDE_SUBSURFACE_HULL_BLEND = 0.14;
 const ROWBOAT_TOPSIDE_SUBSURFACE_HULL_BLEND = 0.24;
 const ROWBOAT_BILGE_OCCLUDER_Y = 0.08;
+const ROWBOAT_TETHER_BOW_INSET = 0.2;
+const ROWBOAT_TETHER_GUNWALE_DROP = 0.05;
 
 type ShipDamageReactionProfile = 'default' | 'capital_ram' | 'capital_breach';
 
@@ -224,6 +226,7 @@ export class Ship {
   private readonly starboardCannonOffsets: THREE.Vector3[] = [];
   private readonly wakeOriginLocal = new THREE.Vector3();
   private readonly harpoonOriginLocal = new THREE.Vector3();
+  private readonly tetherOriginLocal = new THREE.Vector3();
   private readonly towPortOriginLocal = new THREE.Vector3();
   private readonly towStarboardOriginLocal = new THREE.Vector3();
   private readonly reinforcementLaunchOffsets: THREE.Vector3[] = [];
@@ -256,6 +259,7 @@ export class Ship {
   private airborneVelocity = 0;
   private destroyedVisualHidden = false;
   private readonly tempMarkerPoint = new THREE.Vector3();
+  private readonly tempMarkerBounds = new THREE.Box3();
   private capitalShipVisualAsset: CapitalShipVisualAsset | null = null;
   private rowboatVisualAssetRoot: THREE.Group | null = null;
   private rowboatWakeOriginNode: THREE.Object3D | null = null;
@@ -761,6 +765,10 @@ export class Ship {
     return this.root.localToWorld(target.copy(this.harpoonOriginLocal));
   }
 
+  getTetherOrigin(target = new THREE.Vector3()): THREE.Vector3 {
+    return this.root.localToWorld(target.copy(this.tetherOriginLocal));
+  }
+
   getBroadsideOrigins(side: BroadsideSide): THREE.Vector3[] {
     const offsets = side === 'port' ? this.portCannonOffsets : this.starboardCannonOffsets;
     return offsets.map((offset) => this.root.localToWorld(offset.clone()));
@@ -940,6 +948,7 @@ export class Ship {
 
   private buildRowboat(): void {
     this.harpoonOriginLocal.set(0, 0.88 + this.roleConfig.visualDraftOffset, 2.2);
+    this.tetherOriginLocal.set(0, 0.64 + this.roleConfig.visualDraftOffset, 2.02);
     this.wakeOriginLocal.set(0, 0.3 + this.roleConfig.visualDraftOffset, -3.2);
     this.towPortOriginLocal.set(-0.64, 0.4 + this.roleConfig.visualDraftOffset, -2.68);
     this.towStarboardOriginLocal.set(0.64, 0.4 + this.roleConfig.visualDraftOffset, -2.68);
@@ -1009,6 +1018,7 @@ export class Ship {
 
   private buildFlagship(): void {
     this.harpoonOriginLocal.set(0, 2.4 + this.roleConfig.visualDraftOffset, 7.6);
+    this.tetherOriginLocal.copy(this.harpoonOriginLocal);
     this.wakeOriginLocal.set(0, 0.72 + this.roleConfig.visualDraftOffset, -9.4);
     this.towPortOriginLocal.set(-1.7, 1.08 + this.roleConfig.visualDraftOffset, -8.2);
     this.towStarboardOriginLocal.set(1.7, 1.08 + this.roleConfig.visualDraftOffset, -8.2);
@@ -1066,6 +1076,7 @@ export class Ship {
 
   private buildCorporateWhaler(): void {
     this.harpoonOriginLocal.set(0, 3.8 + this.roleConfig.visualDraftOffset, 14.8);
+    this.tetherOriginLocal.copy(this.harpoonOriginLocal);
     this.wakeOriginLocal.set(0, 1.12 + this.roleConfig.visualDraftOffset, -18.4);
     this.towPortOriginLocal.set(-2.1, 1.46 + this.roleConfig.visualDraftOffset, -14.8);
     this.towStarboardOriginLocal.set(2.1, 1.46 + this.roleConfig.visualDraftOffset, -14.8);
@@ -1404,6 +1415,7 @@ export class Ship {
 
     this.copyMarkerToLocal(this.rowboatWakeOriginNode, this.root, this.wakeOriginLocal);
     this.copyMarkerToLocal(this.rowboatHarpoonOriginNode, this.root, this.harpoonOriginLocal);
+    this.syncRowboatTetherOriginFromVisualBounds();
 
     const lanternOrigin = this.rowboatLanternOriginNodes[0] ?? null;
     if (lanternOrigin) {
@@ -1424,6 +1436,7 @@ export class Ship {
 
     this.copyMarkerToLocal(asset.wakeOrigin, this.root, this.wakeOriginLocal);
     this.copyMarkerToLocal(asset.harpoonOrigin, this.root, this.harpoonOriginLocal);
+    this.tetherOriginLocal.copy(this.harpoonOriginLocal);
     this.copyMarkerToLocal(asset.towPortOrigin, this.root, this.towPortOriginLocal);
     this.copyMarkerToLocal(asset.towStarboardOrigin, this.root, this.towStarboardOriginLocal);
     this.copyMarkerToLocal(asset.healthBarAnchor, this.root, this.healthBarAnchorLocal);
@@ -1431,6 +1444,46 @@ export class Ship {
     this.syncCannonMarkerOffsets(asset.portCannonOrigins, 'port');
     this.syncCannonMarkerOffsets(asset.starboardCannonOrigins, 'starboard');
     this.syncReinforcementLaunchMarkers(asset.reinforcementLaunchOrigins);
+  }
+
+  private syncRowboatTetherOriginFromVisualBounds(): void {
+    if (!this.rowboatVisualAssetRoot) {
+      return;
+    }
+
+    const assetWorldToLocal = new THREE.Matrix4().copy(this.rowboatVisualAssetRoot.matrixWorld).invert();
+    const meshBounds = new THREE.Box3();
+    this.tempMarkerBounds.makeEmpty();
+    this.rowboatVisualAssetRoot.traverse((object) => {
+      if (!(object instanceof THREE.Mesh) || object.name.startsWith('MarkerProxy_')) {
+        return;
+      }
+
+      if (!object.geometry.boundingBox) {
+        object.geometry.computeBoundingBox();
+      }
+
+      const geometryBounds = object.geometry.boundingBox;
+      if (!geometryBounds) {
+        return;
+      }
+
+      meshBounds.copy(geometryBounds).applyMatrix4(object.matrixWorld).applyMatrix4(assetWorldToLocal);
+      this.tempMarkerBounds.union(meshBounds);
+    });
+
+    if (this.tempMarkerBounds.isEmpty()) {
+      return;
+    }
+
+    this.tempMarkerPoint.set(
+      (this.tempMarkerBounds.min.x + this.tempMarkerBounds.max.x) * 0.5,
+      this.tempMarkerBounds.max.y - ROWBOAT_TETHER_GUNWALE_DROP,
+      this.tempMarkerBounds.max.z - ROWBOAT_TETHER_BOW_INSET,
+    );
+    this.rowboatVisualAssetRoot.localToWorld(this.tempMarkerPoint);
+    this.root.worldToLocal(this.tempMarkerPoint);
+    this.tetherOriginLocal.copy(this.tempMarkerPoint);
   }
 
   private syncLanternMarkerOffsets(markers: readonly THREE.Object3D[]): void {

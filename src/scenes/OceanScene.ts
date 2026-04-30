@@ -108,6 +108,7 @@ const SHIP_BOUNDARY_MARGIN = 3;
 const HARPOON_SPEED = 30;
 const HARPOON_LIFETIME = 2.4;
 const HARPOON_TETHER_DAMAGE_PER_SECOND = 1.35;
+const MAX_LODGED_HARPOONS = 10;
 const CANNONBALL_SPEED = 28;
 const CANNONBALL_LIFETIME = 5.2;
 const CANNON_SPLASH_RADIUS = 4;
@@ -1752,10 +1753,15 @@ export class OceanScene {
   private updateHarpoons(deltaSeconds: number): void {
     for (let index = this.harpoons.length - 1; index >= 0; index -= 1) {
       const harpoon = this.harpoons[index];
+
+      if (harpoon.mode === 'lodged') {
+        continue;
+      }
+
       const owner = this.shipById.get(harpoon.ownerShipId);
 
       if (!owner || owner.sinking || owner.sunk) {
-        this.removeHarpoon(index);
+        this.removeHarpoon(index, true);
         continue;
       }
 
@@ -1775,8 +1781,14 @@ export class OceanScene {
           this.phase === 'playing' &&
           harpoon.position.distanceTo(this.whale.position) <= this.whale.radius + harpoon.radius
         ) {
-          this.getWhaleTetherAttachPoint(this.tempAttachPoint);
-          harpoon.attach(this.tempAttachPoint);
+          harpoon.getStrikePoint(this.tempAttachPoint);
+          harpoon.attach(this.tempAttachPoint, this.whale.root);
+          owner.getTetherOrigin(this.tempShipOrigin);
+          harpoon.updateTether(
+            this.tempShipOrigin,
+            this.tempAttachPoint,
+            this.getTetherTensionAlpha(harpoon, this.tempShipOrigin, this.tempAttachPoint),
+          );
           this.audio.playCue('harpoon.attach', this.tempAttachPoint, { intensity: 0.82 });
           this.impactShake = Math.max(this.impactShake, 0.08);
         }
@@ -1785,7 +1797,7 @@ export class OceanScene {
       }
 
       this.getWhaleTetherAttachPoint(this.tempAttachPoint);
-      owner.getHarpoonOrigin(this.tempShipOrigin);
+      owner.getTetherOrigin(this.tempShipOrigin);
 
       const tensionAlpha = this.getTetherTensionAlpha(harpoon, this.tempShipOrigin, this.tempAttachPoint);
       harpoon.updateTether(this.tempShipOrigin, this.tempAttachPoint, tensionAlpha);
@@ -1807,7 +1819,7 @@ export class OceanScene {
           this.tempShipVector.copy(this.whale.position).sub(owner.root.position),
           THREE.MathUtils.lerp(0.62, 1, tensionAlpha),
         );
-        this.removeHarpoon(index);
+        this.removeHarpoon(index, true);
         continue;
       }
 
@@ -1817,7 +1829,7 @@ export class OceanScene {
       if (snapped) {
         this.impactShake = Math.max(this.impactShake, 0.14);
         this.audio.playCue('harpoon.snap', this.tempAttachPoint, { intensity: 0.86 });
-        this.removeHarpoon(index);
+        this.removeHarpoon(index, true);
       }
     }
   }
@@ -2133,11 +2145,24 @@ export class OceanScene {
     this.impactShake = Math.max(this.impactShake, 0.12);
   }
 
-  private removeHarpoon(index: number): void {
+  private removeHarpoon(index: number, lodgeTethered = false): void {
     const harpoon = this.harpoons[index];
-    this.activeHarpoonsByShipId.delete(harpoon.ownerShipId);
-    harpoon.deactivate();
+    this.clearActiveHarpoonReference(harpoon);
+
+    if (lodgeTethered && harpoon.mode === 'tethered') {
+      harpoon.lodgeInWhale(this.whale.root);
+      this.enforceLodgedHarpoonLimit();
+      return;
+    }
+
+    harpoon.dispose();
     this.harpoons.splice(index, 1);
+  }
+
+  private clearActiveHarpoonReference(harpoon: Harpoon): void {
+    if (this.activeHarpoonsByShipId.get(harpoon.ownerShipId) === harpoon) {
+      this.activeHarpoonsByShipId.delete(harpoon.ownerShipId);
+    }
   }
 
   private removeHarpoonByShipId(shipId: string): void {
@@ -2150,21 +2175,43 @@ export class OceanScene {
     const index = this.harpoons.indexOf(harpoon);
 
     if (index >= 0) {
-      this.removeHarpoon(index);
+      this.removeHarpoon(index, true);
       return;
     }
 
     this.activeHarpoonsByShipId.delete(shipId);
-    harpoon.deactivate();
+    if (harpoon.mode === 'tethered') {
+      harpoon.lodgeInWhale(this.whale.root);
+      this.harpoons.push(harpoon);
+      this.enforceLodgedHarpoonLimit();
+      return;
+    }
+
+    harpoon.dispose();
   }
 
   private clearHarpoons(): void {
     for (const harpoon of this.harpoons) {
-      harpoon.deactivate();
+      harpoon.dispose();
     }
 
     this.harpoons.length = 0;
     this.activeHarpoonsByShipId.clear();
+  }
+
+  private enforceLodgedHarpoonLimit(): void {
+    let lodgedCount = this.harpoons.filter((harpoon) => harpoon.mode === 'lodged').length;
+
+    while (lodgedCount > MAX_LODGED_HARPOONS) {
+      const oldestLodgedIndex = this.harpoons.findIndex((harpoon) => harpoon.mode === 'lodged');
+
+      if (oldestLodgedIndex < 0) {
+        return;
+      }
+
+      this.removeHarpoon(oldestLodgedIndex);
+      lodgedCount -= 1;
+    }
   }
 
   private removeCannonball(index: number): void {
@@ -2346,7 +2393,7 @@ export class OceanScene {
       }
 
       this.getWhaleTetherAttachPoint(this.tempAttachPoint);
-      ship.getHarpoonOrigin(this.tempShipOrigin);
+      ship.getTetherOrigin(this.tempShipOrigin);
       ship.setTetherPull(this.computeTetherPull(this.getTetherTensionAlpha(harpoon, this.tempShipOrigin, this.tempAttachPoint)));
     }
   }
