@@ -6,6 +6,7 @@ const AMBIENT_COUNT = 88;
 const STREAK_COUNT = 18;
 const BEAM_COUNT = 5;
 const MAX_UNDERSIDE_REVEAL_WINDOWS = 8;
+const DORMANT_ALPHA = 0.005;
 const DOWN_AXIS = new THREE.Vector3(0, -1, 0);
 const UNDERWATER_LOOK = {
   ambientColor: new THREE.Color('#30444a'),
@@ -256,9 +257,11 @@ export class UnderwaterReadabilityFX {
   private readonly streakDrift = new Float32Array(STREAK_COUNT * 2);
   private readonly streaks: THREE.LineSegments;
   private readonly beamAlpha = new Float32Array(BEAM_COUNT);
+  private readonly revealSlotDistances = new Float32Array(MAX_UNDERSIDE_REVEAL_WINDOWS);
   private readonly surfaceBandMaterial: THREE.MeshBasicMaterial;
   private readonly surfaceBand: THREE.Mesh<THREE.RingGeometry, THREE.MeshBasicMaterial>;
   private underwaterAlpha = 0;
+  private readabilityActive = false;
 
   constructor(scene: THREE.Scene, camera: THREE.PerspectiveCamera) {
     if (!camera.parent) {
@@ -320,6 +323,7 @@ export class UnderwaterReadabilityFX {
 
   reset(): void {
     this.underwaterAlpha = 0;
+    this.readabilityActive = false;
     this.root.visible = false;
     this.surfaceOverlayRoot.visible = false;
     this.surfaceBandMaterial.opacity = 0;
@@ -342,9 +346,18 @@ export class UnderwaterReadabilityFX {
       : 0;
     this.underwaterAlpha = THREE.MathUtils.damp(this.underwaterAlpha, targetAlpha, 2.4, snapshot.deltaSeconds);
 
+    if (this.underwaterAlpha <= DORMANT_ALPHA) {
+      if (this.readabilityActive) {
+        this.deactivateVisibleState(snapshot);
+      }
+
+      return;
+    }
+
+    this.readabilityActive = true;
     this.root.position.copy(snapshot.camera.position);
-    this.root.visible = this.underwaterAlpha > 0.01;
-    this.surfaceOverlayRoot.visible = this.underwaterAlpha > 0.01;
+    this.root.visible = true;
+    this.surfaceOverlayRoot.visible = true;
 
     const surfaceOffset = snapshot.surfaceHeightAtCamera - snapshot.camera.position.y - 0.45;
     this.surfaceBand.position.set(0, THREE.MathUtils.clamp(surfaceOffset, 4, 26), 0);
@@ -361,6 +374,29 @@ export class UnderwaterReadabilityFX {
     this.updateAmbientParticles(snapshot);
     this.updateStreaks(snapshot);
     this.updateShipReadability(snapshot);
+  }
+
+  private deactivateVisibleState(snapshot: UnderwaterReadabilitySnapshot): void {
+    this.readabilityActive = false;
+    this.root.visible = false;
+    this.surfaceOverlayRoot.visible = false;
+    this.surfaceBandMaterial.opacity = 0;
+    this.ambientMaterial.opacity = 0;
+    this.streakMaterial.opacity = 0;
+    this.ambientParticles.visible = false;
+    this.streaks.visible = false;
+    this.beamAlpha.fill(0);
+    snapshot.oceanUndersideMesh.material.uniforms.uUnderwaterAlpha.value = 0;
+
+    for (const beam of this.beamSlots) {
+      beam.root.visible = false;
+      beam.materialA.uniforms.uAlpha.value = 0;
+      beam.materialB.uniforms.uAlpha.value = 0;
+    }
+
+    for (const ship of snapshot.ships) {
+      ship.setSubmergedReadabilityCue(0);
+    }
   }
 
   dispose(): void {
@@ -474,8 +510,7 @@ export class UnderwaterReadabilityFX {
       revealStrengths[index] = 0;
     }
 
-    const slotDistances = new Float32Array(MAX_UNDERSIDE_REVEAL_WINDOWS);
-    slotDistances.fill(Number.POSITIVE_INFINITY);
+    this.revealSlotDistances.fill(Number.POSITIVE_INFINITY);
 
     for (const ship of snapshot.ships) {
       if (ship.sunk) {
@@ -501,7 +536,7 @@ export class UnderwaterReadabilityFX {
 
       let insertIndex = -1;
       for (let index = 0; index < MAX_UNDERSIDE_REVEAL_WINDOWS; index += 1) {
-        if (distanceSq < slotDistances[index]) {
+        if (distanceSq < this.revealSlotDistances[index]) {
           insertIndex = index;
           break;
         }
@@ -512,12 +547,12 @@ export class UnderwaterReadabilityFX {
       }
 
       for (let index = MAX_UNDERSIDE_REVEAL_WINDOWS - 1; index > insertIndex; index -= 1) {
-        slotDistances[index] = slotDistances[index - 1];
+        this.revealSlotDistances[index] = this.revealSlotDistances[index - 1];
         revealWindows[index].copy(revealWindows[index - 1]);
         revealStrengths[index] = revealStrengths[index - 1];
       }
 
-      slotDistances[insertIndex] = distanceSq;
+      this.revealSlotDistances[insertIndex] = distanceSq;
       revealWindows[insertIndex].set(
         this.shipRevealPoint.x,
         this.shipRevealPoint.z,
@@ -595,6 +630,10 @@ export class UnderwaterReadabilityFX {
     this.ambientMaterial.opacity = this.underwaterAlpha * floorSupport * (0.06 + speedFactor * 0.03);
     this.ambientParticles.visible = this.ambientMaterial.opacity > 0.005;
 
+    if (!this.ambientParticles.visible) {
+      return;
+    }
+
     for (let index = 0; index < AMBIENT_COUNT; index += 1) {
       const baseIndex = index * 3;
       this.ambientPositions[baseIndex] += Math.sin(snapshot.elapsedSeconds * 0.8 + this.ambientDrift[index]) * snapshot.deltaSeconds * 0.16;
@@ -623,6 +662,10 @@ export class UnderwaterReadabilityFX {
 
     this.streakMaterial.opacity = this.underwaterAlpha * floorSupport * burstAlpha * 0.22;
     this.streaks.visible = this.streakMaterial.opacity > 0.01;
+
+    if (!this.streaks.visible) {
+      return;
+    }
 
     for (let index = 0; index < STREAK_COUNT; index += 1) {
       const start = index * 6;

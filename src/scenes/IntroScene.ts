@@ -46,6 +46,8 @@ const FOG_BANK_OUTER_RADIUS = ARENA_RADIUS * 1.12;
 const FOG_BANK_INNER_HEIGHT = 58;
 const FOG_BANK_OUTER_HEIGHT = 92;
 const MAX_OCEAN_LANTERN_INFLUENCES = 4;
+const MAX_INTRO_OCEAN_LANTERN_INFLUENCE_POOL = 8;
+const MAX_INTRO_REVEAL_WINDOWS = 4;
 
 const FLAGSHIP_START = new THREE.Vector3(0, 0.62, 54);
 const INTRO_HEADING = Math.PI;
@@ -144,11 +146,32 @@ export class IntroScene {
   private readonly tempPoint = new THREE.Vector3();
   private readonly tempPointB = new THREE.Vector3();
   private readonly introStartPosition = new THREE.Vector3();
+  private readonly tempLanternInfluencePool: ShipLanternInfluence[] = Array.from(
+    { length: MAX_INTRO_OCEAN_LANTERN_INFLUENCE_POOL },
+    () => ({ position: new THREE.Vector3(), intensity: 0 }),
+  );
   private readonly tempLanternInfluences: ShipLanternInfluence[] = [];
   private readonly tempRevealPoint = new THREE.Vector3();
   private readonly tempActorAnchor = new THREE.Vector3();
   private readonly tempActorBounds = new THREE.Box3();
+  private readonly oceanRevealWindowPool: PainterlyOceanSubsurfaceRevealWindow[] = Array.from(
+    { length: MAX_INTRO_REVEAL_WINDOWS },
+    () => ({ positionXZ: new THREE.Vector2(), halfWidth: 0, halfLength: 0, strength: 0 }),
+  );
   private readonly oceanRevealWindows: PainterlyOceanSubsurfaceRevealWindow[] = [];
+  private readonly topsideRevealTargetPool: TopsideSubsurfaceRevealTarget[] = Array.from(
+    { length: 4 },
+    () => ({
+      kind: 'ship',
+      position: new THREE.Vector3(),
+      yaw: 0,
+      depthBelowSurface: 0,
+      halfWidth: 0,
+      halfLength: 0,
+      strength: 0,
+      drawProxy: false,
+    }),
+  );
   private readonly topsideRevealTargets: TopsideSubsurfaceRevealTarget[] = [];
   private readonly breachSplashFx: BreachSplashFX;
   private readonly shipWakeFx: ShipWakeFX;
@@ -161,6 +184,7 @@ export class IntroScene {
   private phaseElapsed = 0;
   private fadeAlpha = 0;
   private blackHoldElapsed = 0;
+  private oceanNormalFrame = 0;
   private cameraInitialized = false;
   private introDistanceTravelled = 0;
   private underpassVisible = false;
@@ -290,20 +314,23 @@ export class IntroScene {
 
     this.updateShips(deltaSeconds);
     this.updateCamera(deltaSeconds);
+    this.updateShipLanternLightBudget();
     this.updateTopsidePassthroughPresentation();
+    const topsideRevealTargets = this.collectTopsideRevealTargets();
     this.updateAtmosphere(deltaSeconds);
     this.updateArenaFogBanks();
-    this.updateOceanMaterial();
+    this.updateOceanMaterial(topsideRevealTargets);
     this.breachSplashFx.update(deltaSeconds, this.sampleOceanHeight);
     this.shipWakeFx.update({
       deltaSeconds,
       underwaterRatio: 0,
+      cameraPosition: this.camera.position,
       sampleSurfaceHeight: this.sampleOceanHeight,
       ships: this.ships,
     });
     this.topsideSubsurfaceRevealFx.update({
       underwaterRatio: 0,
-      targets: this.collectTopsideRevealTargets(),
+      targets: topsideRevealTargets,
     });
     this.updateHud();
 
@@ -513,6 +540,14 @@ export class IntroScene {
     this.flagship.update(deltaSeconds, this.elapsedSeconds, this.sampleOceanHeight);
   }
 
+  private updateShipLanternLightBudget(): void {
+    for (const ship of this.ships) {
+      for (let index = 0; index < ship.getLanternLightCount(); index += 1) {
+        ship.setLanternPointLightEnabled(index, true);
+      }
+    }
+  }
+
   private updateCamera(deltaSeconds: number): void {
     this.rowboat.getForward(this.rowboatForward);
     this.rowboatRight.set(this.rowboatForward.z, 0, -this.rowboatForward.x).normalize();
@@ -623,7 +658,7 @@ export class IntroScene {
     }
   }
 
-  private updateOceanMaterial(): void {
+  private updateOceanMaterial(topsideRevealTargets: readonly TopsideSubsurfaceRevealTarget[]): void {
     updatePainterlyOceanMaterial(this.oceanMesh, {
       elapsedSeconds: this.elapsedSeconds,
       cameraPosition: this.camera.position,
@@ -633,7 +668,7 @@ export class IntroScene {
       approxWaterDepth: APPROX_OCEAN_DEPTH,
       underwaterRatio: 0,
       lanternInfluences: this.collectOceanLanternInfluences(),
-      subsurfaceRevealWindows: this.collectOceanSubsurfaceRevealWindows(),
+      subsurfaceRevealWindows: this.collectOceanSubsurfaceRevealWindows(topsideRevealTargets),
     });
   }
 
@@ -674,16 +709,22 @@ export class IntroScene {
     });
   }
 
-  private collectOceanSubsurfaceRevealWindows(): readonly PainterlyOceanSubsurfaceRevealWindow[] {
+  private collectOceanSubsurfaceRevealWindows(
+    targets: readonly TopsideSubsurfaceRevealTarget[],
+  ): readonly PainterlyOceanSubsurfaceRevealWindow[] {
     this.oceanRevealWindows.length = 0;
 
-    for (const target of this.collectTopsideRevealTargets()) {
-      this.oceanRevealWindows.push({
-        positionXZ: new THREE.Vector2(target.position.x, target.position.z),
-        halfWidth: target.halfWidth * (target.kind === 'whale' ? 1.36 : 1.18),
-        halfLength: target.halfLength * (target.kind === 'whale' ? 1.08 : 1.02),
-        strength: target.strength,
-      });
+    for (const target of targets) {
+      if (this.oceanRevealWindows.length >= this.oceanRevealWindowPool.length) {
+        break;
+      }
+
+      const revealWindow = this.oceanRevealWindowPool[this.oceanRevealWindows.length];
+      revealWindow.positionXZ.set(target.position.x, target.position.z);
+      revealWindow.halfWidth = target.halfWidth * (target.kind === 'whale' ? 1.36 : 1.18);
+      revealWindow.halfLength = target.halfLength * (target.kind === 'whale' ? 1.08 : 1.02);
+      revealWindow.strength = target.strength;
+      this.oceanRevealWindows.push(revealWindow);
     }
 
     return this.oceanRevealWindows;
@@ -696,16 +737,20 @@ export class IntroScene {
       return;
     }
 
-    this.topsideRevealTargets.push({
-      kind: 'whale',
-      position: this.whale.position.clone(),
-      yaw: this.whale.yaw,
-      depthBelowSurface,
-      halfWidth: this.whale.subsurfaceRevealHalfExtents.x,
-      halfLength: this.whale.subsurfaceRevealHalfExtents.y,
-      strength,
-      drawProxy: false,
-    });
+    const target = this.claimTopsideRevealTarget();
+
+    if (!target) {
+      return;
+    }
+
+    target.kind = 'whale';
+    target.position.copy(this.whale.position);
+    target.yaw = this.whale.yaw;
+    target.depthBelowSurface = depthBelowSurface;
+    target.halfWidth = this.whale.subsurfaceRevealHalfExtents.x;
+    target.halfLength = this.whale.subsurfaceRevealHalfExtents.y;
+    target.strength = strength;
+    target.drawProxy = false;
   }
 
   private appendShipRevealTarget(ship: Ship): void {
@@ -716,16 +761,31 @@ export class IntroScene {
       return;
     }
 
-    this.topsideRevealTargets.push({
-      kind: 'ship',
-      position: this.tempRevealPoint.clone(),
-      yaw: ship.heading,
-      depthBelowSurface: revealState.depthBelowSurface,
-      halfWidth: ship.subsurfaceRevealHalfExtents.x,
-      halfLength: ship.subsurfaceRevealHalfExtents.y,
-      strength: revealState.strength,
-      drawProxy: false,
-    });
+    const target = this.claimTopsideRevealTarget();
+
+    if (!target) {
+      return;
+    }
+
+    target.kind = 'ship';
+    target.position.copy(this.tempRevealPoint);
+    target.yaw = ship.heading;
+    target.depthBelowSurface = revealState.depthBelowSurface;
+    target.halfWidth = ship.subsurfaceRevealHalfExtents.x;
+    target.halfLength = ship.subsurfaceRevealHalfExtents.y;
+    target.strength = revealState.strength;
+    target.drawProxy = false;
+  }
+
+  private claimTopsideRevealTarget(): TopsideSubsurfaceRevealTarget | null {
+    const target = this.topsideRevealTargetPool[this.topsideRevealTargets.length];
+
+    if (!target) {
+      return null;
+    }
+
+    this.topsideRevealTargets.push(target);
+    return target;
   }
 
   private readonly sampleOceanHeight = (x: number, z: number): number => {
@@ -856,15 +916,25 @@ export class IntroScene {
     }
 
     this.oceanGeometry.attributes.position.needsUpdate = true;
-    this.oceanGeometry.computeVertexNormals();
+    this.oceanNormalFrame = (this.oceanNormalFrame + 1) % 2;
+
+    if (this.oceanNormalFrame === 0) {
+      this.oceanGeometry.computeVertexNormals();
+    }
   }
 
   private collectOceanLanternInfluences(): readonly ShipLanternInfluence[] {
     this.tempLanternInfluences.length = 0;
+    let influenceCount = 0;
 
     for (const ship of this.ships) {
-      ship.appendLanternInfluences(this.tempLanternInfluences);
+      influenceCount = ship.writeLanternInfluences(this.tempLanternInfluencePool, influenceCount);
     }
+
+    for (let index = 0; index < influenceCount; index += 1) {
+      this.tempLanternInfluences[index] = this.tempLanternInfluencePool[index];
+    }
+    this.tempLanternInfluences.length = influenceCount;
 
     this.tempLanternInfluences.sort(
       (left, right) =>

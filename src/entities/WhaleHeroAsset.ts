@@ -78,14 +78,7 @@ function cloneTemplate(root: THREE.Group): THREE.Group {
       return;
     }
 
-    object.geometry = object.geometry.clone();
-
-    if (Array.isArray(object.material)) {
-      object.material = object.material.map((material) => material.clone());
-      return;
-    }
-
-    object.material = object.material.clone();
+    object.userData.sharedGeometry = true;
   });
 
   return clone;
@@ -109,11 +102,6 @@ function applyVariantMaterials(root: THREE.Group, variant: WhaleHeroVariant): vo
   root.traverse((object) => {
     if (!(object instanceof THREE.Mesh)) {
       return;
-    }
-
-    const oldMaterials = Array.isArray(object.material) ? object.material : [object.material];
-    for (const material of oldMaterials) {
-      material.dispose();
     }
 
     const isBelly = object.name === 'belly' || object.name === 'jaw';
@@ -154,7 +142,7 @@ function applyVariantMaterials(root: THREE.Group, variant: WhaleHeroVariant): vo
     object.material = material;
     object.castShadow = false;
     object.receiveShadow = true;
-    object.frustumCulled = false;
+    object.frustumCulled = true;
   });
 }
 

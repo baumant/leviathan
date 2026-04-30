@@ -215,6 +215,7 @@ export class Ship {
   private readonly lanternHalos: THREE.Mesh[] = [];
   private readonly lanternHaloMaterials: THREE.MeshBasicMaterial[] = [];
   private readonly lanternLights: THREE.PointLight[] = [];
+  private readonly lanternDesiredIntensities: number[] = [];
   private readonly portCannons: THREE.Mesh[] = [];
   private readonly starboardCannons: THREE.Mesh[] = [];
   private readonly cannonPortMaterials: THREE.MeshToonMaterial[] = [];
@@ -455,6 +456,7 @@ export class Ship {
     this.root.rotation.set(0, this.heading, 0, 'YXZ');
     this.setWaterlinePassthrough(INACTIVE_WATERLINE_PASSTHROUGH_STATE);
     this.updateDamageLook();
+    this.disableLanternPointLights();
     this.root.updateMatrixWorld();
   }
 
@@ -484,6 +486,7 @@ export class Ship {
 
     this.destroyedVisualHidden = true;
     this.visualRoot.visible = false;
+    this.disableLanternPointLights();
   }
 
   applyKnockback(direction: THREE.Vector3, strength: number, yawStrength = 0): void {
@@ -679,8 +682,13 @@ export class Ship {
         0,
         (this.roleConfig.lanternIntensity - damageRatio - this.sinkProgress * 1.6) * lanternPulse * lanternStrength,
       );
+      const desiredIntensity = baseIntensity * (1 + cue * 0.36);
 
-      light.intensity = baseIntensity * (1 + cue * 0.36);
+      this.lanternDesiredIntensities[index] = desiredIntensity;
+      if (desiredIntensity <= 0.001) {
+        light.intensity = 0;
+        light.visible = false;
+      }
       light.distance = THREE.MathUtils.lerp(18, 32, cue) * this.roleConfig.scale;
 
       lanternMaterial.emissiveIntensity = Math.max(0, 0.9 - this.sinkProgress * 0.72) + cue * 0.24;
@@ -818,21 +826,65 @@ export class Ship {
     return this.role === 'flagship' ? 4 : 1;
   }
 
-  appendLanternInfluences(target: ShipLanternInfluence[]): void {
+  writeLanternInfluences(target: ShipLanternInfluence[], startIndex: number): number {
     if (this.sinking || this.sunk) {
-      return;
+      return startIndex;
     }
 
-    for (const light of this.lanternLights) {
-      if (light.intensity <= 0.05) {
+    let nextIndex = startIndex;
+
+    for (let index = 0; index < this.lanternLights.length && nextIndex < target.length; index += 1) {
+      const intensity = this.lanternDesiredIntensities[index] ?? this.lanternLights[index].intensity;
+
+      if (intensity <= 0.05) {
         continue;
       }
 
-      target.push({
-        position: light.getWorldPosition(new THREE.Vector3()),
-        intensity: light.intensity,
-      });
+      const influence = target[nextIndex];
+      this.lanternLights[index].getWorldPosition(influence.position);
+      influence.intensity = intensity;
+      nextIndex += 1;
     }
+
+    return nextIndex;
+  }
+
+  getLanternLightCount(): number {
+    return this.lanternLights.length;
+  }
+
+  getLanternLightDesiredIntensity(index: number): number {
+    return this.lanternDesiredIntensities[index] ?? this.lanternLights[index]?.intensity ?? 0;
+  }
+
+  getLanternLightWorldPosition(index: number, target: THREE.Vector3): boolean {
+    const light = this.lanternLights[index];
+
+    if (!light) {
+      return false;
+    }
+
+    light.getWorldPosition(target);
+    return true;
+  }
+
+  disableLanternPointLights(): void {
+    for (const light of this.lanternLights) {
+      light.intensity = 0;
+      light.visible = false;
+    }
+  }
+
+  setLanternPointLightEnabled(index: number, enabled: boolean): void {
+    const light = this.lanternLights[index];
+
+    if (!light) {
+      return;
+    }
+
+    const intensity = this.getLanternLightDesiredIntensity(index);
+    light.visible = enabled && intensity > 0.05;
+    light.intensity = light.visible ? intensity : 0;
   }
 
   worldToLocalPoint(point: THREE.Vector3, target = new THREE.Vector3()): THREE.Vector3 {
@@ -1173,6 +1225,7 @@ export class Ship {
     this.lanternHaloMaterials.push(lanternHaloMaterial);
     this.lanternHalos.push(lanternHalo);
     this.lanternLights.push(lanternLight);
+    this.lanternDesiredIntensities.push(lightIntensity);
 
     this.visualRoot.add(lantern, lanternHalo, lanternLight);
   }

@@ -17,6 +17,7 @@ const FLOOR_FADE_NEAR = 8;
 const FLOOR_FADE_FAR = 104;
 const FLOOR_MIN_VISIBILITY = 0.98;
 const ROCK_FLOOR_CLIP_RISE = 0.08;
+const DORMANT_ALPHA = 0.005;
 const TAU = Math.PI * 2;
 const DOWN_AXIS = new THREE.Vector3(0, -1, 0);
 const UP_AXIS = new THREE.Vector3(0, 1, 0);
@@ -302,6 +303,7 @@ export class UnderwaterEnvironmentFX {
   private readonly whaleFloorPosition = new THREE.Vector3();
   private readonly sampleFloorHeight: (x: number, z: number) => number;
   private underwaterAlpha = 0;
+  private environmentActive = false;
 
   constructor(scene: THREE.Scene, options: UnderwaterEnvironmentOptions) {
     this.sampleFloorHeight = options.sampleFloorHeight;
@@ -339,6 +341,7 @@ export class UnderwaterEnvironmentFX {
 
   reset(): void {
     this.underwaterAlpha = 0;
+    this.environmentActive = false;
     this.root.visible = false;
     this.floorMesh.visible = false;
     this.floorMaterial.uniforms.uUnderwaterAlpha.value = 0;
@@ -366,6 +369,17 @@ export class UnderwaterEnvironmentFX {
       ? THREE.MathUtils.smoothstep(snapshot.underwaterRatio, 0.08, 0.84)
       : 0;
     this.underwaterAlpha = THREE.MathUtils.damp(this.underwaterAlpha, targetAlpha, 2.3, snapshot.deltaSeconds);
+    const environmentAlpha = this.underwaterAlpha;
+
+    if (environmentAlpha <= DORMANT_ALPHA) {
+      if (this.environmentActive) {
+        this.deactivateVisibleState();
+      }
+
+      return;
+    }
+
+    this.environmentActive = true;
 
     const floorDistanceAtCamera = snapshot.camera.position.y - snapshot.floorHeightAtCamera;
     const floorFade = 1 - THREE.MathUtils.smoothstep(floorDistanceAtCamera, FLOOR_FADE_NEAR, FLOOR_FADE_FAR);
@@ -375,16 +389,15 @@ export class UnderwaterEnvironmentFX {
       this.underwaterAlpha *
       THREE.MathUtils.smoothstep(snapshot.underwaterRatio, 0.22, 1) *
       (1 - THREE.MathUtils.smoothstep(whaleFloorDistance, 8, 52));
-    const environmentAlpha = this.underwaterAlpha;
 
-    this.root.visible = environmentAlpha > 0.005;
+    this.root.visible = true;
     this.floorMaterial.uniforms.uTime.value = snapshot.elapsedSeconds;
     this.floorMaterial.uniforms.uUnderwaterAlpha.value = environmentAlpha;
     this.floorMaterial.uniforms.uCameraFloorFade.value = floorFade;
     this.whaleFloorPosition.set(snapshot.whalePosition.x, whaleFloorHeight, snapshot.whalePosition.z);
     this.floorMaterial.uniforms.uWhaleFloorPosition.value.copy(this.whaleFloorPosition);
     this.floorMaterial.uniforms.uWhaleFloorStrength.value = floorCueStrength;
-    this.floorMesh.visible = environmentAlpha > 0.005;
+    this.floorMesh.visible = true;
 
     this.rockMaterial.opacity = 1;
     this.kelpMaterial.opacity = environmentAlpha * 0.86;
@@ -403,25 +416,51 @@ export class UnderwaterEnvironmentFX {
     this.updateFishSchools(snapshot, environmentAlpha);
     this.updateWorldShafts(snapshot, environmentAlpha);
 
-    for (let index = 0; index < WORLD_PARTICLE_COUNT; index += 1) {
-      const baseIndex = index * 3;
-      const anchor = this.landmarkAnchors[this.particleAnchorIndex[index]];
-      const rise = (snapshot.elapsedSeconds * this.particleSpeed[index] + this.particlePhase[index]) % 1;
-      const driftPhase = snapshot.elapsedSeconds * 0.28 + this.particleDrift[index];
+    if (this.particles.visible) {
+      for (let index = 0; index < WORLD_PARTICLE_COUNT; index += 1) {
+        const baseIndex = index * 3;
+        const anchor = this.landmarkAnchors[this.particleAnchorIndex[index]];
+        const rise = (snapshot.elapsedSeconds * this.particleSpeed[index] + this.particlePhase[index]) % 1;
+        const driftPhase = snapshot.elapsedSeconds * 0.28 + this.particleDrift[index];
 
-      this.particlePositions[baseIndex] =
-        anchor.x +
-        Math.sin(driftPhase) * this.particleJitterX[index] +
-        Math.cos(driftPhase * 0.7) * 0.34;
-      this.particlePositions[baseIndex + 1] =
-        anchor.y + this.particleBaseHeight[index] + rise * this.particleHeightSpan[index];
-      this.particlePositions[baseIndex + 2] =
-        anchor.z +
-        Math.cos(driftPhase * 0.9 + 0.8) * this.particleJitterZ[index] +
-        Math.sin(driftPhase * 0.5) * 0.28;
+        this.particlePositions[baseIndex] =
+          anchor.x +
+          Math.sin(driftPhase) * this.particleJitterX[index] +
+          Math.cos(driftPhase * 0.7) * 0.34;
+        this.particlePositions[baseIndex + 1] =
+          anchor.y + this.particleBaseHeight[index] + rise * this.particleHeightSpan[index];
+        this.particlePositions[baseIndex + 2] =
+          anchor.z +
+          Math.cos(driftPhase * 0.9 + 0.8) * this.particleJitterZ[index] +
+          Math.sin(driftPhase * 0.5) * 0.28;
+      }
+
+      this.particleGeometry.attributes.position.needsUpdate = true;
+    }
+  }
+
+  private deactivateVisibleState(): void {
+    this.environmentActive = false;
+    this.root.visible = false;
+    this.floorMesh.visible = false;
+    this.floorMaterial.uniforms.uUnderwaterAlpha.value = 0;
+    this.floorMaterial.uniforms.uCameraFloorFade.value = 0;
+    this.floorMaterial.uniforms.uWhaleFloorStrength.value = 0;
+    this.rockMaterial.opacity = 0;
+    this.kelpMaterial.opacity = 0;
+    this.fishMaterial.opacity = 0;
+    this.particleMaterial.opacity = 0;
+    this.particles.visible = false;
+
+    for (const school of this.fishSchools) {
+      school.root.visible = false;
     }
 
-    this.particleGeometry.attributes.position.needsUpdate = true;
+    for (const shaft of this.worldShafts) {
+      shaft.root.visible = false;
+      shaft.materialA.uniforms.uAlpha.value = 0;
+      shaft.materialB.uniforms.uAlpha.value = 0;
+    }
   }
 
   dispose(): void {
@@ -499,7 +538,7 @@ export class UnderwaterEnvironmentFX {
         mesh.position.copy(piece.position);
         mesh.rotation.copy(piece.rotation);
         mesh.scale.copy(piece.scale);
-        mesh.frustumCulled = false;
+        mesh.frustumCulled = true;
         mesh.renderOrder = -6;
         root.add(mesh);
       }
@@ -548,8 +587,8 @@ export class UnderwaterEnvironmentFX {
         ribbonB.rotation.y = Math.PI * 0.5;
         ribbonA.renderOrder = -5;
         ribbonB.renderOrder = -5;
-        ribbonA.frustumCulled = false;
-        ribbonB.frustumCulled = false;
+        ribbonA.frustumCulled = true;
+        ribbonB.frustumCulled = true;
         pivot.add(ribbonA, ribbonB);
         root.add(pivot);
 
@@ -624,8 +663,8 @@ export class UnderwaterEnvironmentFX {
       const planeA = new THREE.Mesh(this.shaftPlaneGeometry, materialA);
       const planeB = new THREE.Mesh(this.shaftPlaneGeometry, materialB);
 
-      planeA.frustumCulled = false;
-      planeB.frustumCulled = false;
+      planeA.frustumCulled = true;
+      planeB.frustumCulled = true;
       planeB.rotation.y = Math.PI * 0.5;
 
       const root = new THREE.Group();

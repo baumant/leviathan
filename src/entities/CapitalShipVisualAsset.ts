@@ -117,15 +117,7 @@ function cloneTemplate(root: THREE.Group): THREE.Group {
       return;
     }
 
-    object.geometry = object.geometry.clone();
-    object.geometry.computeVertexNormals();
-
-    if (Array.isArray(object.material)) {
-      object.material = object.material.map((material) => material.clone());
-      return;
-    }
-
-    object.material = object.material.clone();
+    object.userData.sharedGeometry = true;
   });
 
   return clone;
@@ -167,11 +159,6 @@ function applyMaterials(root: THREE.Group, role: CapitalShipVisualRole): void {
       return;
     }
 
-    const oldMaterials = Array.isArray(object.material) ? object.material : [object.material];
-    for (const material of oldMaterials) {
-      material.dispose();
-    }
-
     const palette = MATERIAL_PALETTES[role][classifyMaterialKind(object.name)];
     object.material = createCelMaterial({
       color: palette.color,
@@ -180,7 +167,7 @@ function applyMaterials(root: THREE.Group, role: CapitalShipVisualRole): void {
     });
     object.castShadow = false;
     object.receiveShadow = true;
-    object.frustumCulled = false;
+    object.frustumCulled = true;
   });
 }
 
@@ -312,18 +299,7 @@ export function releaseCapitalShipWreckVisualAsset(asset: CapitalShipWreckVisual
 }
 
 export function disposeCapitalShipWreckVisualAsset(asset: CapitalShipWreckVisualAsset): void {
-  const geometries = new Set<THREE.BufferGeometry>();
-
   asset.root.removeFromParent();
-  asset.root.traverse((object) => {
-    if (object instanceof THREE.Mesh) {
-      geometries.add(object.geometry);
-    }
-  });
-
-  for (const geometry of geometries) {
-    geometry.dispose();
-  }
 
   for (const material of asset.materials) {
     material.dispose();

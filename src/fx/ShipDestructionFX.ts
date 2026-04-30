@@ -266,6 +266,9 @@ export class ShipDestructionFX {
   private readonly tempRight = new THREE.Vector3();
   private readonly tempUp = new THREE.Vector3();
   private readonly tempOffset = new THREE.Vector3();
+  private readonly tempSideVector = new THREE.Vector3();
+  private readonly tempForwardVector = new THREE.Vector3();
+  private readonly tempOutward = new THREE.Vector3();
   private readonly tempQuaternion = new THREE.Quaternion();
 
   constructor(scene: THREE.Scene) {
@@ -450,7 +453,7 @@ export class ShipDestructionFX {
     });
 
     return {
-      triggerDirection: triggerDirection.clone(),
+      triggerDirection,
       intensity,
     };
   }
@@ -912,7 +915,7 @@ export class ShipDestructionFX {
     root.renderOrder = WRECK_RENDER_ORDER;
     root.add(params.visual.root, ...seamPlanks);
     root.traverse((object) => {
-      object.frustumCulled = false;
+      object.frustumCulled = true;
       object.renderOrder = WRECK_RENDER_ORDER;
     });
     for (const plank of seamPlanks) {
@@ -969,7 +972,7 @@ export class ShipDestructionFX {
         THREE.MathUtils.lerp(0.12, 0.34, Math.random()),
         THREE.MathUtils.lerp(0.72, 1.64, Math.random()),
       );
-      plank.frustumCulled = false;
+      plank.frustumCulled = true;
       plank.renderOrder = WRECK_RENDER_ORDER + 1;
       planks.push(plank);
     }
@@ -1120,10 +1123,10 @@ export class ShipDestructionFX {
       }
 
       const spread = category === 'spark' ? 0.8 : category === 'sail' ? 0.42 : 0.62;
-      const sideVector = this.tempRight.clone().multiplyScalar(sideBias * (Math.random() * 0.8 + 0.2));
-      const forwardVector = this.tempForward.clone().multiplyScalar((Math.random() * 2 - 1) * spread);
-      const outward = triggerDirection
-        .clone()
+      const sideVector = this.tempSideVector.copy(this.tempRight).multiplyScalar(sideBias * (Math.random() * 0.8 + 0.2));
+      const forwardVector = this.tempForwardVector.copy(this.tempForward).multiplyScalar((Math.random() * 2 - 1) * spread);
+      const outward = this.tempOutward
+        .copy(triggerDirection)
         .multiplyScalar(1.1 + Math.random() * 0.55)
         .add(sideVector)
         .add(forwardVector);
@@ -1211,20 +1214,61 @@ export class ShipDestructionFX {
     const sailCount = sailFade > 0.001 ? slot.sailCount : 0;
     const sparkCount = sparkFade > 0.001 ? slot.sparkCount : 0;
 
-    this.updateFoam(slot, debrisProgress, sampleSurfaceHeight(slot.anchor.x, slot.anchor.z));
-    this.updatePieces(slot.splinters, slot.splinterPieces, splinterCount, deltaSeconds, sampleSurfaceHeight, debrisFade, slot);
-    this.updatePieces(slot.hullChunks, slot.hullPieces, hullChunkCount, deltaSeconds, sampleSurfaceHeight, debrisFade, slot);
-    this.updatePieces(slot.masts, slot.mastPieces, mastCount, deltaSeconds, sampleSurfaceHeight, debrisFade, slot);
-    this.updatePieces(slot.sails, slot.sailPieces, sailCount, deltaSeconds, sampleSurfaceHeight, sailFade, slot);
-    this.updatePieces(slot.sparks, slot.sparkPieces, sparkCount, deltaSeconds, sampleSurfaceHeight, sparkFade, slot);
-    this.updateSparkLight(slot, sparkFade);
-    this.updateCapitalWreck(slot, deltaSeconds, wreckProgress, sampleSurfaceHeight, sampleFloorHeight);
+    if (debrisProgress >= 1 && this.isCapitalWreckSettled(slot)) {
+      this.hideExpiredDebris(slot);
+      return;
+    }
 
-    slot.splinters.material.opacity = 0.98 * debrisFade;
-    slot.hullChunks.material.opacity = 0.98 * debrisFade;
-    slot.masts.material.opacity = 0.94 * debrisFade;
-    slot.sails.material.opacity = 0.58 * sailFade;
-    slot.sparks.material.opacity = 0.9 * sparkFade;
+    if (debrisProgress < 1) {
+      this.updateFoam(slot, debrisProgress, sampleSurfaceHeight(slot.anchor.x, slot.anchor.z));
+      this.updatePieces(slot.splinters, slot.splinterPieces, splinterCount, deltaSeconds, sampleSurfaceHeight, debrisFade, slot);
+      this.updatePieces(slot.hullChunks, slot.hullPieces, hullChunkCount, deltaSeconds, sampleSurfaceHeight, debrisFade, slot);
+      this.updatePieces(slot.masts, slot.mastPieces, mastCount, deltaSeconds, sampleSurfaceHeight, debrisFade, slot);
+      this.updatePieces(slot.sails, slot.sailPieces, sailCount, deltaSeconds, sampleSurfaceHeight, sailFade, slot);
+      this.updatePieces(slot.sparks, slot.sparkPieces, sparkCount, deltaSeconds, sampleSurfaceHeight, sparkFade, slot);
+      this.updateSparkLight(slot, sparkFade);
+
+      slot.splinters.material.opacity = 0.98 * debrisFade;
+      slot.hullChunks.material.opacity = 0.98 * debrisFade;
+      slot.masts.material.opacity = 0.94 * debrisFade;
+      slot.sails.material.opacity = 0.58 * sailFade;
+      slot.sparks.material.opacity = 0.9 * sparkFade;
+    } else {
+      this.hideExpiredDebris(slot);
+    }
+
+    this.updateCapitalWreck(slot, deltaSeconds, wreckProgress, sampleSurfaceHeight, sampleFloorHeight);
+  }
+
+  private isCapitalWreckSettled(slot: DestructionSlot): boolean {
+    return Boolean(slot.capitalWreck?.bow.settled && slot.capitalWreck.stern.settled);
+  }
+
+  private hideExpiredDebris(slot: DestructionSlot): void {
+    this.hideInstancedMesh(slot.splinters);
+    this.hideInstancedMesh(slot.hullChunks);
+    this.hideInstancedMesh(slot.masts);
+    this.hideInstancedMesh(slot.sails);
+    this.hideInstancedMesh(slot.sparks);
+    slot.sparkLight.visible = false;
+    slot.sparkLight.intensity = 0;
+    slot.outerFoam.material.opacity = 0;
+    slot.innerFoam.material.opacity = 0;
+    slot.foamPatch.material.opacity = 0;
+    slot.splinters.material.opacity = 0;
+    slot.hullChunks.material.opacity = 0;
+    slot.masts.material.opacity = 0;
+    slot.sails.material.opacity = 0;
+    slot.sparks.material.opacity = 0;
+  }
+
+  private hideInstancedMesh(mesh: THREE.InstancedMesh): void {
+    if (mesh.count === 0) {
+      return;
+    }
+
+    mesh.count = 0;
+    mesh.instanceMatrix.needsUpdate = true;
   }
 
   private updateFoam(slot: DestructionSlot, progress: number, surfaceHeight: number): void {
@@ -1232,6 +1276,13 @@ export class ShipDestructionFX {
     const ringRadius = THREE.MathUtils.lerp(slot.foamRadius * 0.24, slot.foamRadius, eased);
     const innerRadius = THREE.MathUtils.lerp(slot.foamRadius * 0.12, slot.foamRadius * 0.58, eased);
     const opacity = (1 - THREE.MathUtils.smoothstep(progress, 0.18, 0.9)) * slot.foamOpacity * slot.intensity;
+
+    if (opacity <= 0.001) {
+      slot.outerFoam.material.opacity = 0;
+      slot.innerFoam.material.opacity = 0;
+      slot.foamPatch.material.opacity = 0;
+      return;
+    }
 
     slot.outerFoam.position.set(slot.anchor.x, surfaceHeight + SURFACE_OFFSET, slot.anchor.z);
     slot.innerFoam.position.set(slot.anchor.x, surfaceHeight + SURFACE_OFFSET + 0.012, slot.anchor.z);
@@ -1268,6 +1319,15 @@ export class ShipDestructionFX {
     fade: number,
     slot: DestructionSlot,
   ): void {
+    if (count <= 0) {
+      if (mesh.count !== 0) {
+        mesh.count = 0;
+        mesh.instanceMatrix.needsUpdate = true;
+      }
+
+      return;
+    }
+
     mesh.count = count;
 
     for (let index = 0; index < count; index += 1) {
@@ -1314,7 +1374,7 @@ export class ShipDestructionFX {
       mesh.setMatrixAt(index, this.dummy.matrix);
     }
 
-    mesh.instanceMatrix.needsUpdate = true;
+    mesh.instanceMatrix.needsUpdate = count > 0;
   }
 
   private getPieceGravityScale(mesh: THREE.InstancedMesh): number {

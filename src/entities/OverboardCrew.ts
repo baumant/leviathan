@@ -72,8 +72,7 @@ function cloneTemplate(root: THREE.Group): THREE.Group {
       return;
     }
 
-    object.geometry = object.geometry.clone();
-    object.geometry.computeVertexNormals();
+    object.userData.sharedGeometry = true;
 
     if (Array.isArray(object.material)) {
       object.material = object.material.map((material) => material.clone());
@@ -134,7 +133,7 @@ function applyCrewMaterials(root: THREE.Group): void {
     object.material = createCrewMaterial(object.name);
     object.castShadow = false;
     object.receiveShadow = true;
-    object.frustumCulled = false;
+    object.frustumCulled = true;
   });
 }
 

@@ -114,6 +114,7 @@ interface WakeTrailStamp {
 export interface ShipWakeSnapshot {
   deltaSeconds: number;
   underwaterRatio: number;
+  cameraPosition: THREE.Vector3;
   sampleSurfaceHeight: (x: number, z: number) => number;
   ships: readonly Ship[];
 }
@@ -170,9 +171,16 @@ export class ShipWakeFX {
       slot.root.position.set(this.sternOrigin.x, surfaceHeight, this.sternOrigin.z);
       slot.root.rotation.set(0, ship.heading, 0, 'YXZ');
       slot.root.visible = slot.strength > 0.01;
+      const cameraDistance = slot.root.position.distanceTo(snapshot.cameraPosition);
+      const distanceFade = 1 - THREE.MathUtils.smoothstep(cameraDistance, 190, 270);
 
-      this.updateTrailLayer(slot, speedRatio, targetStrength * (1 - THREE.MathUtils.smoothstep(snapshot.underwaterRatio, 0.08, 0.78)), snapshot);
-      this.updateUnderwaterLayer(slot, speedRatio, snapshot.underwaterRatio);
+      this.updateTrailLayer(
+        slot,
+        speedRatio,
+        targetStrength * distanceFade * (1 - THREE.MathUtils.smoothstep(snapshot.underwaterRatio, 0.08, 0.78)),
+        snapshot,
+      );
+      this.updateUnderwaterLayer(slot, speedRatio, snapshot.underwaterRatio, distanceFade);
     }
   }
 
@@ -466,6 +474,13 @@ export class ShipWakeFX {
     surfaceOpacity: number,
     snapshot: ShipWakeSnapshot,
   ): void {
+    const aboveWaterAlpha = 1 - THREE.MathUtils.smoothstep(snapshot.underwaterRatio, 0.08, 0.78);
+
+    if (aboveWaterAlpha <= 0.005 && surfaceOpacity <= 0.015) {
+      this.clearTrailLayer(slot, true);
+      return;
+    }
+
     if (surfaceOpacity > 0.015) {
       this.emitTrailBetweenPoints(slot, speedRatio, surfaceOpacity);
     } else {
@@ -474,7 +489,6 @@ export class ShipWakeFX {
 
     let visibleCount = 0;
     let cutoutCount = 0;
-    const aboveWaterAlpha = 1 - THREE.MathUtils.smoothstep(snapshot.underwaterRatio, 0.08, 0.78);
     slot.trailVariantCounts.fill(0);
     for (const trailFoam of slot.trailFoam) {
       trailFoam.material.opacity = (trailFoam.material.userData.baseOpacity as number) * aboveWaterAlpha;
@@ -525,6 +539,31 @@ export class ShipWakeFX {
     }
     slot.trailCutouts.count = cutoutCount;
     slot.trailCutouts.instanceMatrix.needsUpdate = cutoutCount > 0;
+  }
+
+  private clearTrailLayer(slot: WakeSlot, clearStamps: boolean): void {
+    slot.hasTrailPoint = false;
+    slot.trailVariantCounts.fill(0);
+
+    for (const trailFoam of slot.trailFoam) {
+      trailFoam.material.opacity = 0;
+
+      if (trailFoam.count !== 0) {
+        trailFoam.count = 0;
+        trailFoam.instanceMatrix.needsUpdate = true;
+      }
+    }
+
+    if (slot.trailCutouts.count !== 0) {
+      slot.trailCutouts.count = 0;
+      slot.trailCutouts.instanceMatrix.needsUpdate = true;
+    }
+
+    if (clearStamps) {
+      for (const stamp of slot.trailStamps) {
+        stamp.active = false;
+      }
+    }
   }
 
   private writeTrailCutouts(
@@ -672,11 +711,25 @@ export class ShipWakeFX {
     }
   }
 
-  private updateUnderwaterLayer(slot: WakeSlot, speedRatio: number, underwaterRatio: number): void {
-    const underwaterBias = THREE.MathUtils.lerp(0.24, 0.72, underwaterRatio);
+  private updateUnderwaterLayer(slot: WakeSlot, speedRatio: number, underwaterRatio: number, distanceFade: number): void {
+    const underwaterVisibility = THREE.MathUtils.smoothstep(underwaterRatio, 0.04, 0.42) * distanceFade;
+    const underwaterBias = THREE.MathUtils.lerp(0.24, 0.72, underwaterRatio) * underwaterVisibility;
     const underwaterOpacity = slot.strength * underwaterBias;
 
-    slot.underwaterRoot.visible = underwaterOpacity > 0.01;
+    if (underwaterOpacity <= 0.01) {
+      slot.underwaterRoot.visible = false;
+      slot.underwaterRibbon.material.opacity = 0;
+      slot.bubbles.material.opacity = 0;
+
+      if (slot.bubbles.count !== 0) {
+        slot.bubbles.count = 0;
+        slot.bubbles.instanceMatrix.needsUpdate = true;
+      }
+
+      return;
+    }
+
+    slot.underwaterRoot.visible = true;
 
     slot.underwaterRibbon.scale.set(
       slot.roleConfig.underwaterRibbonWidth * (0.74 + speedRatio * 0.42),
@@ -706,6 +759,6 @@ export class ShipWakeFX {
       slot.bubbles.setMatrixAt(index, this.bubbleDummy.matrix);
     }
 
-    slot.bubbles.instanceMatrix.needsUpdate = true;
+    slot.bubbles.instanceMatrix.needsUpdate = slot.bubbles.count > 0;
   }
 }

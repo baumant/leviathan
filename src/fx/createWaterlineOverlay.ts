@@ -51,6 +51,7 @@ export function cloneUniqueObjectRoot(root: THREE.Group): THREE.Group {
     }
 
     object.geometry = object.geometry.clone();
+    object.userData.sharedGeometry = false;
 
     if (Array.isArray(object.material)) {
       object.material = object.material.map((material) => material.clone());
@@ -141,7 +142,9 @@ export function disposeObject3DResources(
       return;
     }
 
-    object.geometry.dispose();
+    if (object.userData.sharedGeometry !== true) {
+      object.geometry.dispose();
+    }
 
     const materials = Array.isArray(object.material) ? object.material : [object.material];
     for (const material of materials) {

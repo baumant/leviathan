@@ -58,13 +58,29 @@ export class TopsideSubsurfaceRevealFX {
 
   update(params: TopsideSubsurfaceRevealUpdateParams): void {
     const visibility = 1 - THREE.MathUtils.smoothstep(params.underwaterRatio, 0.04, MAX_UNDERWATER_RATIO);
-    const whaleTarget = params.targets.find((target) => target.kind === 'whale' && target.drawProxy !== false);
-    const shipTargets = params.targets.filter((target) => target.kind === 'ship' && target.drawProxy !== false);
+    let whaleTarget: TopsideSubsurfaceRevealTarget | undefined;
+    let shipSlotIndex = 0;
+
+    for (const target of params.targets) {
+      if (target.drawProxy === false) {
+        continue;
+      }
+
+      if (target.kind === 'whale') {
+        whaleTarget ??= target;
+        continue;
+      }
+
+      if (shipSlotIndex < this.shipSlots.length) {
+        this.updateSlot(this.shipSlots[shipSlotIndex], target, visibility, SHIP_PROXY_BOUNDS);
+        shipSlotIndex += 1;
+      }
+    }
 
     this.updateSlot(this.whaleSlot, whaleTarget, visibility, WHALE_PROXY_BOUNDS);
 
-    for (let index = 0; index < this.shipSlots.length; index += 1) {
-      this.updateSlot(this.shipSlots[index], shipTargets[index], visibility, SHIP_PROXY_BOUNDS);
+    for (let index = shipSlotIndex; index < this.shipSlots.length; index += 1) {
+      this.updateSlot(this.shipSlots[index], undefined, visibility, SHIP_PROXY_BOUNDS);
     }
   }
 
