@@ -44,9 +44,8 @@ canvas {
 .hud__top[hidden],
 .hud__bottom[hidden],
 .hud__card[hidden],
-.hud__hint[hidden],
-.hud__status[hidden],
-.hud__debug[hidden] {
+.hud__goal-flash[hidden],
+.hud__hint[hidden] {
   display: none;
 }
 
@@ -55,9 +54,16 @@ canvas {
   position: relative;
   z-index: 1;
   display: flex;
-  justify-content: space-between;
   gap: 18px;
   align-items: flex-start;
+}
+
+.hud__top {
+  justify-content: flex-end;
+}
+
+.hud__bottom {
+  justify-content: space-between;
 }
 
 .hud__card {
@@ -87,8 +93,7 @@ canvas {
   text-transform: uppercase;
 }
 
-.hud__copy,
-.hud__debug {
+.hud__copy {
   margin: 8px 0 0;
   line-height: 1.45;
   color: rgba(217, 221, 215, 0.76);
@@ -204,14 +209,6 @@ canvas {
   transition: transform 80ms linear;
 }
 
-.hud__status {
-  margin-top: 10px;
-  font-size: 0.82rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: rgba(210, 183, 129, 0.74);
-}
-
 .hud__card--compact {
   min-width: 220px;
 }
@@ -246,6 +243,47 @@ canvas {
 .hud__fact-value {
   font-size: 1.35rem;
   letter-spacing: 0.08em;
+}
+
+.hud__goal-flash {
+  position: absolute;
+  top: clamp(66px, 11vh, 118px);
+  left: 50%;
+  z-index: 1;
+  max-width: min(620px, calc(100vw - 48px));
+  margin: 0;
+  overflow-wrap: break-word;
+  text-align: center;
+  text-shadow:
+    0 0 18px rgba(210, 183, 129, 0.24),
+    0 2px 16px rgba(0, 0, 0, 0.84);
+  transition: opacity 80ms linear;
+}
+
+.hud__goal-flash-title {
+  margin: 0;
+  color: rgba(235, 239, 232, 0.94);
+  font-size: clamp(1.42rem, 2.7vw, 2.24rem);
+  line-height: 1;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.hud__goal-flash-copy {
+  margin: 8px 0 0;
+  color: rgba(224, 199, 144, 0.88);
+  font-size: clamp(0.88rem, 1.24vw, 1.08rem);
+  line-height: 1.35;
+  letter-spacing: 0.08em;
+}
+
+.hud__goal-flash::after {
+  content: '';
+  display: block;
+  width: min(120px, 42%);
+  height: 1px;
+  margin: 9px auto 0;
+  background: linear-gradient(90deg, transparent, rgba(210, 183, 129, 0.58), transparent);
 }
 
 .hud__controls {
@@ -647,6 +685,14 @@ canvas {
   max-width: min(360px, 44vw);
 }
 
+.hud--intro .hud__top {
+  justify-content: space-between;
+}
+
+.hud--intro .hud__goal-flash {
+  top: 42%;
+}
+
 .hud--intro .hud__copy {
   color: rgba(217, 221, 215, 0.8);
 }
@@ -728,6 +774,7 @@ canvas {
   .hud__top,
   .hud__bottom,
   .hud__controls,
+  .hud__goal-flash,
   .hud__ship-bars,
   .hud__overlay {
     display: none;

@@ -65,9 +65,13 @@ export interface HUDSnapshot {
   overlayLeaderboard?: HUDLeaderboardSnapshot;
   presentation?: 'combat' | 'intro';
   showActionControls?: boolean;
+  showIntroCard?: boolean;
   tailSlapAvailable?: boolean;
   eyebrowText?: string;
   fadeAlpha?: number;
+  goalFlashAlpha?: number;
+  goalFlashTitle?: string;
+  goalFlashText?: string;
 }
 
 export class UISystem {
@@ -85,8 +89,9 @@ export class UISystem {
   private readonly whaleValue = document.createElement('span');
   private readonly airValue = document.createElement('span');
   private readonly whaleHealFeedbackEl = document.createElement('span');
-  private readonly statusEl = document.createElement('div');
-  private readonly debugEl = document.createElement('p');
+  private readonly goalFlashEl = document.createElement('section');
+  private readonly goalFlashTitleEl = document.createElement('h2');
+  private readonly goalFlashCopyEl = document.createElement('p');
   private readonly scoreValueEl = document.createElement('div');
   private readonly timeValueEl = document.createElement('div');
   private readonly shipsDestroyedValueEl = document.createElement('div');
@@ -142,10 +147,7 @@ export class UISystem {
       this.createBarRow('Air', this.airFill, this.airValue, 'hud__bar-fill--air'),
     );
 
-    this.statusEl.className = 'hud__status';
-    this.debugEl.className = 'hud__debug';
-
-    this.metricsCard.append(bars, this.statusEl, this.debugEl);
+    this.metricsCard.append(bars);
     this.topRow.append(this.introCard, this.metricsCard);
 
     this.bottomRow.className = 'hud__bottom';
@@ -184,6 +186,12 @@ export class UISystem {
     );
 
     this.shipBarsLayer.className = 'hud__ship-bars';
+
+    this.goalFlashEl.className = 'hud__goal-flash';
+    this.goalFlashTitleEl.className = 'hud__goal-flash-title';
+    this.goalFlashCopyEl.className = 'hud__goal-flash-copy';
+    this.goalFlashEl.append(this.goalFlashTitleEl, this.goalFlashCopyEl);
+    this.goalFlashEl.hidden = true;
 
     this.overlayCard.className = 'hud__overlay';
     this.overlayCard.hidden = true;
@@ -262,6 +270,7 @@ export class UISystem {
       this.topRow,
       this.bottomRow,
       this.shipBarsLayer,
+      this.goalFlashEl,
       this.controlsStrip,
       this.overlayCard,
       this.keyboardGuard,
@@ -278,6 +287,7 @@ export class UISystem {
     const presentation = snapshot.presentation ?? 'combat';
     const isIntro = presentation === 'intro';
     const showActionControls = snapshot.showActionControls ?? !isIntro;
+    const showIntroCard = snapshot.showIntroCard ?? isIntro;
     const showTailSlapControl = showActionControls && (snapshot.tailSlapAvailable ?? true);
     this.objectiveEl.textContent = snapshot.objective;
     this.eyebrowEl.textContent = snapshot.eyebrowText ?? (isIntro ? 'Prologue' : 'The Hunt');
@@ -290,15 +300,7 @@ export class UISystem {
     this.setBar(this.airFill, this.airValue, snapshot.whaleAir);
     this.updateWhaleHealFeedback(snapshot.whaleHealFeedbackText, snapshot.whaleHealFeedbackAlpha ?? 0);
     this.syncCapitalShipBars(snapshot.capitalShipBars);
-
-    this.statusEl.textContent = snapshot.shipStatus;
-    this.debugEl.textContent = [
-      `${snapshot.submerged ? 'Submerged' : 'Surface'} run`,
-      `speed ${snapshot.speed.toFixed(1)}`,
-      `depth ${snapshot.depth.toFixed(1)} m`,
-      `air ${Math.round(snapshot.whaleAir * 100)}%`,
-      `${snapshot.activeTethers} tether${snapshot.activeTethers === 1 ? '' : 's'}`,
-    ].join('  /  ');
+    this.updateGoalFlash(snapshot.goalFlashTitle, snapshot.goalFlashText, snapshot.goalFlashAlpha ?? 0);
 
     this.scoreValueEl.textContent = `${snapshot.score}`;
     this.timeValueEl.textContent = this.formatTime(snapshot.timeSurvivedSeconds);
@@ -325,10 +327,9 @@ export class UISystem {
       this.leaderboardFormWasVisible = false;
     }
 
+    this.introCard.hidden = !showIntroCard;
     this.metricsCard.hidden = isIntro;
     this.bottomRow.hidden = isIntro;
-    this.statusEl.hidden = isIntro;
-    this.debugEl.hidden = isIntro;
     this.root.classList.toggle('hud--intro', isIntro);
 
     const fadeAlpha = THREE.MathUtils.clamp(snapshot.fadeAlpha ?? 0, 0, 1);
@@ -523,6 +524,24 @@ export class UISystem {
     this.whaleHealFeedbackEl.hidden = clampedAlpha <= 0.001;
     this.whaleHealFeedbackEl.style.opacity = `${clampedAlpha}`;
     this.whaleHealFeedbackEl.style.transform = `translateY(${(1 - clampedAlpha) * 3}px)`;
+  }
+
+  private updateGoalFlash(title: string | undefined, text: string | undefined, alpha: number): void {
+    const clampedAlpha = THREE.MathUtils.clamp(alpha, 0, 1);
+    const visible = Boolean(title || text) && clampedAlpha > 0.001;
+
+    if (title) {
+      this.goalFlashTitleEl.textContent = title;
+    }
+    if (text) {
+      this.goalFlashCopyEl.textContent = text;
+    }
+
+    this.goalFlashTitleEl.hidden = !title;
+    this.goalFlashCopyEl.hidden = !text;
+    this.goalFlashEl.hidden = !visible;
+    this.goalFlashEl.style.opacity = `${clampedAlpha}`;
+    this.goalFlashEl.style.transform = `translate(-50%, ${THREE.MathUtils.lerp(-8, 0, clampedAlpha).toFixed(1)}px)`;
   }
 
   private syncCapitalShipBars(shipBars: readonly HUDShipBarSnapshot[]): void {

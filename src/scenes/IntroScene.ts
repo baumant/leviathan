@@ -636,7 +636,10 @@ export class IntroScene {
       shipsDestroyed: 0,
       activeTethers: 0,
       presentation: 'intro',
+      showIntroCard: false,
       eyebrowText: this.phase === 'breach_cut' || this.phase === 'fade_out' ? 'Ambush' : 'Prologue',
+      goalFlashText: 'Something is moving in the deeps. Row for open water.',
+      goalFlashAlpha: 1,
       fadeAlpha: this.fadeAlpha,
     });
   }

@@ -111,6 +111,11 @@ const AIR_DRAIN_PER_SECOND = 0.35;
 const AIR_RECOVERY_PER_SECOND = 3.4;
 const SUFFOCATION_DAMAGE_PER_SECOND = 6;
 const LOW_AIR_THRESHOLD = 0.34;
+const GOAL_FLASH_TITLE = 'LEVIATHAN';
+const GOAL_FLASH_TEXT = 'Take your revenge on the whalers.';
+const GOAL_FLASH_FADE_IN_SECONDS = 0.28;
+const GOAL_FLASH_HOLD_SECONDS = 2.8;
+const GOAL_FLASH_DURATION_SECONDS = 4.2;
 const MAX_OCEAN_LANTERN_INFLUENCES = 4;
 const MAX_OCEAN_LANTERN_INFLUENCE_POOL = 48;
 const MAX_OCEAN_REVEAL_WINDOWS = 8;
@@ -430,6 +435,7 @@ export class OceanScene {
   private tailSlapPresentationActive = false;
   private crewHealFeedbackTime = 0;
   private crewHealFeedbackText = '';
+  private goalFlashElapsed = 0;
   private phase: ArenaPhase = 'playing';
   private score = 0;
   private shipsDestroyed = 0;
@@ -559,6 +565,7 @@ export class OceanScene {
     this.tailSlapCameraWasActive = false;
     this.tailSlapPresentationActive = false;
     this.clearCrewHealFeedback();
+    this.goalFlashElapsed = 0;
     this.activeTethers = 0;
     this.corporateArrivalState = 'pending';
     this.corporateRowboatsLaunched = false;
@@ -617,6 +624,7 @@ export class OceanScene {
     this.elapsedSeconds += deltaSeconds;
     if (this.phase === 'playing') {
       this.runElapsedSeconds += deltaSeconds;
+      this.goalFlashElapsed = Math.min(this.goalFlashElapsed + deltaSeconds, GOAL_FLASH_DURATION_SECONDS);
     }
 
     let movementResult: WhaleMovementResult | null = null;
@@ -3712,6 +3720,17 @@ export class OceanScene {
       overlayLeaderboard,
       showActionControls: this.phase === 'playing',
       tailSlapAvailable,
+      goalFlashTitle: this.phase === 'playing' ? GOAL_FLASH_TITLE : undefined,
+      goalFlashText: this.phase === 'playing' ? GOAL_FLASH_TEXT : undefined,
+      goalFlashAlpha: this.phase === 'playing' ? this.getGoalFlashAlpha() : 0,
     });
+  }
+
+  private getGoalFlashAlpha(): number {
+    const fadeInAlpha = THREE.MathUtils.smoothstep(this.goalFlashElapsed, 0, GOAL_FLASH_FADE_IN_SECONDS);
+    const fadeOutAlpha =
+      1 - THREE.MathUtils.smoothstep(this.goalFlashElapsed, GOAL_FLASH_HOLD_SECONDS, GOAL_FLASH_DURATION_SECONDS);
+
+    return THREE.MathUtils.clamp(fadeInAlpha * fadeOutAlpha, 0, 1);
   }
 }
