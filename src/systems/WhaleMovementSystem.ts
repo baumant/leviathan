@@ -33,6 +33,10 @@ const BREACH_INNER_RADIUS = 6;
 const BREACH_OUTER_RADIUS = 14;
 const BREACH_HANG_EXPONENT = 0.72;
 const BREACH_HORIZONTAL_SWAY = 0.8;
+const BREACH_LAUNCH_SPEED_RETENTION = 0.92;
+const BREACH_FORWARD_DISTANCE_FACTOR = 0.36;
+const BREACH_FORWARD_DISTANCE_CAP = 28;
+const BREACH_RECOVERY_SPEED_RETENTION = 0.38;
 
 const TAIL_SLAP_DURATION = 0.42;
 const TAIL_SLAP_TURN_DURATION = 0.16;
@@ -285,7 +289,12 @@ export class WhaleMovementSystem {
   ): WhaleMovementResult {
     const previousDepth = whale.depth;
     const previousProgress = THREE.MathUtils.clamp(whale.breachTime / BREACH_DURATION, 0, 1);
-    const previousHorizontalOffset = Math.sin(previousProgress * Math.PI) * BREACH_HORIZONTAL_SWAY;
+    const breachForwardDistance = Math.min(
+      whale.breachSpeed * BREACH_DURATION * BREACH_FORWARD_DISTANCE_FACTOR,
+      BREACH_FORWARD_DISTANCE_CAP,
+    );
+    const previousHorizontalOffset =
+      breachForwardDistance * previousProgress + Math.sin(previousProgress * Math.PI) * BREACH_HORIZONTAL_SWAY;
     whale.breachTime += deltaSeconds;
 
     const progress = THREE.MathUtils.clamp(whale.breachTime / BREACH_DURATION, 0, 1);
@@ -306,7 +315,7 @@ export class WhaleMovementSystem {
     );
     whale.root.rotation.set(whale.pitch, whale.yaw, whale.roll, 'YXZ');
 
-    const horizontalOffset = Math.sin(progress * Math.PI) * BREACH_HORIZONTAL_SWAY;
+    const horizontalOffset = breachForwardDistance * progress + Math.sin(progress * Math.PI) * BREACH_HORIZONTAL_SWAY;
     whale.forwardSpeed = (horizontalOffset - previousHorizontalOffset) / Math.max(deltaSeconds, 0.0001);
     whale.position.copy(whale.breachOrigin).addScaledVector(whale.breachDirection, horizontalOffset);
 
@@ -330,7 +339,7 @@ export class WhaleMovementSystem {
       whale.breachActive = false;
       whale.actionState = 'recovery';
       whale.recoveryTimer = BREACH_RECOVERY;
-      whale.forwardSpeed = 0;
+      whale.forwardSpeed = whale.breachSpeed * BREACH_RECOVERY_SPEED_RETENTION;
       whale.verticalSpeed = 0;
       whale.depth = -0.35;
       whale.syncTravelState();
@@ -412,7 +421,8 @@ export class WhaleMovementSystem {
     whale.breachImpactPending = true;
     whale.breachStartDepth = whale.depth;
     whale.breachLaunchYaw = whale.yaw;
-    whale.breachSpeed = whale.speed * 0.92;
+    whale.breachSpeed =
+      THREE.MathUtils.clamp(Math.max(0, whale.forwardSpeed), 0, MAX_TRAVEL_SPEED) * BREACH_LAUNCH_SPEED_RETENTION;
     whale.breachPrimed = false;
     whale.tailSlapTime = 0;
     whale.recoveryTimer = 0;
