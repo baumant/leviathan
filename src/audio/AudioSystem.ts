@@ -98,6 +98,7 @@ type BrowserWindow = Window &
 
 export class AudioSystem {
   private readonly context: AudioContext | null;
+  private readonly masterGain: GainNode | null = null;
   private readonly buffers = new Map<string, AudioBuffer>();
   private readonly buses: Record<AudioBus, BusNodes> | null = null;
   private readonly lastCueTimes = new Map<AudioCueId, number>();
@@ -110,6 +111,7 @@ export class AudioSystem {
   private loadPromise: Promise<void> | null = null;
   private unlocked = false;
   private disposed = false;
+  private muted = false;
   private underwaterRatio = 0;
   private corporatePressure = 0;
 
@@ -119,7 +121,8 @@ export class AudioSystem {
 
     if (this.context) {
       const master = this.context.createGain();
-      master.gain.value = MASTER_VOLUME;
+      this.masterGain = master;
+      this.applyMasterVolume();
       master.connect(this.context.destination);
 
       this.buses = {
@@ -133,6 +136,16 @@ export class AudioSystem {
 
     this.bindUnlockListeners();
     this.loadPromise = this.load();
+  }
+
+  get isMuted(): boolean {
+    return this.muted;
+  }
+
+  setMuted(muted: boolean): boolean {
+    this.muted = muted;
+    this.applyMasterVolume(0.12);
+    return this.muted;
   }
 
   setMusicState(state: MusicState): void {
@@ -485,6 +498,21 @@ export class AudioSystem {
   private setBus(bus: BusNodes, frequency: number, gain: number, now: number): void {
     bus.filter.frequency.setTargetAtTime(frequency, now, 0.08);
     bus.gain.gain.setTargetAtTime(gain, now, 0.08);
+  }
+
+  private applyMasterVolume(fadeSeconds = 0): void {
+    if (!this.context || !this.masterGain || this.disposed) {
+      return;
+    }
+
+    const targetVolume = this.muted ? 0 : MASTER_VOLUME;
+
+    if (fadeSeconds <= 0) {
+      this.masterGain.gain.value = targetVolume;
+      return;
+    }
+
+    rampGain(this.masterGain, this.context.currentTime, targetVolume, fadeSeconds);
   }
 
   private reportAudioError(message: string): void {

@@ -196,8 +196,8 @@ export function createOceanUndersideMaterial(arenaRadius: number): THREE.ShaderM
       uTransmissionStrength: { value: 1 },
       uFocusPosition: { value: new THREE.Vector3() },
       uMoonDirection: { value: new THREE.Vector3(0.35, -0.9, 0.15).normalize() },
-      uArenaRadius: { value: arenaRadius * 1.55 },
-      uArenaFadeStart: { value: arenaRadius * 0.86 },
+      uArenaRadius: { value: arenaRadius * 1.88 },
+      uArenaFadeStart: { value: arenaRadius * 1.12 },
       uRevealWindows: {
         value: Array.from({ length: MAX_UNDERSIDE_REVEAL_WINDOWS }, () => new THREE.Vector4()),
       },

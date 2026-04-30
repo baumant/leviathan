@@ -27,18 +27,24 @@ uniform float uWaterlineHeight;
 varying vec3 vLocalPosition;
 
 float layeredBreakup(vec2 point) {
-  float wide = sin(point.x * 2.0 + point.y * 0.9 + uTime * 0.03) * 0.5 + 0.5;
-  float mid = cos(point.x * 4.4 - point.y * 1.7 - uTime * 0.02) * 0.5 + 0.5;
-  float fine = sin((point.x - point.y) * 3.1 + uTime * 0.04) * 0.5 + 0.5;
-  return wide * 0.48 + mid * 0.34 + fine * 0.18;
+  float wide = sin(point.x * 1.7 + point.y * 0.72 + uTime * 0.025) * 0.5 + 0.5;
+  float mid = cos(point.x * 3.9 - point.y * 1.44 - uTime * 0.018) * 0.5 + 0.5;
+  float fine = sin((point.x - point.y) * 6.1 + uTime * 0.032) * 0.5 + 0.5;
+  float streak = cos(point.x * 9.4 + point.y * 0.38 + uTime * 0.012) * 0.5 + 0.5;
+  return wide * 0.38 + mid * 0.3 + fine * 0.18 + streak * 0.14;
 }
 
 void main() {
   float height01 = clamp(vLocalPosition.y + 0.5, 0.0, 1.0);
   float angle = atan(vLocalPosition.z, vLocalPosition.x);
   float breakup = layeredBreakup(vec2(angle * 1.5, height01 * 3.4));
+  float verticalBreakup = layeredBreakup(vec2(angle * 2.35 + height01 * 0.72, height01 * 5.2));
+  float veilGap = smoothstep(0.18, 0.9, verticalBreakup + sin(angle * 7.2 + uTime * 0.015) * 0.14);
+  float waterlineBreakup = layeredBreakup(vec2(angle * 3.1 + 1.7, height01 * 2.6));
 
-  float waterlineBand = 1.0 - smoothstep(0.02, 0.18, abs(height01 - 0.08) * 2.8);
+  float waterlineBand =
+    (1.0 - smoothstep(0.02, 0.18, abs(height01 - 0.08) * 2.8)) *
+    mix(0.26, 0.72, waterlineBreakup);
   float bodyMass = smoothstep(0.0, 0.16, height01) * (1.0 - smoothstep(0.54, 0.96, height01));
   float lowerMass = 1.0 - smoothstep(0.12, 0.72, height01);
   float topFade = 1.0 - smoothstep(0.78, 0.99, height01);
@@ -46,10 +52,11 @@ void main() {
     ? 1.0 - smoothstep(uWaterlineHeight - 0.018, uWaterlineHeight + 0.034, height01)
     : 0.0;
   float waterlineDistance = abs(height01 - uWaterlineHeight);
-  float surfaceShelf = belowWater * (1.0 - smoothstep(0.0, 0.13, waterlineDistance));
+  float surfaceShelf = belowWater * (1.0 - smoothstep(0.0, 0.13, waterlineDistance)) * mix(0.34, 0.82, waterlineBreakup);
   float deepVolume = belowWater * smoothstep(0.02, 0.34, uWaterlineHeight - height01);
   float density =
     (bodyMass * mix(0.78, 1.22, breakup) + waterlineBand * 0.48 + lowerMass * 0.18) * topFade;
+  density *= mix(0.38, 1.14, veilGap);
   float submergedBlend = smoothstep(0.06, 0.72, uUnderwaterRatio);
   float oceanVolume = belowWater * (0.18 + deepVolume * 0.32 + breakup * 0.16);
   density = mix(density, oceanVolume + surfaceShelf * 0.12, submergedBlend * belowWater);

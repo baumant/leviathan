@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
 interface ControlTile {
   root: HTMLElement;
 }
@@ -78,6 +80,10 @@ export class UISystem {
   private readonly root = document.createElement('div');
   private readonly topRow = document.createElement('div');
   private readonly bottomRow = document.createElement('div');
+  private readonly muteButton = document.createElement('button');
+  private readonly muteButtonLabel = document.createElement('span');
+  private readonly soundOnIcon = this.createSoundOnIcon();
+  private readonly soundOffIcon = this.createSoundOffIcon();
   private readonly introCard = document.createElement('section');
   private readonly metricsCard = document.createElement('section');
   private readonly objectiveEl = document.createElement('p');
@@ -113,11 +119,21 @@ export class UISystem {
   private readonly diveTile: ControlTile;
   private readonly riseTile: ControlTile;
   private readonly tailSlapTile: ControlTile;
+  private audioMuted = false;
   private leaderboardFormWasVisible = false;
   private leaderboardSubmitHandler: ((username: string) => void) | null = null;
+  private muteToggleHandler: ((muted: boolean) => void) | null = null;
 
   constructor(parent: HTMLElement) {
     this.root.className = 'hud';
+
+    this.muteButton.className = 'hud__mute-button';
+    this.muteButton.type = 'button';
+    this.muteButtonLabel.className = 'hud__screen-reader';
+    this.muteButton.append(this.soundOnIcon, this.soundOffIcon, this.muteButtonLabel);
+    this.muteButton.addEventListener('click', this.handleMuteButtonClick);
+    this.muteButton.addEventListener('keydown', this.handleMuteButtonKeyDown);
+    this.setMuted(false);
 
     this.topRow.className = 'hud__top';
 
@@ -267,6 +283,7 @@ export class UISystem {
     this.fadeEl.hidden = true;
 
     this.root.append(
+      this.muteButton,
       this.topRow,
       this.bottomRow,
       this.shipBarsLayer,
@@ -281,6 +298,21 @@ export class UISystem {
 
   setLeaderboardSubmitHandler(handler: ((username: string) => void) | null): void {
     this.leaderboardSubmitHandler = handler;
+  }
+
+  setMuteToggleHandler(handler: ((muted: boolean) => void) | null): void {
+    this.muteToggleHandler = handler;
+  }
+
+  setMuted(muted: boolean): void {
+    const label = muted ? 'Unmute audio' : 'Mute audio';
+    this.audioMuted = muted;
+    this.muteButtonLabel.textContent = label;
+    this.muteButton.setAttribute('aria-label', label);
+    this.muteButton.setAttribute('aria-pressed', `${muted}`);
+    this.muteButton.title = label;
+    this.soundOnIcon.toggleAttribute('hidden', muted);
+    this.soundOffIcon.toggleAttribute('hidden', !muted);
   }
 
   update(snapshot: HUDSnapshot): void {
@@ -338,6 +370,8 @@ export class UISystem {
   }
 
   dispose(): void {
+    this.muteButton.removeEventListener('click', this.handleMuteButtonClick);
+    this.muteButton.removeEventListener('keydown', this.handleMuteButtonKeyDown);
     this.overlayLeaderboardForm.removeEventListener('submit', this.handleLeaderboardFormSubmit);
     this.root.remove();
   }
@@ -460,6 +494,27 @@ export class UISystem {
   private readonly handleLeaderboardFormSubmit = (event: SubmitEvent): void => {
     event.preventDefault();
     this.leaderboardSubmitHandler?.(this.overlayUsernameInput.value);
+  };
+
+  private readonly handleMuteButtonClick = (event: MouseEvent): void => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const nextMuted = !this.audioMuted;
+
+    if (this.muteToggleHandler) {
+      this.muteToggleHandler(nextMuted);
+    } else {
+      this.setMuted(nextMuted);
+    }
+
+    this.muteButton.blur();
+  };
+
+  private readonly handleMuteButtonKeyDown = (event: KeyboardEvent): void => {
+    if (event.code === 'Space' || event.code === 'Enter') {
+      event.stopPropagation();
+    }
   };
 
   private createBarRow(
@@ -677,6 +732,46 @@ export class UISystem {
 
   private createTailSlapIcon(): HTMLElement {
     return this.createImageIcon('/control-icons/tailslap.png');
+  }
+
+  private createSoundOnIcon(): SVGSVGElement {
+    const icon = this.createMuteButtonIcon();
+    icon.append(
+      this.createIconPath('M4 9h4l5-4v14l-5-4H4z'),
+      this.createIconPath('M16 8.5a4 4 0 0 1 0 7'),
+      this.createIconPath('M18.5 6a7 7 0 0 1 0 12'),
+    );
+    return icon;
+  }
+
+  private createSoundOffIcon(): SVGSVGElement {
+    const icon = this.createMuteButtonIcon();
+    icon.append(
+      this.createIconPath('M4 9h4l5-4v14l-5-4H4z'),
+      this.createIconPath('M17 9l4 4'),
+      this.createIconPath('M21 9l-4 4'),
+    );
+    return icon;
+  }
+
+  private createMuteButtonIcon(): SVGSVGElement {
+    const icon = document.createElementNS(SVG_NS, 'svg');
+    icon.classList.add('hud__mute-icon');
+    icon.setAttribute('viewBox', '0 0 24 24');
+    icon.setAttribute('fill', 'none');
+    icon.setAttribute('stroke', 'currentColor');
+    icon.setAttribute('stroke-width', '1.8');
+    icon.setAttribute('stroke-linecap', 'round');
+    icon.setAttribute('stroke-linejoin', 'round');
+    icon.setAttribute('aria-hidden', 'true');
+    icon.setAttribute('focusable', 'false');
+    return icon;
+  }
+
+  private createIconPath(d: string): SVGPathElement {
+    const path = document.createElementNS(SVG_NS, 'path');
+    path.setAttribute('d', d);
+    return path;
   }
 
   private createImageIcon(src: string): HTMLImageElement {

@@ -141,7 +141,11 @@ type OceanWaterShader = THREE.ShaderMaterial & {
   uniforms: Record<string, { value: unknown }>;
 };
 
-export function createPainterlyOceanMaterial(geometry: THREE.PlaneGeometry, arenaRadius: number): Water {
+export function createPainterlyOceanMaterial(
+  geometry: THREE.PlaneGeometry,
+  visualEdgeRadius: number,
+  visualEdgeFadeStart = visualEdgeRadius * 0.76,
+): Water {
   const water = new Water(geometry, {
     textureWidth: OCEAN_SURFACE_TUNING.reflection.textureSize,
     textureHeight: OCEAN_SURFACE_TUNING.reflection.textureSize,
@@ -223,8 +227,8 @@ export function createPainterlyOceanMaterial(geometry: THREE.PlaneGeometry, aren
   material.uniforms.uRevealMinAlpha = { value: OCEAN_SURFACE_TUNING.subsurfaceReveal.minAlpha };
   material.uniforms.uApproxWaterDepth = { value: 95 };
   material.uniforms.uUnderwaterRatio = { value: 0 };
-  material.uniforms.uArenaRadius = { value: arenaRadius };
-  material.uniforms.uArenaFadeStart = { value: arenaRadius * 0.76 };
+  material.uniforms.uVisualEdgeRadius = { value: visualEdgeRadius };
+  material.uniforms.uVisualEdgeFadeStart = { value: visualEdgeFadeStart };
 
   material.fragmentShader = material.fragmentShader.replace(
     'varying vec4 worldPosition;',
@@ -278,8 +282,8 @@ uniform float uRevealTransmissionBoost;
 uniform float uRevealMinAlpha;
 uniform float uApproxWaterDepth;
 uniform float uUnderwaterRatio;
-uniform float uArenaRadius;
-uniform float uArenaFadeStart;
+uniform float uVisualEdgeRadius;
+uniform float uVisualEdgeFadeStart;
 
 float lanternInfluence( vec2 point ) {
   float accumulated = 0.0;
@@ -403,9 +407,9 @@ vec3 scatter = bodyColor * bodyDensity;`,
 
   material.fragmentShader = material.fragmentShader.replace(
     'vec3 albedo = mix( ( sunColor * diffuseLight * 0.3 + scatter ) * getShadowMask(), ( vec3( 0.1 ) + reflectionSample * 0.9 + reflectionSample * specularLight ), reflectance);',
-    `float arenaDistance = length( worldPosition.xz );
-float arenaMask = 1.0 - smoothstep( uArenaFadeStart, uArenaRadius, arenaDistance );
-if ( arenaMask <= 0.001 ) discard;
+    `float visualEdgeDistance = length( worldPosition.xz );
+float visualEdgeMask = 1.0 - smoothstep( uVisualEdgeFadeStart, uVisualEdgeRadius, visualEdgeDistance );
+if ( visualEdgeMask <= 0.001 ) discard;
 float lanternGlow = lanternInfluence( worldPosition.xz );
 float fogAssist = clamp( fogDensity * 120.0, 0.2, 1.0 );
 float horizonFade = pow(
@@ -440,9 +444,9 @@ albedo += uWaveWhitecapColor * whitecapAlpha * ( 0.48 + moonSheenMask * 0.22 );
 albedo += uLanternColor * lanternGlow * uLanternWarmBlend;
 albedo = mix( albedo, fogColor, horizonFade * clamp( 0.34 + fogDensity * 10.0, 0.0, 0.74 ) );
 albedo = max( albedo, uDeepColor * uMinimumDensity * 0.68 );
-albedo = mix( fogColor, albedo, arenaMask );
+albedo = mix( fogColor, albedo, visualEdgeMask );
 float localAlpha = mix( alpha, max( uRevealMinAlpha, alpha * ( 1.0 - translucencyWindow * 0.28 ) ), revealWindowClarity );
-localAlpha *= pow( arenaMask, 1.35 );`,
+localAlpha *= pow( visualEdgeMask, 1.35 );`,
   );
 
   material.fragmentShader = material.fragmentShader.replace(

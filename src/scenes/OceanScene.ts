@@ -86,18 +86,22 @@ const MOON_HALO_COLOR = new THREE.Color('#87a1c4');
 const DISTANT_SILHOUETTE_COLOR = new THREE.Color('#081018');
 const ARENA_RADIUS = 182;
 const OCEAN_SIZE = 720;
+const OCEAN_VISUAL_EDGE_RADIUS = OCEAN_SIZE * 0.47;
+const OCEAN_VISUAL_EDGE_FADE_START = ARENA_RADIUS * 1.34;
 const OCEAN_UNDERSIDE_SIZE = 2200;
 const SEABED_DEPTH_MULTIPLIER = 2;
+const SKY_RADIUS = 420;
+const MOON_DISTANCE = 315;
 const VIBE_PORTAL_TRIGGER_RADIUS = 8.5;
 const VIBE_PORTAL_EXIT_POSITION = new THREE.Vector3(0, 0, 0);
 const VIBE_PORTAL_RETURN_POSITION = new THREE.Vector3(0, 0, -68);
-const FOG_BANK_INNER_RADIUS = ARENA_RADIUS * 1.04;
-const FOG_BANK_MID_RADIUS = ARENA_RADIUS * 1.1;
-const FOG_BANK_OUTER_RADIUS = ARENA_RADIUS * 1.16;
-const FOG_BANK_INNER_HEIGHT = 72;
-const FOG_BANK_MID_HEIGHT = 92;
-const FOG_BANK_OUTER_HEIGHT = 118;
-const FOG_BANK_UNDERWATER_DEPTH = 264;
+const FOG_BANK_INNER_RADIUS = ARENA_RADIUS * 1.32;
+const FOG_BANK_MID_RADIUS = ARENA_RADIUS * 1.55;
+const FOG_BANK_OUTER_RADIUS = ARENA_RADIUS * 1.76;
+const FOG_BANK_INNER_HEIGHT = 86;
+const FOG_BANK_MID_HEIGHT = 118;
+const FOG_BANK_OUTER_HEIGHT = 152;
+const FOG_BANK_UNDERWATER_DEPTH = 340;
 const WHALE_BOUNDARY_MARGIN = 4;
 const SHIP_BOUNDARY_MARGIN = 3;
 const HARPOON_SPEED = 30;
@@ -785,7 +789,11 @@ export class OceanScene {
 
   private createOcean(): Water {
     this.oceanGeometry.rotateX(-Math.PI / 2);
-    const ocean = createPainterlyOceanMaterial(this.oceanGeometry, ARENA_RADIUS);
+    const ocean = createPainterlyOceanMaterial(
+      this.oceanGeometry,
+      OCEAN_VISUAL_EDGE_RADIUS,
+      OCEAN_VISUAL_EDGE_FADE_START,
+    );
     ocean.receiveShadow = false;
     return ocean;
   }
@@ -809,9 +817,9 @@ export class OceanScene {
     };
 
     this.arenaFogBanks.push(
-      createFogBankMesh(FOG_BANK_OUTER_RADIUS, FOG_BANK_OUTER_HEIGHT, 0.16, 5, true),
-      createFogBankMesh(FOG_BANK_MID_RADIUS, FOG_BANK_MID_HEIGHT, 0.24, 6),
-      createFogBankMesh(FOG_BANK_INNER_RADIUS, FOG_BANK_INNER_HEIGHT, 0.32, 7),
+      createFogBankMesh(FOG_BANK_OUTER_RADIUS, FOG_BANK_OUTER_HEIGHT, 0.1, 5, true),
+      createFogBankMesh(FOG_BANK_MID_RADIUS, FOG_BANK_MID_HEIGHT, 0.16, 6),
+      createFogBankMesh(FOG_BANK_INNER_RADIUS, FOG_BANK_INNER_HEIGHT, 0.22, 7),
     );
   }
 
@@ -864,10 +872,10 @@ export class OceanScene {
   }
 
   private setupSky(): void {
-    const moonAnchor = this.moonDirection.clone().multiplyScalar(-240);
+    const moonAnchor = this.moonDirection.clone().multiplyScalar(-MOON_DISTANCE);
 
     const sky = new THREE.Mesh(
-      new THREE.SphereGeometry(320, 18, 18),
+      new THREE.SphereGeometry(SKY_RADIUS, 18, 18),
       this.skyMaterial,
     );
 
@@ -896,24 +904,46 @@ export class OceanScene {
     moon.material.toneMapped = false;
     moon.position.copy(moonAnchor);
 
-    const silhouette = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.7, 1.3, 54, 5),
-      new THREE.MeshStandardMaterial({
-        color: DISTANT_SILHOUETTE_COLOR,
-        roughness: 1,
-        metalness: 0,
-        flatShading: true,
-      }),
-    );
-    silhouette.position.set(122, 26, 178);
-    silhouette.rotation.z = 0.06;
-
-    const silhouette2 = silhouette.clone();
-    silhouette2.position.set(-144, 24, 136);
-    silhouette2.rotation.z = -0.08;
-
     sky.rotation.y = Math.PI * 0.15;
-    this.scene.add(sky, moonHalo, moon, silhouette, silhouette2);
+    this.scene.add(sky, moonHalo, moon, this.createDistantHorizonSilhouettes());
+  }
+
+  private createDistantHorizonSilhouettes(): THREE.Group {
+    const root = new THREE.Group();
+    const material = new THREE.MeshStandardMaterial({
+      color: DISTANT_SILHOUETTE_COLOR,
+      roughness: 1,
+      metalness: 0,
+      flatShading: true,
+      transparent: true,
+      opacity: 0.82,
+    });
+    const hullGeometry = new THREE.BoxGeometry(18, 2.1, 4.2);
+    const mastGeometry = new THREE.CylinderGeometry(0.38, 0.62, 44, 5);
+
+    const anchors = [
+      { x: 182, z: 238, heading: -0.72, scale: 1.08, mastLean: 0.08 },
+      { x: -236, z: 198, heading: 0.62, scale: 0.84, mastLean: -0.07 },
+      { x: -94, z: -286, heading: 2.86, scale: 1.18, mastLean: 0.04 },
+      { x: 262, z: -126, heading: -2.08, scale: 0.74, mastLean: -0.1 },
+    ] as const;
+
+    for (const anchor of anchors) {
+      const silhouette = new THREE.Group();
+      const hull = new THREE.Mesh(hullGeometry, material);
+      const mast = new THREE.Mesh(mastGeometry, material);
+
+      hull.position.y = 1.1;
+      mast.position.y = 24;
+      mast.rotation.z = anchor.mastLean;
+      silhouette.position.set(anchor.x, 0, anchor.z);
+      silhouette.rotation.y = anchor.heading;
+      silhouette.scale.setScalar(anchor.scale);
+      silhouette.add(hull, mast);
+      root.add(silhouette);
+    }
+
+    return root;
   }
 
   private captureWaveCoordinates(): Float32Array {

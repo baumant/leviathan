@@ -33,6 +33,10 @@ export class Game {
 
     this.mount.append(this.renderer.domElement);
     this.ui = new UISystem(document.body);
+    this.ui.setMuted(this.audio.isMuted);
+    this.ui.setMuteToggleHandler((muted) => {
+      this.ui.setMuted(this.audio.setMuted(muted));
+    });
     this.introScene = new IntroScene(this.input, this.ui, this.audio, window.innerWidth, window.innerHeight);
     this.oceanScene = new OceanScene(this.input, this.ui, this.audio, window.innerWidth, window.innerHeight);
 
