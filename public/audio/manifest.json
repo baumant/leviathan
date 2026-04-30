@@ -14,6 +14,12 @@
       "loop": true,
       "volume": 0.48
     },
+    "music.fogBellsBelow": {
+      "src": "/audio/music/fog-bells-below.mp3",
+      "bus": "music",
+      "loop": true,
+      "volume": 0.42
+    },
     "ambience.surface": {
       "src": "/audio/ambience/ocean-waves.ogg",
       "bus": "ambience",
@@ -146,10 +152,14 @@
       "maxDistance": 118
     },
     "sfx.stinger.corporate": {
-      "src": "/audio/sfx/corporate-stinger.ogg",
+      "src": "/audio/sfx/corporate-sting.mp3",
       "bus": "sfx",
-      "volume": 0.64,
-      "playbackRate": 0.76
+      "volume": 0.64
+    },
+    "sfx.defeat": {
+      "src": "/audio/sfx/ded.mp3",
+      "bus": "sfx",
+      "volume": 0.72
     },
     "vocal.whale.sperm": {
       "src": "/audio/vocals/sperm-whale-clicks.mp3",
@@ -187,22 +197,21 @@
   "music": {
     "silent": [],
     "intro": [
-      "music.dread",
+      "music.fogBellsBelow",
       "ambience.deepRumble"
     ],
     "combat": [
-      "music.dread",
-      "music.shanty"
+      "music.fogBellsBelow"
     ],
     "corporate": [
-      "music.dread",
+      "music.fogBellsBelow",
       "ambience.deepRumble"
     ],
     "victory": [
-      "music.dread",
-      "music.shanty"
+      "music.fogBellsBelow"
     ],
     "defeat": [
+      "music.fogBellsBelow",
       "ambience.deepRumble"
     ]
   },
@@ -290,10 +299,10 @@
     ],
     "victory": [
       "vocal.whale.fin",
-      "music.dread"
+      "music.fogBellsBelow"
     ],
     "defeat": [
-      "sfx.stinger.corporate",
+      "sfx.defeat",
       "ambience.deepRumble"
     ]
   }
