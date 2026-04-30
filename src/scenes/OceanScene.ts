@@ -7,12 +7,18 @@ import { CaptiveWhale } from '../entities/CaptiveWhale';
 import { Harpoon } from '../entities/Harpoon';
 import { OverboardCrew, preloadOverboardCrewAsset } from '../entities/OverboardCrew';
 import { PlayerWhale } from '../entities/PlayerWhale';
-import { preloadCapitalShipAsset } from '../entities/CapitalShipVisualAsset';
+import { preloadCapitalShipAsset, preloadCapitalShipWreckAsset } from '../entities/CapitalShipVisualAsset';
 import { preloadRowboatAsset } from '../entities/RowboatVisualAsset';
 import { preloadWhaleHeroAsset } from '../entities/WhaleHeroAsset';
 import { Ship, ShipLanternInfluence, ShipSpawnConfig } from '../entities/Ship';
 import { createArenaFogBankMaterial, updateArenaFogBankMaterial } from '../fx/createArenaFogBankMaterial';
 import { BreachSplashFX } from '../fx/BreachSplashFX';
+import {
+  ShipDestructionFX,
+  type ShipDestructionSnapshot,
+  type ShipDestructionTrigger,
+  type ShipDestructionTriggerKind,
+} from '../fx/ShipDestructionFX';
 import {
   ActorTopsideRevealState,
   calculateActorTopsideRevealState,
@@ -279,6 +285,7 @@ export class OceanScene {
   private readonly cameraOffset = new THREE.Vector3();
   private readonly atmosphereColor = SURFACE_FOG.clone();
   private readonly breachSplashFx: BreachSplashFX;
+  private readonly shipDestructionFx: ShipDestructionFX;
   private readonly tailSlapShockwaveFx: TailSlapShockwaveFX;
   private readonly shipWakeFx: ShipWakeFX;
   private readonly whaleSurfaceSprayFx: WhaleSurfaceSprayFX;
@@ -360,6 +367,7 @@ export class OceanScene {
   private readonly oceanRevealWindows: PainterlyOceanSubsurfaceRevealWindow[] = [];
   private readonly topsideRevealTargets: TopsideSubsurfaceRevealTarget[] = [];
   private readonly shipAudioHealth = new Map<string, number>();
+  private readonly lastShipDestructionTriggers = new Map<string, ShipDestructionTrigger>();
   private readonly lastCrewShoutByShipId = new Map<string, number>();
   private readonly lastCrewDropByShipId = new Map<string, number>();
   private whaleTopsideRevealState: ActorTopsideRevealState = { ...INACTIVE_WATERLINE_PASSTHROUGH_STATE, cameraAboveWater: true };
@@ -432,6 +440,7 @@ export class OceanScene {
     this.baseWaveCoordinates = this.captureWaveCoordinates();
     this.oceanUndersideMesh = this.createOceanUnderside();
     this.breachSplashFx = new BreachSplashFX(this.scene);
+    this.shipDestructionFx = new ShipDestructionFX(this.scene);
     this.tailSlapShockwaveFx = new TailSlapShockwaveFX(this.scene);
     this.shipWakeFx = new ShipWakeFX(this.scene, this.ships);
     this.whaleSurfaceSprayFx = new WhaleSurfaceSprayFX(this.scene);
@@ -447,6 +456,8 @@ export class OceanScene {
       preloadRowboatAsset(),
       preloadCapitalShipAsset('flagship'),
       preloadCapitalShipAsset('corporate_whaler'),
+      preloadCapitalShipWreckAsset('flagship'),
+      preloadCapitalShipWreckAsset('corporate_whaler'),
       preloadOverboardCrewAsset(),
     ]);
 
@@ -527,6 +538,7 @@ export class OceanScene {
     this.capitalBreachedThisArc.clear();
     this.shipTopsideRevealStates.clear();
     this.shipAudioHealth.clear();
+    this.lastShipDestructionTriggers.clear();
     this.lastCrewShoutByShipId.clear();
     this.lastCrewDropByShipId.clear();
 
@@ -550,6 +562,7 @@ export class OceanScene {
     this.clearCannonballs();
     this.clearOverboardCrew();
     this.breachSplashFx.reset();
+    this.shipDestructionFx.reset();
     this.tailSlapShockwaveFx.reset();
     this.shipWakeFx.reset();
     this.whaleSurfaceSprayFx.reset();
@@ -640,6 +653,7 @@ export class OceanScene {
     this.updateArenaFogBanks(underwaterRatio);
     this.updateOceanMaterial(underwaterRatio);
     this.breachSplashFx.update(deltaSeconds, this.sampleOceanHeight);
+    this.shipDestructionFx.update(deltaSeconds, this.sampleOceanHeight, this.sampleOceanFloorHeight);
     this.tailSlapShockwaveFx.update(deltaSeconds, underwaterRatio, this.sampleOceanHeight);
     this.shipWakeFx.update({
       deltaSeconds,
@@ -695,6 +709,7 @@ export class OceanScene {
   dispose(): void {
     this.ui.setLeaderboardSubmitHandler(null);
     this.breachSplashFx.dispose();
+    this.shipDestructionFx.dispose();
     this.tailSlapShockwaveFx.dispose();
     this.shipWakeFx.dispose();
     this.whaleSurfaceSprayFx.dispose();
@@ -1285,6 +1300,13 @@ export class OceanScene {
         if (ramResult) {
           this.impactShake = Math.max(this.impactShake, ramResult.intensity);
           this.audio.playCue('hull.groan', ship.root.position, { intensity: ramResult.intensity });
+          this.rememberShipDestructionTrigger(
+            ship,
+            'ram',
+            this.whale.position,
+            this.tempShipVector.copy(ship.root.position).sub(this.whale.position),
+            ramResult.intensity,
+          );
           this.maybeSpawnOverboardCrew(ship, ramResult.damage);
         }
       }
@@ -1299,6 +1321,7 @@ export class OceanScene {
 
       if (ship.sinking && !ship.scoreAwarded) {
         ship.scoreAwarded = true;
+        this.spawnShipDestruction(ship);
         this.score += ship.scoreValue;
         this.shipsDestroyed += 1;
         if (ship.role === 'flagship') {
@@ -1308,12 +1331,91 @@ export class OceanScene {
           intensity: ship.role === 'rowboat' ? 0.65 : 1,
         });
       } else if (ship.health < previousHealth && !ship.sinking) {
-        const damageAlpha = THREE.MathUtils.clamp((previousHealth - ship.health) / Math.max(ship.maxHealth, 1), 0.18, 1);
+        const damageTaken = previousHealth - ship.health;
+        const damageAlpha = THREE.MathUtils.clamp(damageTaken / Math.max(ship.maxHealth, 1), 0.18, 1);
+        this.spawnShipDamageDebris(ship, damageTaken);
         this.audio.playCue('hull.groan', ship.root.position, { intensity: damageAlpha });
       }
 
       this.shipAudioHealth.set(ship.id, ship.health);
     }
+  }
+
+  private rememberShipDestructionTrigger(
+    ship: Ship,
+    kind: ShipDestructionTriggerKind,
+    origin: THREE.Vector3,
+    direction: THREE.Vector3,
+    intensity: number,
+  ): void {
+    if (ship.sunk || ship.scoreAwarded) {
+      return;
+    }
+
+    const resolvedDirection = direction.clone();
+
+    if (resolvedDirection.lengthSq() <= 0.0001) {
+      resolvedDirection.copy(ship.root.position).sub(origin);
+    }
+
+    if (resolvedDirection.lengthSq() <= 0.0001) {
+      ship.getForward(resolvedDirection);
+    }
+
+    resolvedDirection.normalize();
+    this.lastShipDestructionTriggers.set(ship.id, {
+      kind,
+      origin: origin.clone(),
+      direction: resolvedDirection,
+      intensity: THREE.MathUtils.clamp(intensity, 0.16, 1.18),
+    });
+  }
+
+  private spawnShipDestruction(ship: Ship): void {
+    const snapshot = this.createShipDestructionSnapshot(ship);
+    const trigger = this.lastShipDestructionTriggers.get(ship.id) ?? this.createFallbackShipDestructionTrigger(ship);
+
+    this.shipDestructionFx.spawn(snapshot, trigger);
+    ship.beginDestroyedVisualState();
+    this.lastShipDestructionTriggers.delete(ship.id);
+  }
+
+  private spawnShipDamageDebris(ship: Ship, damageTaken: number): void {
+    if (!ship.isCapitalShip || damageTaken <= 0 || ship.sunk) {
+      return;
+    }
+
+    const snapshot = this.createShipDestructionSnapshot(ship);
+    const trigger = this.lastShipDestructionTriggers.get(ship.id) ?? this.createFallbackShipDestructionTrigger(ship);
+    const damageRatio = damageTaken / Math.max(ship.maxHealth, 1);
+
+    this.shipDestructionFx.spawnDamage(snapshot, trigger, damageRatio);
+  }
+
+  private createShipDestructionSnapshot(ship: Ship): ShipDestructionSnapshot {
+    const surfaceHeight = this.sampleOceanHeight(ship.root.position.x, ship.root.position.z);
+
+    return {
+      shipId: ship.id,
+      role: ship.role,
+      position: ship.root.position.clone(),
+      quaternion: ship.root.quaternion.clone(),
+      scale: ship.root.scale.clone(),
+      halfExtents: ship.halfExtents.clone(),
+      surfaceHeight,
+    };
+  }
+
+  private createFallbackShipDestructionTrigger(ship: Ship): ShipDestructionTrigger {
+    const direction = ship.getForward(new THREE.Vector3());
+    const origin = ship.root.position.clone().addScaledVector(direction, -Math.max(2, ship.halfExtents.z * 0.5));
+
+    return {
+      kind: 'fallback',
+      origin,
+      direction,
+      intensity: ship.role === 'rowboat' ? 0.52 : 0.82,
+    };
   }
 
   private maybePlayCrewApproachShouts(): void {
@@ -1510,6 +1612,13 @@ export class OceanScene {
       if (this.damageSystem.updateDragUnder(this.whale, owner, true, deltaSeconds, tensionAlpha)) {
         this.impactShake = Math.max(this.impactShake, 0.36);
         this.audio.playCue('harpoon.snap', this.tempAttachPoint, { intensity: 1 });
+        this.rememberShipDestructionTrigger(
+          owner,
+          'drag_under',
+          this.tempAttachPoint,
+          this.tempShipVector.copy(this.whale.position).sub(owner.root.position),
+          THREE.MathUtils.lerp(0.62, 1, tensionAlpha),
+        );
         this.removeHarpoon(index);
         continue;
       }
@@ -1633,6 +1742,13 @@ export class OceanScene {
         }
 
         this.impactShake = Math.max(this.impactShake, hitResult.intensity);
+        this.rememberShipDestructionTrigger(
+          ship,
+          'breach_slam',
+          result.breachImpact.position,
+          this.tempShipVector.copy(ship.root.position).sub(result.breachImpact.position),
+          hitResult.intensity,
+        );
         this.maybeSpawnOverboardCrew(ship, hitResult.damage);
 
         if (ship.role === 'rowboat') {
@@ -1672,6 +1788,13 @@ export class OceanScene {
         }
 
         this.impactShake = Math.max(this.impactShake, hitResult.intensity);
+        this.rememberShipDestructionTrigger(
+          ship,
+          'tail_slap',
+          result.tailSlap.origin,
+          result.tailSlap.direction,
+          hitResult.intensity,
+        );
         this.maybeSpawnOverboardCrew(ship, hitResult.damage);
 
         if (ship.role === 'rowboat') {
@@ -1744,6 +1867,13 @@ export class OceanScene {
       }
 
       this.impactShake = Math.max(this.impactShake, hitResult.intensity);
+      this.rememberShipDestructionTrigger(
+        ship,
+        'breach_launch',
+        this.whale.position,
+        this.tempShipVector.copy(ship.root.position).sub(this.whale.position),
+        hitResult.intensity,
+      );
       this.maybeSpawnOverboardCrew(ship, hitResult.damage);
 
       if (ship.role === 'rowboat') {
@@ -2023,6 +2153,13 @@ export class OceanScene {
       if (interaction?.kind === 'ram_hit') {
         this.impactShake = Math.max(this.impactShake, interaction.intensity);
         this.audio.playCue('hull.groan', ship.root.position, { intensity: interaction.intensity });
+        this.rememberShipDestructionTrigger(
+          ship,
+          'ram',
+          this.whale.position,
+          this.tempShipVector.copy(ship.root.position).sub(this.whale.position),
+          interaction.intensity,
+        );
         this.maybeSpawnOverboardCrew(ship, interaction.damage);
       }
     }
@@ -2271,6 +2408,7 @@ export class OceanScene {
     this.shipWakeFx.removeShip(ship.id);
     this.shipById.delete(ship.id);
     this.shipAudioHealth.delete(ship.id);
+    this.lastShipDestructionTriggers.delete(ship.id);
     this.lastCrewShoutByShipId.delete(ship.id);
     this.shipTopsideRevealStates.delete(ship.id);
 

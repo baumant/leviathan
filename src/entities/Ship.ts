@@ -252,6 +252,7 @@ export class Ship {
   private waterShoveYawVelocity = 0;
   private airborneHeight = 0;
   private airborneVelocity = 0;
+  private destroyedVisualHidden = false;
   private readonly tempMarkerPoint = new THREE.Vector3();
   private capitalShipVisualAsset: CapitalShipVisualAsset | null = null;
   private rowboatVisualAssetRoot: THREE.Group | null = null;
@@ -446,6 +447,8 @@ export class Ship {
     this.waterShoveYawVelocity = 0;
     this.airborneHeight = 0;
     this.airborneVelocity = 0;
+    this.destroyedVisualHidden = false;
+    this.visualRoot.visible = true;
     this.root.position.copy(this.anchor);
     this.root.position.y = this.roleConfig.floatHeight;
     this.root.rotation.set(0, this.heading, 0, 'YXZ');
@@ -471,6 +474,15 @@ export class Ship {
     }
 
     this.updateDamageLook();
+  }
+
+  beginDestroyedVisualState(): void {
+    if (this.destroyedVisualHidden) {
+      return;
+    }
+
+    this.destroyedVisualHidden = true;
+    this.visualRoot.visible = false;
   }
 
   applyKnockback(direction: THREE.Vector3, strength: number, yawStrength = 0): void {

@@ -18,15 +18,27 @@ export interface CapitalShipVisualAsset {
   readonly reinforcementLaunchOrigins: readonly THREE.Object3D[];
 }
 
+export interface CapitalShipWreckVisualAsset {
+  readonly root: THREE.Group;
+  readonly materials: readonly THREE.Material[];
+  readonly role: CapitalShipVisualRole;
+}
+
 type CapitalShipMaterialKind = 'hull' | 'trim' | 'sail';
 
 const loader = new GLTFLoader();
 const templatePromises: Partial<Record<CapitalShipVisualRole, Promise<THREE.Group>>> = {};
+const loadedTemplates: Partial<Record<CapitalShipVisualRole, THREE.Group>> = {};
+const wreckVisualPools: Record<CapitalShipVisualRole, CapitalShipWreckVisualAsset[]> = {
+  flagship: [],
+  corporate_whaler: [],
+};
 
 const MODEL_PATHS: Record<CapitalShipVisualRole, string> = {
   flagship: '/models/flagship.glb',
   corporate_whaler: '/models/corporate-whaler.glb',
 };
+const DEFAULT_WRECK_VISUAL_POOL_SIZE = 8;
 
 const MATERIAL_PALETTES: Record<
   CapitalShipVisualRole,
@@ -78,6 +90,7 @@ const MATERIAL_PALETTES: Record<
 function loadTemplate(role: CapitalShipVisualRole): Promise<THREE.Group> {
   templatePromises[role] ??= loader.loadAsync(MODEL_PATHS[role]).then((gltf) => {
     gltf.scene.updateMatrixWorld(true);
+    loadedTemplates[role] = gltf.scene;
     return gltf.scene;
   });
 
@@ -86,6 +99,14 @@ function loadTemplate(role: CapitalShipVisualRole): Promise<THREE.Group> {
 
 export function preloadCapitalShipAsset(role: CapitalShipVisualRole): Promise<void> {
   return loadTemplate(role).then(() => undefined);
+}
+
+export async function preloadCapitalShipWreckAsset(
+  role: CapitalShipVisualRole,
+  poolSize = DEFAULT_WRECK_VISUAL_POOL_SIZE,
+): Promise<void> {
+  await loadTemplate(role);
+  await warmCapitalShipWreckVisualAssetPool(role, poolSize);
 }
 
 function cloneTemplate(root: THREE.Group): THREE.Group {
@@ -161,6 +182,152 @@ function applyMaterials(root: THREE.Group, role: CapitalShipVisualRole): void {
     object.receiveShadow = true;
     object.frustumCulled = false;
   });
+}
+
+function collectMaterials(root: THREE.Group): THREE.Material[] {
+  const materials: THREE.Material[] = [];
+
+  root.traverse((object) => {
+    if (!(object instanceof THREE.Mesh)) {
+      return;
+    }
+
+    const objectMaterials = Array.isArray(object.material) ? object.material : [object.material];
+
+    for (const material of objectMaterials) {
+      if (!materials.includes(material)) {
+        materials.push(material);
+      }
+    }
+  });
+
+  return materials;
+}
+
+function configureWreckVisualClipping(asset: CapitalShipWreckVisualAsset, clippingPlane: THREE.Plane): void {
+  asset.root.visible = true;
+
+  for (const material of asset.materials) {
+    if (material.clippingPlanes && material.clippingPlanes.length === 1) {
+      material.clippingPlanes[0] = clippingPlane;
+    } else {
+      material.clippingPlanes = [clippingPlane];
+      material.needsUpdate = true;
+    }
+    material.clipIntersection = false;
+  }
+}
+
+function createCapitalShipWreckVisualAssetInstance(role: CapitalShipVisualRole): CapitalShipWreckVisualAsset | null {
+  const template = loadedTemplates[role];
+
+  if (!template) {
+    return null;
+  }
+
+  const root = cloneTemplate(template);
+  root.name = `${role}_wreck_visual_asset`;
+
+  applyMaterials(root, role);
+  const materials = collectMaterials(root);
+
+  for (const material of materials) {
+    material.clippingPlanes = [new THREE.Plane(new THREE.Vector3(0, 1, 0), 0)];
+    material.clipIntersection = false;
+    material.needsUpdate = true;
+  }
+
+  root.visible = false;
+  root.updateMatrixWorld(true);
+  return { root, materials, role };
+}
+
+type IdleCallbackHandle = ReturnType<typeof setTimeout> | number;
+
+type IdleDeadlineLike = {
+  readonly didTimeout: boolean;
+  timeRemaining(): number;
+};
+
+type RequestIdleCallbackLike = (
+  callback: (deadline: IdleDeadlineLike) => void,
+  options?: { timeout?: number },
+) => IdleCallbackHandle;
+
+function yieldForWreckWarmup(): Promise<void> {
+  return new Promise((resolve) => {
+    const requestIdleCallback = (globalThis as { requestIdleCallback?: RequestIdleCallbackLike }).requestIdleCallback;
+
+    if (typeof requestIdleCallback === 'function') {
+      requestIdleCallback(() => resolve(), { timeout: 80 });
+      return;
+    }
+
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => resolve());
+      return;
+    }
+
+    setTimeout(resolve, 0);
+  });
+}
+
+async function warmCapitalShipWreckVisualAssetPool(role: CapitalShipVisualRole, poolSize: number): Promise<void> {
+  while (wreckVisualPools[role].length < poolSize) {
+    await yieldForWreckWarmup();
+
+    const asset = createCapitalShipWreckVisualAssetInstance(role);
+
+    if (!asset) {
+      return;
+    }
+
+    wreckVisualPools[role].push(asset);
+  }
+}
+
+export function createCapitalShipWreckVisualAsset(
+  role: CapitalShipVisualRole,
+  clippingPlane: THREE.Plane,
+): CapitalShipWreckVisualAsset | null {
+  const pooledAsset = wreckVisualPools[role].pop();
+
+  if (!pooledAsset) {
+    return null;
+  }
+
+  configureWreckVisualClipping(pooledAsset, clippingPlane);
+  return pooledAsset;
+}
+
+export function releaseCapitalShipWreckVisualAsset(asset: CapitalShipWreckVisualAsset): void {
+  asset.root.removeFromParent();
+  asset.root.visible = false;
+  asset.root.position.set(0, 0, 0);
+  asset.root.rotation.set(0, 0, 0);
+  asset.root.quaternion.identity();
+  asset.root.scale.set(1, 1, 1);
+
+  wreckVisualPools[asset.role].push(asset);
+}
+
+export function disposeCapitalShipWreckVisualAsset(asset: CapitalShipWreckVisualAsset): void {
+  const geometries = new Set<THREE.BufferGeometry>();
+
+  asset.root.removeFromParent();
+  asset.root.traverse((object) => {
+    if (object instanceof THREE.Mesh) {
+      geometries.add(object.geometry);
+    }
+  });
+
+  for (const geometry of geometries) {
+    geometry.dispose();
+  }
+
+  for (const material of asset.materials) {
+    material.dispose();
+  }
 }
 
 function getOptionalNode(root: THREE.Group, name: string): THREE.Object3D | null {
