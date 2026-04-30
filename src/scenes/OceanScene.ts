@@ -37,6 +37,7 @@ import { TopsideSubsurfaceRevealFX, TopsideSubsurfaceRevealTarget } from '../fx/
 import { UnderwaterEnvironmentFX } from '../fx/UnderwaterEnvironmentFX';
 import { createOceanUndersideMaterial, UnderwaterReadabilityFX } from '../fx/UnderwaterReadabilityFX';
 import { VibeJamPortalFX } from '../fx/VibeJamPortalFX';
+import { WhaleBloodFX } from '../fx/WhaleBloodFX';
 import { WhaleSurfaceSprayFX } from '../fx/WhaleSurfaceSprayFX';
 import {
   createUnderwaterEnvironmentLayout,
@@ -319,6 +320,7 @@ export class OceanScene {
   private readonly tailSlapShockwaveFx: TailSlapShockwaveFX;
   private readonly shipWakeFx: ShipWakeFX;
   private readonly whaleSurfaceSprayFx: WhaleSurfaceSprayFX;
+  private readonly whaleBloodFx: WhaleBloodFX;
   private readonly topsideSubsurfaceRevealFx: TopsideSubsurfaceRevealFX;
   private readonly underwaterEnvironmentFx: UnderwaterEnvironmentFX;
   private readonly readabilityFx: UnderwaterReadabilityFX;
@@ -361,6 +363,8 @@ export class OceanScene {
   private readonly tempCannonVelocity = new THREE.Vector3();
   private readonly tempShipForward = new THREE.Vector3();
   private readonly tempImpactPoint = new THREE.Vector3();
+  private readonly tempBloodOrigin = new THREE.Vector3();
+  private readonly tempBloodDirection = new THREE.Vector3();
   private readonly tempTailSlapAnchor = new THREE.Vector3();
   private readonly tempBoundaryVector = new THREE.Vector3();
   private readonly tempRevealPoint = new THREE.Vector3();
@@ -508,6 +512,7 @@ export class OceanScene {
     this.tailSlapShockwaveFx = new TailSlapShockwaveFX(this.scene);
     this.shipWakeFx = new ShipWakeFX(this.scene, this.ships);
     this.whaleSurfaceSprayFx = new WhaleSurfaceSprayFX(this.scene);
+    this.whaleBloodFx = new WhaleBloodFX(this.scene);
     this.topsideSubsurfaceRevealFx = new TopsideSubsurfaceRevealFX(this.scene);
     this.underwaterEnvironmentFx = new UnderwaterEnvironmentFX(this.scene, {
       arenaRadius: ARENA_RADIUS,
@@ -634,6 +639,7 @@ export class OceanScene {
     this.tailSlapShockwaveFx.reset();
     this.shipWakeFx.reset();
     this.whaleSurfaceSprayFx.reset();
+    this.whaleBloodFx.reset();
     this.topsideSubsurfaceRevealFx.reset();
     this.underwaterEnvironmentFx.reset();
     this.readabilityFx.reset();
@@ -745,6 +751,12 @@ export class OceanScene {
       whale: this.whale,
       whaleStrokePulseStrength: movementResult?.strokePulseStrength ?? 0,
     });
+    this.whaleBloodFx.updateCapturedTrail({
+      deltaSeconds,
+      underwaterRatio,
+      sampleSurfaceHeight: this.sampleOceanHeight,
+      captiveWhale: this.captiveWhale,
+    });
     this.topsideSubsurfaceRevealFx.update({
       underwaterRatio,
       targets: topsideRevealTargets,
@@ -790,6 +802,7 @@ export class OceanScene {
     this.tailSlapShockwaveFx.dispose();
     this.shipWakeFx.dispose();
     this.whaleSurfaceSprayFx.dispose();
+    this.whaleBloodFx.dispose();
     this.topsideSubsurfaceRevealFx.dispose();
     this.underwaterEnvironmentFx.dispose();
     this.readabilityFx.dispose();
@@ -1789,6 +1802,8 @@ export class OceanScene {
             this.tempAttachPoint,
             this.getTetherTensionAlpha(harpoon, this.tempShipOrigin, this.tempAttachPoint),
           );
+          this.tempBloodDirection.copy(this.tempAttachPoint).sub(this.whale.position);
+          this.spawnWhaleBloodHit(this.tempAttachPoint, this.tempBloodDirection, 0.62);
           this.audio.playCue('harpoon.attach', this.tempAttachPoint, { intensity: 0.82 });
           this.impactShake = Math.max(this.impactShake, 0.08);
         }
@@ -1875,6 +1890,24 @@ export class OceanScene {
 
         if (hitResult) {
           this.impactShake = Math.max(this.impactShake, hitResult.intensity);
+          if (directHit) {
+            this.tempBloodOrigin.copy(cannonball.position);
+            this.tempBloodDirection.copy(cannonball.position).sub(this.whale.position);
+          } else {
+            this.tempBloodDirection.copy(this.tempImpactPoint).sub(this.whale.position);
+
+            if (this.tempBloodDirection.lengthSq() <= 0.0001) {
+              this.tempBloodDirection.copy(this.whale.position).sub(this.tempImpactPoint);
+            }
+
+            this.tempBloodDirection.setY(0);
+            if (this.tempBloodDirection.lengthSq() > 0.0001) {
+              this.tempBloodDirection.normalize();
+            }
+
+            this.tempBloodOrigin.copy(this.whale.position).addScaledVector(this.tempBloodDirection, this.whale.radius * 0.58);
+          }
+          this.spawnWhaleBloodHit(this.tempBloodOrigin, this.tempBloodDirection, hitResult.intensity);
         }
 
         splashIntensity = hitResult?.intensity ?? splashIntensity;
@@ -2052,6 +2085,24 @@ export class OceanScene {
 
   private getBreachSplashIntensity(): number {
     return THREE.MathUtils.clamp((this.whale.breachSpeed - 13) / 12, 0, 1);
+  }
+
+  private spawnWhaleBloodHit(origin: THREE.Vector3, direction: THREE.Vector3, intensity: number): void {
+    const surfaceHeight = this.sampleOceanHeight(origin.x, origin.z);
+
+    this.tempBloodOrigin.copy(origin);
+    this.tempBloodOrigin.y = Math.max(this.tempBloodOrigin.y, surfaceHeight + 0.16);
+    this.tempBloodDirection.copy(direction).setY(0);
+
+    if (this.tempBloodDirection.lengthSq() <= 0.0001) {
+      this.tempBloodDirection.copy(origin).sub(this.whale.position).setY(0);
+    }
+
+    if (this.tempBloodDirection.lengthSq() <= 0.0001) {
+      this.whale.getForward(this.tempBloodDirection).multiplyScalar(-1);
+    }
+
+    this.whaleBloodFx.spawnHitSpray(this.tempBloodOrigin, this.tempBloodDirection, intensity);
   }
 
   private resolveBreachLaunchHits(): void {
