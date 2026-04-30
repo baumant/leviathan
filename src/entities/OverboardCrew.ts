@@ -12,6 +12,10 @@ import {
   WaterlineOverlayController,
 } from '../fx/createWaterlineOverlay';
 import { createCelMaterial } from '../fx/createCelMaterial';
+import {
+  WATER_FOAM_GOLDEN_ANGLE,
+  WaterFoamStampLayer,
+} from '../fx/WaterFoamStampLayer';
 
 const MODEL_PATH = '/models/overboard-crew.glb';
 const CREW_FAILSAFE_SECONDS = 150;
@@ -195,10 +199,11 @@ export class OverboardCrew {
   private solidRoot: THREE.Group;
   private waterlineOverlayController: WaterlineOverlayController;
   private readonly bubbleRoot = new THREE.Group();
+  private readonly foamRoot = new THREE.Group();
+  private readonly foamSplash: WaterFoamStampLayer;
   private readonly bubbles: BubbleSlot[] = [];
   private readonly driftVelocity = new THREE.Vector3();
   private readonly splashPoint = new THREE.Vector3();
-  private readonly foamRing: THREE.Mesh<THREE.RingGeometry, THREE.MeshBasicMaterial>;
   private readonly tempSurfacePoint = new THREE.Vector3();
   private phase: OverboardCrewPhase = 'airborne';
   private ageSeconds = 0;
@@ -212,9 +217,17 @@ export class OverboardCrew {
   constructor() {
     this.solidRoot = createFallbackCrewVisual();
     this.waterlineOverlayController = this.createOverlay(this.solidRoot);
-    this.foamRing = this.createFoamRing();
+    this.foamSplash = new WaterFoamStampLayer(this.foamRoot, {
+      maxStamps: 14,
+      maxCutouts: 42,
+      color: '#d7e6e2',
+      opacity: 0.26,
+      blending: THREE.NormalBlending,
+      renderOrder: 24,
+      cutoutRenderOrder: 23.7,
+    });
     this.createBubbles();
-    this.root.add(this.solidRoot, this.waterlineOverlayController.root, this.bubbleRoot, this.foamRing);
+    this.root.add(this.solidRoot, this.waterlineOverlayController.root, this.bubbleRoot, this.foamRoot);
     this.root.visible = false;
 
     void this.loadVisual();
@@ -258,7 +271,7 @@ export class OverboardCrew {
       THREE.MathUtils.randFloatSpread(0.36),
       'YXZ',
     );
-    this.foamRing.visible = false;
+    this.foamSplash.reset();
     this.resetBubbles();
     this.setWaterlinePassthrough(INACTIVE_WATERLINE_PASSTHROUGH_STATE);
     this.root.visible = true;
@@ -313,12 +326,14 @@ export class OverboardCrew {
     this.root.visible = false;
     this.setWaterlinePassthrough(INACTIVE_WATERLINE_PASSTHROUGH_STATE);
     this.resetBubbles();
+    this.foamSplash.reset();
     this.root.removeFromParent();
   }
 
   dispose(): void {
     this.disposed = true;
     this.deactivate();
+    this.foamSplash.dispose();
     disposeObject3DResources(this.root);
   }
 
@@ -364,26 +379,6 @@ export class OverboardCrew {
       opacityMin: CREW_WATERLINE_OPACITY_MIN,
       opacityMax: CREW_WATERLINE_OPACITY_MAX,
     });
-  }
-
-  private createFoamRing(): THREE.Mesh<THREE.RingGeometry, THREE.MeshBasicMaterial> {
-    const material = new THREE.MeshBasicMaterial({
-      color: new THREE.Color('#a9d5db'),
-      transparent: true,
-      opacity: 0,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending,
-      side: THREE.DoubleSide,
-    });
-    material.fog = true;
-    material.toneMapped = false;
-
-    const ring = new THREE.Mesh(new THREE.RingGeometry(0.68, 0.94, 28, 1), material);
-    ring.rotation.x = -Math.PI / 2;
-    ring.renderOrder = 24;
-    ring.visible = false;
-    ring.frustumCulled = false;
-    return ring;
   }
 
   private createBubbles(): void {
@@ -438,7 +433,7 @@ export class OverboardCrew {
     this.driftVelocity.multiplyScalar(0.72);
     this.splashPoint.set(this.position.x, surfaceHeight, this.position.z);
     this.splashPending = true;
-    this.foamRing.visible = true;
+    this.updateFoam(surfaceHeight);
   }
 
   private updateSinking(
@@ -488,10 +483,41 @@ export class OverboardCrew {
 
   private updateFoam(surfaceHeight: number): void {
     const fade = 1 - THREE.MathUtils.smoothstep(this.waterAgeSeconds, 0.4, FOAM_FADE_SECONDS);
-    this.foamRing.visible = fade > 0.01;
-    this.foamRing.position.set(0, surfaceHeight - this.position.y + 0.035, 0);
-    this.foamRing.scale.setScalar(THREE.MathUtils.lerp(0.8, 1.45, 1 - fade));
-    this.foamRing.material.opacity = fade * 0.16;
+
+    if (fade <= 0.01) {
+      this.foamSplash.reset();
+      return;
+    }
+
+    this.foamRoot.quaternion.copy(this.root.quaternion).invert();
+    this.foamSplash.begin(fade * 0.78);
+
+    const progress = 1 - fade;
+    const radius = THREE.MathUtils.lerp(0.62, 1.38, progress);
+    const localY = surfaceHeight - this.position.y + 0.035;
+    const count = 8;
+
+    for (let index = 0; index < count; index += 1) {
+      const angle = (index / count) * Math.PI * 2;
+      const seed = this.seed + index * WATER_FOAM_GOLDEN_ANGLE;
+      const localRadius = radius * THREE.MathUtils.lerp(0.84, 1.12, (Math.sin(seed) + 1) * 0.5);
+      const scale = THREE.MathUtils.lerp(0.18, 0.34, (Math.cos(seed * 0.71) + 1) * 0.5) * (1 - progress * 0.32);
+
+      this.foamSplash.addStamp({
+        x: Math.cos(angle) * localRadius,
+        y: localY + (index % 4) * 0.001,
+        z: Math.sin(angle) * localRadius,
+        yaw: angle + Math.PI * 0.5 + Math.sin(seed * 0.57) * 0.32,
+        width: scale,
+        length: scale * THREE.MathUtils.lerp(0.76, 1.08, (Math.sin(seed * 0.43) + 1) * 0.5),
+        phase: seed,
+        progress,
+        variant: index,
+        cutoutScale: 0.78,
+      });
+    }
+
+    this.foamSplash.end();
   }
 
   private updateBubbles(elapsedSeconds: number, surfaceHeight: number): void {

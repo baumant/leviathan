@@ -1856,6 +1856,10 @@ export class OceanScene {
       this.resolveBreachLaunchHits();
     }
 
+    if (result.breachSurfaced) {
+      this.breachSplashFx.spawnSurfacePlume(result.breachSurfaced.position, this.getBreachSplashIntensity());
+    }
+
     if (result.breachImpact) {
       this.breachSplashFx.spawnReentry(result.breachImpact.position, this.getBreachSplashIntensity());
       this.audio.playCue('whale.breach.impact', result.breachImpact.position, {

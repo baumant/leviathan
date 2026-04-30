@@ -8,6 +8,10 @@ import {
 } from '../entities/CapitalShipVisualAsset';
 import type { ShipRole } from '../entities/Ship';
 import { createCelMaterial } from './createCelMaterial';
+import {
+  WATER_FOAM_GOLDEN_ANGLE,
+  WaterFoamStampLayer,
+} from './WaterFoamStampLayer';
 
 export type ShipDestructionTriggerKind =
   | 'ram'
@@ -95,9 +99,7 @@ interface DestructionSlot {
   readonly sails: THREE.InstancedMesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
   readonly sparks: THREE.InstancedMesh<THREE.SphereGeometry, THREE.MeshBasicMaterial>;
   readonly sparkLight: THREE.PointLight;
-  readonly outerFoam: THREE.Mesh<THREE.RingGeometry, THREE.MeshBasicMaterial>;
-  readonly innerFoam: THREE.Mesh<THREE.RingGeometry, THREE.MeshBasicMaterial>;
-  readonly foamPatch: THREE.Mesh<THREE.CircleGeometry, THREE.MeshBasicMaterial>;
+  readonly foam: WaterFoamStampLayer;
   readonly splinterPieces: DebrisPieceState[];
   readonly hullPieces: DebrisPieceState[];
   readonly mastPieces: DebrisPieceState[];
@@ -128,6 +130,8 @@ const MAX_HULL_CHUNKS = 18;
 const MAX_MASTS = 6;
 const MAX_SAILS = 12;
 const MAX_SPARKS = 1;
+const MAX_FOAM_STAMPS = 112;
+const MAX_FOAM_CUTOUTS = MAX_FOAM_STAMPS * 3;
 const SURFACE_OFFSET = 0.1;
 const GRAVITY = 13.6;
 const AIR_DRAG = 0.78;
@@ -251,8 +255,6 @@ export class ShipDestructionFX {
   private readonly mastGeometry = new THREE.CylinderGeometry(0.16, 0.2, 1, 6);
   private readonly sailGeometry = new THREE.PlaneGeometry(1, 1);
   private readonly sparkGeometry = new THREE.SphereGeometry(0.16, 8, 6);
-  private readonly foamRingGeometry = new THREE.RingGeometry(0.76, 1, 42, 1);
-  private readonly foamPatchGeometry = new THREE.CircleGeometry(1, 28);
   private readonly fracturePlankGeometry = new THREE.BoxGeometry(1, 1, 1);
   private readonly fracturePlankMaterial = createCelMaterial({
     color: '#1d120e',
@@ -492,8 +494,6 @@ export class ShipDestructionFX {
     this.mastGeometry.dispose();
     this.sailGeometry.dispose();
     this.sparkGeometry.dispose();
-    this.foamRingGeometry.dispose();
-    this.foamPatchGeometry.dispose();
     this.fracturePlankGeometry.dispose();
     this.fracturePlankMaterial.dispose();
 
@@ -504,9 +504,7 @@ export class ShipDestructionFX {
       slot.masts.material.dispose();
       slot.sails.material.dispose();
       slot.sparks.material.dispose();
-      slot.outerFoam.material.dispose();
-      slot.innerFoam.material.dispose();
-      slot.foamPatch.material.dispose();
+      slot.foam.dispose();
     }
   }
 
@@ -528,9 +526,15 @@ export class ShipDestructionFX {
     const sails = new THREE.InstancedMesh(this.sailGeometry, this.createSailMaterial(), MAX_SAILS);
     const sparks = new THREE.InstancedMesh(this.sparkGeometry, this.createSparkMaterial(), MAX_SPARKS);
     const sparkLight = new THREE.PointLight('#f2ac5d', 0, 7, 2);
-    const outerFoam = new THREE.Mesh(this.foamRingGeometry, this.createFoamMaterial('#8ca5b3', 0.32, THREE.NormalBlending));
-    const innerFoam = new THREE.Mesh(this.foamRingGeometry, this.createFoamMaterial('#dce9ee', 0.44, THREE.AdditiveBlending));
-    const foamPatch = new THREE.Mesh(this.foamPatchGeometry, this.createFoamMaterial('#617988', 0.2, THREE.NormalBlending));
+    const foam = new WaterFoamStampLayer(root, {
+      maxStamps: MAX_FOAM_STAMPS,
+      maxCutouts: MAX_FOAM_CUTOUTS,
+      color: '#d7e6e2',
+      opacity: 0.44,
+      blending: THREE.NormalBlending,
+      renderOrder: FOAM_RENDER_ORDER,
+      cutoutRenderOrder: FOAM_RENDER_ORDER - 0.3,
+    });
 
     for (const mesh of [splinters, hullChunks, masts, sails, sparks]) {
       mesh.count = 0;
@@ -539,17 +543,9 @@ export class ShipDestructionFX {
       mesh.renderOrder = DEBRIS_RENDER_ORDER;
     }
 
-    for (const foam of [outerFoam, innerFoam, foamPatch]) {
-      foam.rotation.x = -Math.PI / 2;
-      foam.frustumCulled = false;
-      foam.renderOrder = FOAM_RENDER_ORDER;
-    }
-
     sparkLight.visible = false;
-    innerFoam.position.y = 0.012;
-    foamPatch.position.y = -0.004;
 
-    root.add(foamPatch, outerFoam, innerFoam, splinters, hullChunks, masts, sails, sparks, sparkLight);
+    root.add(splinters, hullChunks, masts, sails, sparks, sparkLight);
     this.root.add(root);
 
     return {
@@ -560,9 +556,7 @@ export class ShipDestructionFX {
       sails,
       sparks,
       sparkLight,
-      outerFoam,
-      innerFoam,
-      foamPatch,
+      foam,
       splinterPieces: this.createPiecePool(MAX_SPLINTERS),
       hullPieces: this.createPiecePool(MAX_HULL_CHUNKS),
       mastPieces: this.createPiecePool(MAX_MASTS),
@@ -644,28 +638,6 @@ export class ShipDestructionFX {
     return material;
   }
 
-  private createFoamMaterial(
-    color: THREE.ColorRepresentation,
-    opacity: number,
-    blending: THREE.Blending,
-  ): THREE.MeshBasicMaterial {
-    const material = new THREE.MeshBasicMaterial({
-      color,
-      transparent: true,
-      opacity: 0,
-      side: THREE.DoubleSide,
-      depthWrite: false,
-      blending,
-      polygonOffset: true,
-      polygonOffsetFactor: -2,
-      polygonOffsetUnits: -2,
-    });
-    material.fog = true;
-    material.toneMapped = false;
-    material.userData.baseOpacity = opacity;
-    return material;
-  }
-
   private claimSlot(preserveCapitalWrecks = false): DestructionSlot | null {
     const inactiveSlot = this.slots.find((slot) => !slot.active);
 
@@ -702,9 +674,7 @@ export class ShipDestructionFX {
     slot.sparks.count = 0;
     slot.sparkLight.visible = false;
     slot.sparkLight.intensity = 0;
-    slot.outerFoam.material.opacity = 0;
-    slot.innerFoam.material.opacity = 0;
-    slot.foamPatch.material.opacity = 0;
+    slot.foam.reset();
   }
 
   private resolveTriggerDirection(
@@ -1252,9 +1222,7 @@ export class ShipDestructionFX {
     this.hideInstancedMesh(slot.sparks);
     slot.sparkLight.visible = false;
     slot.sparkLight.intensity = 0;
-    slot.outerFoam.material.opacity = 0;
-    slot.innerFoam.material.opacity = 0;
-    slot.foamPatch.material.opacity = 0;
+    slot.foam.reset();
     slot.splinters.material.opacity = 0;
     slot.hullChunks.material.opacity = 0;
     slot.masts.material.opacity = 0;
@@ -1278,21 +1246,84 @@ export class ShipDestructionFX {
     const opacity = (1 - THREE.MathUtils.smoothstep(progress, 0.18, 0.9)) * slot.foamOpacity * slot.intensity;
 
     if (opacity <= 0.001) {
-      slot.outerFoam.material.opacity = 0;
-      slot.innerFoam.material.opacity = 0;
-      slot.foamPatch.material.opacity = 0;
+      slot.foam.reset();
       return;
     }
 
-    slot.outerFoam.position.set(slot.anchor.x, surfaceHeight + SURFACE_OFFSET, slot.anchor.z);
-    slot.innerFoam.position.set(slot.anchor.x, surfaceHeight + SURFACE_OFFSET + 0.012, slot.anchor.z);
-    slot.foamPatch.position.set(slot.anchor.x, surfaceHeight + SURFACE_OFFSET - 0.004, slot.anchor.z);
-    slot.outerFoam.scale.setScalar(ringRadius);
-    slot.innerFoam.scale.setScalar(innerRadius);
-    slot.foamPatch.scale.setScalar(THREE.MathUtils.lerp(slot.foamRadius * 0.16, slot.foamRadius * 0.72, eased));
-    slot.outerFoam.material.opacity = opacity * 0.72;
-    slot.innerFoam.material.opacity = opacity;
-    slot.foamPatch.material.opacity = opacity * 0.38;
+    slot.foam.begin(opacity);
+    this.writeFoamRing(slot, ringRadius, Math.round(THREE.MathUtils.clamp(ringRadius * 4.2, 14, 48)), progress, surfaceHeight, 0.42);
+    this.writeFoamRing(slot, innerRadius, Math.round(THREE.MathUtils.clamp(innerRadius * 3.8, 8, 32)), progress, surfaceHeight, 0.3);
+    this.writeFoamCluster(
+      slot,
+      THREE.MathUtils.lerp(slot.foamRadius * 0.16, slot.foamRadius * 0.72, eased),
+      16,
+      progress,
+      surfaceHeight,
+    );
+    slot.foam.end();
+  }
+
+  private writeFoamRing(
+    slot: DestructionSlot,
+    radius: number,
+    count: number,
+    progress: number,
+    surfaceHeight: number,
+    scale: number,
+  ): void {
+    const scaleFade = 1 - THREE.MathUtils.smoothstep(progress, 0.78, 1) * 0.45;
+
+    for (let index = 0; index < count; index += 1) {
+      const angle = (index / count) * Math.PI * 2;
+      const seed = slot.age * 1.17 + index * WATER_FOAM_GOLDEN_ANGLE;
+      const localRadius = radius * THREE.MathUtils.lerp(0.92, 1.08, (Math.sin(seed) + 1) * 0.5);
+      const stampScale =
+        scale *
+        THREE.MathUtils.lerp(0.78, 1.26, (Math.cos(seed * 0.73) + 1) * 0.5) *
+        scaleFade;
+
+      slot.foam.addStamp({
+        x: slot.anchor.x + Math.cos(angle) * localRadius,
+        y: surfaceHeight + SURFACE_OFFSET + (index % 7) * 0.001,
+        z: slot.anchor.z + Math.sin(angle) * localRadius,
+        yaw: angle + Math.PI * 0.5 + Math.sin(seed * 0.59) * 0.34,
+        width: stampScale * THREE.MathUtils.lerp(0.9, 1.32, (Math.sin(seed * 0.47) + 1) * 0.5),
+        length: stampScale * THREE.MathUtils.lerp(0.72, 1.06, (Math.cos(seed * 0.51) + 1) * 0.5),
+        phase: seed,
+        progress,
+        variant: index,
+      });
+    }
+  }
+
+  private writeFoamCluster(
+    slot: DestructionSlot,
+    radius: number,
+    count: number,
+    progress: number,
+    surfaceHeight: number,
+  ): void {
+    const fadeScale = 1 - THREE.MathUtils.smoothstep(progress, 0.48, 1) * 0.62;
+
+    for (let index = 0; index < count; index += 1) {
+      const seed = slot.age * 1.33 + index * 2.19;
+      const angle = (index * WATER_FOAM_GOLDEN_ANGLE) % (Math.PI * 2);
+      const localRadius = radius * Math.sqrt((index + 0.5) / count) * THREE.MathUtils.lerp(0.64, 1.08, (Math.sin(seed) + 1) * 0.5);
+      const stampScale = THREE.MathUtils.lerp(0.22, 0.44, (Math.cos(seed * 0.71) + 1) * 0.5) * fadeScale;
+
+      slot.foam.addStamp({
+        x: slot.anchor.x + Math.cos(angle) * localRadius,
+        y: surfaceHeight + SURFACE_OFFSET + 0.014 + (index % 5) * 0.001,
+        z: slot.anchor.z + Math.sin(angle) * localRadius,
+        yaw: seed,
+        width: stampScale,
+        length: stampScale * THREE.MathUtils.lerp(0.82, 1.2, (Math.sin(seed * 0.63) + 1) * 0.5),
+        phase: seed,
+        progress,
+        variant: index + 3,
+        cutoutScale: 0.84,
+      });
+    }
   }
 
   private updateSparkLight(slot: DestructionSlot, fade: number): void {

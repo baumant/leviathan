@@ -2,28 +2,25 @@ import * as THREE from 'three';
 
 import { PlayerWhale } from '../entities/PlayerWhale';
 import { WHALE_SPEED_PROFILE } from '../tuning/whaleSpeedProfile';
+import {
+  WATER_FOAM_GOLDEN_ANGLE,
+  WATER_FOAM_STAMP_VARIANTS,
+  WaterFoamStampLayer,
+} from './WaterFoamStampLayer';
 
-const MAX_SURFACE_SPRAY = 32;
-const MAX_SURFACE_FOAM = 64;
+const MAX_LOCAL_STAMPS = 112;
+const MAX_LOCAL_CUTOUTS = MAX_LOCAL_STAMPS * 3;
 const MAX_WAKE_TRAIL_STAMPS = 180;
 const MAX_WAKE_TRAIL_CUTOUTS = MAX_WAKE_TRAIL_STAMPS * 3;
-const TRAIL_FOAM_VARIANTS = 5;
-const FOAM_GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 const SURFACE_OFFSET = 0.1;
 const TRAIL_SURFACE_OFFSET = 0.085;
 const WHALE_ACCELERATION_RANGE = WHALE_SPEED_PROFILE.surfaceDisturbanceAccelerationRange;
 
 const WHALE_SURFACE_SPRAY_LOOK = {
-  churnColor: '#8ba1ad',
-  fanColor: '#657f8d',
-  foamColor: '#d8e7e4',
+  localColor: '#d8e7e4',
   trailColor: '#d5e2df',
-  sprayColor: '#e6f4f2',
-  churnOpacity: 0.045,
-  fanOpacity: 0.022,
-  foamOpacity: 0.32,
+  localOpacity: 0.34,
   trailOpacity: 0.46,
-  sprayOpacity: 0.32,
 } as const;
 
 export interface WhaleSurfaceSpraySnapshot {
@@ -49,27 +46,11 @@ interface WakeTrailStamp {
 export class WhaleSurfaceSprayFX {
   private readonly root = new THREE.Group();
   private readonly trailRoot = new THREE.Group();
-  private readonly foamGeometry = new THREE.CircleGeometry(1, 28);
-  private readonly fanGeometry = this.createWakeFanGeometry();
-  private readonly foamFleckGeometry = this.createFoamFleckGeometry();
-  private readonly trailFoamGeometries = Array.from({ length: TRAIL_FOAM_VARIANTS }, (_, index) =>
-    this.createTrailFoamGeometry(index),
-  );
-  private readonly trailCutoutGeometry = new THREE.CircleGeometry(1, 18);
-  private readonly sprayGeometry = new THREE.IcosahedronGeometry(0.11, 0);
-  private readonly churn: THREE.Mesh<THREE.CircleGeometry, THREE.MeshBasicMaterial>;
-  private readonly leftFan: THREE.Mesh<THREE.ShapeGeometry, THREE.MeshBasicMaterial>;
-  private readonly rightFan: THREE.Mesh<THREE.ShapeGeometry, THREE.MeshBasicMaterial>;
-  private readonly foamFlecks: THREE.InstancedMesh<THREE.ShapeGeometry, THREE.MeshBasicMaterial>;
-  private readonly trailFoam: readonly THREE.InstancedMesh<THREE.ShapeGeometry, THREE.MeshBasicMaterial>[];
-  private readonly trailCutouts: THREE.InstancedMesh<THREE.CircleGeometry, THREE.Material>;
-  private readonly spray: THREE.InstancedMesh<THREE.IcosahedronGeometry, THREE.MeshBasicMaterial>;
-  private readonly dummy = new THREE.Object3D();
-  private readonly cutoutDummy = new THREE.Object3D();
+  private readonly localFoam: WaterFoamStampLayer;
+  private readonly trailFoam: WaterFoamStampLayer;
   private readonly lastTrailPoint = new THREE.Vector3();
   private readonly trailPrevious = new THREE.Vector3();
   private readonly trailStamps: WakeTrailStamp[] = [];
-  private readonly trailVariantCounts = Array.from({ length: TRAIL_FOAM_VARIANTS }, () => 0);
 
   private energy = 0;
   private pulse = 0;
@@ -80,70 +61,27 @@ export class WhaleSurfaceSprayFX {
 
   constructor(scene: THREE.Scene) {
     this.root.renderOrder = 23;
-    scene.add(this.root);
-    scene.add(this.trailRoot);
+    this.trailRoot.renderOrder = 22;
+    scene.add(this.root, this.trailRoot);
 
-    this.churn = new THREE.Mesh(
-      this.foamGeometry,
-      this.createSurfaceMaterial(WHALE_SURFACE_SPRAY_LOOK.churnColor, WHALE_SURFACE_SPRAY_LOOK.churnOpacity, THREE.NormalBlending),
-    );
-    this.churn.rotation.x = -Math.PI / 2;
-    this.churn.position.set(0, SURFACE_OFFSET, -1.1);
-    this.churn.frustumCulled = false;
-    this.churn.renderOrder = 23;
-
-    this.leftFan = new THREE.Mesh(
-      this.fanGeometry,
-      this.createSurfaceMaterial(WHALE_SURFACE_SPRAY_LOOK.fanColor, WHALE_SURFACE_SPRAY_LOOK.fanOpacity, THREE.NormalBlending),
-    );
-    this.leftFan.rotation.x = -Math.PI / 2;
-    this.leftFan.position.set(-0.44, SURFACE_OFFSET + 0.01, -1.8);
-    this.leftFan.frustumCulled = false;
-    this.leftFan.renderOrder = 23;
-
-    this.rightFan = new THREE.Mesh(
-      this.fanGeometry,
-      this.createSurfaceMaterial(WHALE_SURFACE_SPRAY_LOOK.fanColor, WHALE_SURFACE_SPRAY_LOOK.fanOpacity, THREE.NormalBlending),
-    );
-    this.rightFan.rotation.x = -Math.PI / 2;
-    this.rightFan.position.set(0.44, SURFACE_OFFSET + 0.01, -1.8);
-    this.rightFan.frustumCulled = false;
-    this.rightFan.renderOrder = 23;
-
-    this.foamFlecks = new THREE.InstancedMesh(
-      this.foamFleckGeometry,
-      this.createSurfaceMaterial(WHALE_SURFACE_SPRAY_LOOK.foamColor, WHALE_SURFACE_SPRAY_LOOK.foamOpacity, THREE.NormalBlending),
-      MAX_SURFACE_FOAM,
-    );
-    this.foamFlecks.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    this.foamFlecks.count = 0;
-    this.foamFlecks.frustumCulled = false;
-    this.foamFlecks.renderOrder = 24;
-
-    this.trailFoam = this.trailFoamGeometries.map((geometry, index) => {
-      const mesh = new THREE.InstancedMesh(
-        geometry,
-        this.createTrailFoamMaterial(),
-        MAX_WAKE_TRAIL_STAMPS,
-      );
-      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-      mesh.count = 0;
-      mesh.frustumCulled = false;
-      mesh.renderOrder = 22 + index * 0.01;
-      this.trailRoot.add(mesh);
-      return mesh;
+    this.localFoam = new WaterFoamStampLayer(this.root, {
+      maxStamps: MAX_LOCAL_STAMPS,
+      maxCutouts: MAX_LOCAL_CUTOUTS,
+      color: WHALE_SURFACE_SPRAY_LOOK.localColor,
+      opacity: WHALE_SURFACE_SPRAY_LOOK.localOpacity,
+      blending: THREE.NormalBlending,
+      renderOrder: 24,
+      cutoutRenderOrder: 23.7,
     });
-
-    this.trailCutouts = new THREE.InstancedMesh(
-      this.trailCutoutGeometry,
-      this.createStencilCutoutMaterial(),
-      MAX_WAKE_TRAIL_CUTOUTS,
-    );
-    this.trailCutouts.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    this.trailCutouts.count = 0;
-    this.trailCutouts.frustumCulled = false;
-    this.trailCutouts.renderOrder = 20.8;
-    this.trailRoot.add(this.trailCutouts);
+    this.trailFoam = new WaterFoamStampLayer(this.trailRoot, {
+      maxStamps: MAX_WAKE_TRAIL_STAMPS,
+      maxCutouts: MAX_WAKE_TRAIL_CUTOUTS,
+      color: WHALE_SURFACE_SPRAY_LOOK.trailColor,
+      opacity: WHALE_SURFACE_SPRAY_LOOK.trailOpacity,
+      blending: THREE.NormalBlending,
+      renderOrder: 22,
+      cutoutRenderOrder: 20.8,
+    });
 
     for (let index = 0; index < MAX_WAKE_TRAIL_STAMPS; index += 1) {
       this.trailStamps.push({
@@ -154,29 +92,11 @@ export class WhaleSurfaceSprayFX {
         width: 1,
         length: 1,
         phase: 0,
-        variant: index % TRAIL_FOAM_VARIANTS,
+        variant: index % WATER_FOAM_STAMP_VARIANTS,
         active: false,
       });
     }
 
-    const sprayMaterial = new THREE.MeshBasicMaterial({
-      color: new THREE.Color(WHALE_SURFACE_SPRAY_LOOK.sprayColor),
-      transparent: true,
-      opacity: 0,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending,
-    });
-    sprayMaterial.fog = true;
-    sprayMaterial.toneMapped = false;
-    sprayMaterial.userData.baseOpacity = WHALE_SURFACE_SPRAY_LOOK.sprayOpacity;
-
-    this.spray = new THREE.InstancedMesh(this.sprayGeometry, sprayMaterial, MAX_SURFACE_SPRAY);
-    this.spray.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    this.spray.count = 0;
-    this.spray.frustumCulled = false;
-    this.spray.renderOrder = 25;
-
-    this.root.add(this.churn, this.leftFan, this.rightFan, this.foamFlecks, this.spray);
     this.reset();
   }
 
@@ -236,45 +156,15 @@ export class WhaleSurfaceSprayFX {
       stamp.age = 0;
     }
     this.root.visible = false;
-    this.clearLocalMaterials();
-    this.trailVariantCounts.fill(0);
-    for (const trailFoam of this.trailFoam) {
-      trailFoam.material.opacity = 0;
-      trailFoam.count = 0;
-    }
-    this.trailCutouts.count = 0;
+    this.localFoam.reset();
+    this.trailFoam.reset();
   }
 
   dispose(): void {
     this.root.removeFromParent();
     this.trailRoot.removeFromParent();
-    this.foamGeometry.dispose();
-    this.fanGeometry.dispose();
-    this.foamFleckGeometry.dispose();
-    for (const geometry of this.trailFoamGeometries) {
-      geometry.dispose();
-    }
-    this.trailCutoutGeometry.dispose();
-    this.sprayGeometry.dispose();
-    this.churn.material.dispose();
-    this.leftFan.material.dispose();
-    this.rightFan.material.dispose();
-    this.foamFlecks.material.dispose();
-    for (const trailFoam of this.trailFoam) {
-      trailFoam.material.dispose();
-    }
-    this.trailCutouts.material.dispose();
-    this.spray.material.dispose();
-  }
-
-  private clearLocalMaterials(): void {
-    this.churn.material.opacity = 0;
-    this.leftFan.material.opacity = 0;
-    this.rightFan.material.opacity = 0;
-    this.foamFlecks.material.opacity = 0;
-    this.foamFlecks.count = 0;
-    this.spray.material.opacity = 0;
-    this.spray.count = 0;
+    this.localFoam.dispose();
+    this.trailFoam.dispose();
   }
 
   private updateTrailLayer(
@@ -286,18 +176,19 @@ export class WhaleSurfaceSprayFX {
   ): void {
     const trailStrength = visibleStrength * nearSurfaceAlpha;
 
+    if (aboveWaterAlpha <= 0.005 && trailStrength <= 0.025) {
+      this.clearTrailLayer(true);
+      return;
+    }
+
     if (trailStrength > 0.025) {
       this.emitTrailBetweenPoints(snapshot.whale.position, snapshot.whale.yaw, speedRatio, trailStrength);
     } else {
       this.hasTrailPoint = false;
     }
 
+    this.trailFoam.begin(aboveWaterAlpha);
     let visibleCount = 0;
-    let cutoutCount = 0;
-    this.trailVariantCounts.fill(0);
-    for (const trailFoam of this.trailFoam) {
-      trailFoam.material.opacity = (trailFoam.material.userData.baseOpacity as number) * aboveWaterAlpha;
-    }
 
     for (const stamp of this.trailStamps) {
       if (!stamp.active) {
@@ -316,34 +207,33 @@ export class WhaleSurfaceSprayFX {
       const foamShrink = 1 - THREE.MathUtils.smoothstep(progress, 0.12, 0.96);
       const foamScale = Math.max(0.001, foamShrink * ripple);
       const surfaceHeight = snapshot.sampleSurfaceHeight(stamp.position.x, stamp.position.z);
-      const variant = THREE.MathUtils.clamp(stamp.variant, 0, this.trailFoam.length - 1);
-      const variantCount = this.trailVariantCounts[variant];
 
-      this.dummy.position.set(
-        stamp.position.x + Math.sin(stamp.phase + stamp.age * 0.48) * 0.025,
-        surfaceHeight + TRAIL_SURFACE_OFFSET + (visibleCount % 7) * 0.001,
-        stamp.position.z + Math.cos(stamp.phase * 1.2 + stamp.age * 0.38) * 0.025,
-      );
-      this.dummy.rotation.set(-Math.PI / 2, 0, stamp.yaw + Math.sin(stamp.phase + stamp.age * 0.62) * 0.04);
-      this.dummy.scale.set(
-        Math.max(0.001, stamp.width * foamScale),
-        Math.max(0.001, stamp.length * foamScale),
-        1,
-      );
-      this.dummy.updateMatrix();
-      this.trailFoam[variant].setMatrixAt(variantCount, this.dummy.matrix);
-      this.trailVariantCounts[variant] = variantCount + 1;
-      cutoutCount = this.writeTrailCutouts(stamp, surfaceHeight, cutoutCount);
+      this.trailFoam.addStamp({
+        x: stamp.position.x + Math.sin(stamp.phase + stamp.age * 0.48) * 0.025,
+        y: surfaceHeight + TRAIL_SURFACE_OFFSET + (visibleCount % 7) * 0.001,
+        z: stamp.position.z + Math.cos(stamp.phase * 1.2 + stamp.age * 0.38) * 0.025,
+        yaw: stamp.yaw + Math.sin(stamp.phase + stamp.age * 0.62) * 0.04,
+        width: stamp.width * foamScale,
+        length: stamp.length * foamScale,
+        phase: stamp.phase,
+        progress,
+        variant: stamp.variant,
+      });
       visibleCount += 1;
     }
 
-    for (let index = 0; index < this.trailFoam.length; index += 1) {
-      const trailFoam = this.trailFoam[index];
-      trailFoam.count = this.trailVariantCounts[index];
-      trailFoam.instanceMatrix.needsUpdate = trailFoam.count > 0;
+    this.trailFoam.end();
+  }
+
+  private clearTrailLayer(clearStamps: boolean): void {
+    this.hasTrailPoint = false;
+    this.trailFoam.reset();
+
+    if (clearStamps) {
+      for (const stamp of this.trailStamps) {
+        stamp.active = false;
+      }
     }
-    this.trailCutouts.count = cutoutCount;
-    this.trailCutouts.instanceMatrix.needsUpdate = cutoutCount > 0;
   }
 
   private updateLocalDisturbance(
@@ -365,172 +255,121 @@ export class WhaleSurfaceSprayFX {
     this.root.visible = disturbanceStrength > 0.018 || pulseStrength > 0.025;
 
     if (!this.root.visible) {
-      this.clearLocalMaterials();
+      this.localFoam.reset();
       return;
     }
 
     this.root.position.set(snapshot.whale.position.x, surfaceHeight, snapshot.whale.position.z);
     this.root.rotation.set(0, snapshot.whale.yaw, 0, 'YXZ');
 
-    const localPulse = 0.92 + Math.sin(this.phase * 2.4) * 0.08;
     const churnWidth = THREE.MathUtils.lerp(2.2, 5.4, speedRatio) * (0.72 + visibleStrength * 0.4);
     const churnLength = THREE.MathUtils.lerp(4.1, 11.4, speedRatio) * (0.72 + this.energy * 0.48 + this.pulse * 0.24);
     const fanWidth = THREE.MathUtils.lerp(1.45, 4.1, speedRatio) * (0.68 + disturbanceStrength * 0.42);
     const fanLength = THREE.MathUtils.lerp(3.2, 9.4, speedRatio) * (0.68 + this.energy * 0.58 + this.pulse * 0.22);
+    const opacity =
+      THREE.MathUtils.clamp(disturbanceStrength * 1.12 + pulseStrength * 0.34, 0, 1) *
+      (0.92 + Math.sin(this.phase * 2.4) * 0.08);
 
-    this.churn.scale.set(churnWidth, churnLength, 1);
-    this.leftFan.scale.set(fanWidth, fanLength, 1);
-    this.rightFan.scale.set(fanWidth, fanLength, 1);
-    this.leftFan.rotation.set(-Math.PI / 2, 0, 0.36);
-    this.rightFan.rotation.set(-Math.PI / 2, 0, -0.36);
-
-    this.churn.material.opacity =
-      (this.churn.material.userData.baseOpacity as number) * disturbanceStrength * localPulse;
-    this.leftFan.material.opacity =
-      (this.leftFan.material.userData.baseOpacity as number) * disturbanceStrength * THREE.MathUtils.lerp(0.58, 0.9, speedRatio);
-    this.rightFan.material.opacity = this.leftFan.material.opacity;
-
-    this.updateFoamFlecks(disturbanceStrength, speedRatio, churnWidth, churnLength);
-    this.updatePulseSpray(pulseStrength, speedRatio, churnWidth);
+    this.localFoam.begin(opacity);
+    this.writeChurnStamps(visibleStrength, speedRatio, disturbanceStrength, churnWidth, churnLength);
+    this.writeFanStamps(speedRatio, disturbanceStrength, fanWidth, fanLength);
+    this.writePulseStamps(pulseStrength, speedRatio, churnWidth);
+    this.localFoam.end();
   }
 
-  private updateFoamFlecks(
-    disturbanceStrength: number,
+  private writeChurnStamps(
+    visibleStrength: number,
     speedRatio: number,
+    disturbanceStrength: number,
     churnWidth: number,
     churnLength: number,
   ): void {
-    const foamCount =
-      disturbanceStrength > 0.04
-        ? Math.min(MAX_SURFACE_FOAM, Math.ceil(THREE.MathUtils.lerp(4, 18, speedRatio) * disturbanceStrength))
-        : 0;
-
-    this.foamFlecks.material.opacity =
-      (this.foamFlecks.material.userData.baseOpacity as number) *
-      disturbanceStrength *
-      THREE.MathUtils.lerp(0.24, 0.38, speedRatio);
-    this.foamFlecks.count = foamCount;
-
-    for (let index = 0; index < foamCount; index += 1) {
-      const progress = (this.phase * 0.19 + index * 0.149) % 1;
-      const seed = this.phase * 1.61 + index * 2.33;
-      const lateral = Math.sin(seed) * churnWidth * 0.5 * (0.16 + progress * 0.72);
-      const localZ = -0.8 - progress * churnLength * 0.72;
-      const scale = THREE.MathUtils.lerp(0.12, 0.34, 1 - progress) * (0.82 + speedRatio * 0.36);
-
-      this.dummy.position.set(
-        lateral,
-        SURFACE_OFFSET + 0.028 + (index % 5) * 0.001,
-        localZ + Math.cos(seed * 0.7) * 0.22,
-      );
-      this.dummy.rotation.set(-Math.PI / 2, 0, Math.sin(seed * 0.84) * 0.74);
-      this.dummy.scale.set(
-        Math.max(0.001, scale * THREE.MathUtils.lerp(0.72, 1.24, (Math.sin(seed * 0.45) + 1) * 0.5)),
-        Math.max(0.001, scale * THREE.MathUtils.lerp(0.52, 0.92, (Math.cos(seed * 0.58) + 1) * 0.5)),
-        1,
-      );
-      this.dummy.updateMatrix();
-      this.foamFlecks.setMatrixAt(index, this.dummy.matrix);
-    }
-
-    this.foamFlecks.instanceMatrix.needsUpdate = foamCount > 0;
-  }
-
-  private updatePulseSpray(pulseStrength: number, speedRatio: number, churnWidth: number): void {
-    const sprayCount =
-      pulseStrength > 0.24
-        ? Math.min(MAX_SURFACE_SPRAY, Math.ceil((pulseStrength - 0.18) * THREE.MathUtils.lerp(8, 18, speedRatio)))
-        : 0;
-
-    this.spray.material.opacity = (this.spray.material.userData.baseOpacity as number) * pulseStrength * 0.44;
-    this.spray.count = sprayCount;
-
-    for (let index = 0; index < sprayCount; index += 1) {
-      const seed = this.phase * 2.1 + index * 2.79;
-      const lift = THREE.MathUtils.lerp(0.08, 0.46, (Math.sin(seed * 0.71) + 1) * 0.5) * pulseStrength;
-      const scale = THREE.MathUtils.lerp(0.035, 0.095, (Math.cos(seed * 0.93) + 1) * 0.5);
-
-      this.dummy.position.set(
-        Math.sin(seed) * churnWidth * 0.34,
-        SURFACE_OFFSET + 0.1 + lift,
-        -0.6 - Math.abs(Math.cos(seed * 0.57)) * THREE.MathUtils.lerp(0.4, 2.4, speedRatio),
-      );
-      this.dummy.rotation.set(seed * 0.2, seed * 0.37, seed * 0.13);
-      this.dummy.scale.setScalar(scale);
-      this.dummy.updateMatrix();
-      this.spray.setMatrixAt(index, this.dummy.matrix);
-    }
-
-    this.spray.instanceMatrix.needsUpdate = sprayCount > 0;
-  }
-
-  private writeTrailCutouts(
-    stamp: WakeTrailStamp,
-    surfaceHeight: number,
-    firstIndex: number,
-  ): number {
-    let cutoutIndex = firstIndex;
-    const cutoutCount = stamp.width > 1.05 ? 3 : 2;
-    const rightX = Math.cos(stamp.yaw);
-    const rightZ = Math.sin(stamp.yaw);
-    const forwardX = -Math.sin(stamp.yaw);
-    const forwardZ = Math.cos(stamp.yaw);
-    const progress = THREE.MathUtils.clamp(stamp.age / Math.max(stamp.lifetime, 0.0001), 0, 1);
-    const coverSeed = stamp.phase * 1.63;
-    const coverStart = THREE.MathUtils.lerp(0.16, 0.32, (Math.sin(coverSeed) + 1) * 0.5);
-    const coverEnd = THREE.MathUtils.lerp(1.26, 1.46, (Math.cos(coverSeed * 1.37) + 1) * 0.5);
-    const coverExpansion = THREE.MathUtils.lerp(coverStart, coverEnd, THREE.MathUtils.smoothstep(progress, 0.08, 0.86));
-    const holeStart = THREE.MathUtils.lerp(0.34, 0.54, (Math.sin(coverSeed * 0.73) + 1) * 0.5);
-    const holeEnd = THREE.MathUtils.lerp(1.36, 1.62, (Math.cos(coverSeed * 0.91) + 1) * 0.5);
-    const holeExpansion = THREE.MathUtils.lerp(holeStart, holeEnd, THREE.MathUtils.smoothstep(progress, 0.02, 0.68));
-    const cutoutDrift = THREE.MathUtils.lerp(0.55, 1.22, THREE.MathUtils.smoothstep(progress, 0.1, 1));
-    const coverAngle = coverSeed * 2.41;
-    const coverRadius = THREE.MathUtils.lerp(
-      0.08,
-      0.56,
-      Math.pow((Math.sin(coverSeed * 2.19) + 1) * 0.5, 0.36),
+    const count = Math.min(
+      34,
+      Math.ceil(THREE.MathUtils.lerp(8, 24, speedRatio) * THREE.MathUtils.clamp(0.45 + visibleStrength, 0.45, 1.4)),
     );
-    const coverOffsetX = Math.cos(coverAngle) * stamp.width * coverRadius;
-    const coverOffsetZ = Math.sin(coverAngle) * stamp.length * coverRadius;
-    const coverWander = 1 - THREE.MathUtils.smoothstep(progress, 0.22, 0.84);
 
-    for (let index = 0; index < cutoutCount && cutoutIndex < MAX_WAKE_TRAIL_CUTOUTS; index += 1) {
-      const seed = stamp.phase * 2.31 + index * 3.17;
-      const isCoverCutout = index === 0;
-      const localX = isCoverCutout
-        ? coverOffsetX * coverWander
-        : Math.sin(seed) * stamp.width * THREE.MathUtils.lerp(0.24, 0.42, (Math.cos(seed * 1.11) + 1) * 0.5) * cutoutDrift;
-      const localZ = isCoverCutout
-        ? coverOffsetZ * coverWander
-        : Math.cos(seed * 1.29) * stamp.length * THREE.MathUtils.lerp(0.24, 0.44, (Math.sin(seed * 0.97) + 1) * 0.5) * cutoutDrift;
-      const scaleX = isCoverCutout
-        ? stamp.width * coverExpansion
-        : stamp.width *
-          THREE.MathUtils.lerp(0.14, 0.28, (Math.sin(seed * 0.71) + 1) * 0.5) *
-          holeExpansion;
-      const scaleY = isCoverCutout
-        ? stamp.length * coverExpansion
-        : stamp.length *
-          THREE.MathUtils.lerp(0.14, 0.3, (Math.cos(seed * 0.83) + 1) * 0.5) *
-          holeExpansion;
+    for (let index = 0; index < count; index += 1) {
+      const progress = (this.phase * 0.15 + index * 0.113) % 1;
+      const seed = this.phase * 1.47 + index * 2.17;
+      const lateral = Math.sin(seed) * churnWidth * 0.5 * (0.14 + progress * 0.62);
+      const localZ = -0.52 - progress * churnLength * 0.62 + Math.cos(seed * 0.71) * 0.28;
+      const centerBias = 1 - THREE.MathUtils.clamp(Math.abs(lateral) / Math.max(churnWidth * 0.5, 0.001), 0, 1);
+      const scale =
+        THREE.MathUtils.lerp(0.18, 0.52, 1 - progress) *
+        THREE.MathUtils.lerp(0.82, 1.36, (Math.sin(seed * 0.43) + 1) * 0.5) *
+        (0.78 + disturbanceStrength * 0.5);
 
-      this.cutoutDummy.position.set(
-        stamp.position.x + rightX * localX + forwardX * localZ,
-        surfaceHeight + TRAIL_SURFACE_OFFSET + 0.012 + (cutoutIndex % 5) * 0.001,
-        stamp.position.z + rightZ * localX + forwardZ * localZ,
-      );
-      this.cutoutDummy.rotation.set(-Math.PI / 2, 0, stamp.yaw + Math.sin(seed) * 0.45);
-      this.cutoutDummy.scale.set(
-        Math.max(0.001, scaleX),
-        Math.max(0.001, scaleY),
-        1,
-      );
-      this.cutoutDummy.updateMatrix();
-      this.trailCutouts.setMatrixAt(cutoutIndex, this.cutoutDummy.matrix);
-      cutoutIndex += 1;
+      this.localFoam.addStamp({
+        x: lateral,
+        y: SURFACE_OFFSET + (index % 7) * 0.001,
+        z: localZ,
+        yaw: Math.sin(seed * 0.84) * 0.74,
+        width: scale * THREE.MathUtils.lerp(0.88, 1.22, centerBias),
+        length: scale * THREE.MathUtils.lerp(0.76, 1.12, (Math.cos(seed * 0.57) + 1) * 0.5),
+        phase: seed,
+        progress,
+        variant: index,
+      });
     }
+  }
 
-    return cutoutIndex;
+  private writeFanStamps(
+    speedRatio: number,
+    disturbanceStrength: number,
+    fanWidth: number,
+    fanLength: number,
+  ): void {
+    const sideCount = Math.min(18, Math.ceil(THREE.MathUtils.lerp(5, 12, speedRatio) * (0.55 + disturbanceStrength)));
+
+    for (const side of [-1, 1]) {
+      for (let index = 0; index < sideCount; index += 1) {
+        const progress = (index + 0.5) / sideCount;
+        const seed = this.phase * 1.22 + index * 1.91 + side * 0.67;
+        const lateral = side * (0.48 + fanWidth * progress * THREE.MathUtils.lerp(0.18, 0.54, (Math.sin(seed) + 1) * 0.5));
+        const localZ = -1.12 - fanLength * progress + Math.cos(seed * 0.8) * 0.18;
+        const scale = THREE.MathUtils.lerp(0.18, 0.42, 1 - progress * 0.55) * (0.82 + speedRatio * 0.3);
+
+        this.localFoam.addStamp({
+          x: lateral,
+          y: SURFACE_OFFSET + 0.012 + (index % 5) * 0.001,
+          z: localZ,
+          yaw: side * 0.42 + Math.sin(seed * 0.73) * 0.46,
+          width: scale * THREE.MathUtils.lerp(0.7, 1.1, (Math.cos(seed * 0.61) + 1) * 0.5),
+          length: scale * THREE.MathUtils.lerp(0.96, 1.42, progress),
+          phase: seed,
+          progress,
+          variant: index + sideCount,
+          cutoutScale: 0.82,
+        });
+      }
+    }
+  }
+
+  private writePulseStamps(pulseStrength: number, speedRatio: number, churnWidth: number): void {
+    const count =
+      pulseStrength > 0.2
+        ? Math.min(28, Math.ceil((pulseStrength - 0.12) * THREE.MathUtils.lerp(10, 22, speedRatio)))
+        : 0;
+
+    for (let index = 0; index < count; index += 1) {
+      const seed = this.phase * 2.1 + index * 2.79;
+      const lift = THREE.MathUtils.lerp(0.04, 0.24, (Math.sin(seed * 0.71) + 1) * 0.5) * pulseStrength;
+      const scale = THREE.MathUtils.lerp(0.13, 0.32, (Math.cos(seed * 0.93) + 1) * 0.5);
+
+      this.localFoam.addStamp({
+        x: Math.sin(seed) * churnWidth * 0.34,
+        y: SURFACE_OFFSET + 0.05 + lift + (index % 4) * 0.001,
+        z: -0.6 - Math.abs(Math.cos(seed * 0.57)) * THREE.MathUtils.lerp(0.4, 2.4, speedRatio),
+        yaw: seed * 0.13,
+        width: scale * (0.82 + pulseStrength * 0.28),
+        length: scale * (0.72 + pulseStrength * 0.22),
+        phase: seed,
+        progress: THREE.MathUtils.clamp(1 - pulseStrength * 0.45, 0, 1),
+        variant: index + 2,
+        cutoutCount: 2,
+      });
+    }
   }
 
   private emitTrailBetweenPoints(
@@ -607,142 +446,8 @@ export class WhaleSurfaceSprayFX {
       const stampSize = THREE.MathUtils.lerp(0.46 + centerWeight * 0.22, 1.08 + centerWeight * 0.28, Math.random());
       stamp.width = stampSize * THREE.MathUtils.lerp(0.9, 1.12, Math.random());
       stamp.length = stampSize * THREE.MathUtils.lerp(0.86, 1.08, Math.random());
-      stamp.phase = this.phase + index * FOAM_GOLDEN_ANGLE + Math.random() * 0.08;
-      stamp.variant = Math.floor(Math.random() * this.trailFoam.length);
+      stamp.phase = this.phase + index * WATER_FOAM_GOLDEN_ANGLE + Math.random() * 0.08;
+      stamp.variant = Math.floor(Math.random() * WATER_FOAM_STAMP_VARIANTS);
     }
-  }
-
-  private createSurfaceMaterial(color: string, baseOpacity: number, blending: THREE.Blending): THREE.MeshBasicMaterial {
-    const material = new THREE.MeshBasicMaterial({
-      color: new THREE.Color(color),
-      transparent: true,
-      opacity: 0,
-      side: THREE.DoubleSide,
-      depthWrite: false,
-      blending,
-      polygonOffset: true,
-      polygonOffsetFactor: -2,
-      polygonOffsetUnits: -2,
-    });
-    material.userData.baseOpacity = baseOpacity;
-    material.fog = true;
-    material.toneMapped = false;
-    return material;
-  }
-
-  private createTrailFoamMaterial(): THREE.MeshBasicMaterial {
-    const material = this.createSurfaceMaterial(
-      WHALE_SURFACE_SPRAY_LOOK.trailColor,
-      WHALE_SURFACE_SPRAY_LOOK.trailOpacity,
-      THREE.NormalBlending,
-    );
-    material.stencilWrite = true;
-    material.stencilWriteMask = 0x00;
-    material.stencilFunc = THREE.NotEqualStencilFunc;
-    material.stencilRef = 1;
-    material.stencilFuncMask = 0xff;
-    material.stencilFail = THREE.KeepStencilOp;
-    material.stencilZFail = THREE.KeepStencilOp;
-    material.stencilZPass = THREE.KeepStencilOp;
-    return material;
-  }
-
-  private createStencilCutoutMaterial(): THREE.MeshBasicMaterial {
-    const material = new THREE.MeshBasicMaterial({
-      color: new THREE.Color('#000000'),
-      colorWrite: false,
-      depthTest: false,
-      depthWrite: false,
-      side: THREE.DoubleSide,
-    });
-    material.toneMapped = false;
-    material.stencilWrite = true;
-    material.stencilFunc = THREE.AlwaysStencilFunc;
-    material.stencilRef = 1;
-    material.stencilFuncMask = 0xff;
-    material.stencilWriteMask = 0xff;
-    material.stencilFail = THREE.KeepStencilOp;
-    material.stencilZFail = THREE.KeepStencilOp;
-    material.stencilZPass = THREE.ReplaceStencilOp;
-    return material;
-  }
-
-  private createWakeFanGeometry(): THREE.ShapeGeometry {
-    const shape = new THREE.Shape();
-    shape.moveTo(-0.1, 0);
-    shape.lineTo(0.1, 0);
-    shape.lineTo(1.08, 1);
-    shape.lineTo(-1.08, 1);
-    shape.closePath();
-    return new THREE.ShapeGeometry(shape, 1);
-  }
-
-  private createFoamFleckGeometry(): THREE.ShapeGeometry {
-    const shape = new THREE.Shape();
-    const points = [
-      new THREE.Vector2(-0.56, -0.1),
-      new THREE.Vector2(-0.42, 0.13),
-      new THREE.Vector2(-0.16, 0.22),
-      new THREE.Vector2(0.2, 0.18),
-      new THREE.Vector2(0.54, 0.07),
-      new THREE.Vector2(0.62, -0.12),
-      new THREE.Vector2(0.32, -0.24),
-      new THREE.Vector2(-0.06, -0.22),
-      new THREE.Vector2(-0.38, -0.18),
-    ];
-
-    shape.moveTo(points[0].x, points[0].y);
-    for (let index = 1; index < points.length; index += 1) {
-      shape.lineTo(points[index].x, points[index].y);
-    }
-    shape.closePath();
-    return new THREE.ShapeGeometry(shape, 1);
-  }
-
-  private createTrailFoamGeometry(variant: number): THREE.ShapeGeometry {
-    const shape = new THREE.Shape();
-    const basePoints = [
-      [-0.58, -0.2],
-      [-0.48, 0.16],
-      [-0.26, 0.42],
-      [0.05, 0.52],
-      [0.36, 0.42],
-      [0.58, 0.18],
-      [0.62, -0.08],
-      [0.5, -0.34],
-      [0.2, -0.52],
-      [-0.14, -0.48],
-      [-0.44, -0.34],
-    ];
-    const points = basePoints.map(([x, y], index) => {
-      const chip = Math.sin(variant * 2.17 + index * 1.61);
-      const tangent = Math.cos(variant * 1.31 + index * 2.29);
-      return new THREE.Vector2(x + chip * 0.035, y + tangent * 0.028);
-    });
-
-    shape.moveTo(points[0].x, points[0].y);
-    for (let index = 1; index < points.length; index += 1) {
-      shape.lineTo(points[index].x, points[index].y);
-    }
-    shape.closePath();
-
-    const holeCount = 3 + (variant % 3);
-    for (let index = 0; index < holeCount; index += 1) {
-      const seed = variant * 11.73 + index * 5.19;
-      const hole = new THREE.Path();
-      hole.absellipse(
-        THREE.MathUtils.clamp(Math.sin(seed) * 0.34, -0.46, 0.46),
-        THREE.MathUtils.clamp(Math.cos(seed * 1.37) * 0.18, -0.2, 0.2),
-        THREE.MathUtils.lerp(0.055, 0.17, (Math.sin(seed * 0.73) + 1) * 0.5),
-        THREE.MathUtils.lerp(0.035, 0.095, (Math.cos(seed * 0.91) + 1) * 0.5),
-        0,
-        Math.PI * 2,
-        false,
-        seed,
-      );
-      shape.holes.push(hole);
-    }
-
-    return new THREE.ShapeGeometry(shape, 1);
   }
 }

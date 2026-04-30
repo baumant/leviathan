@@ -1,12 +1,15 @@
 import * as THREE from 'three';
 
 import { Ship, ShipRole } from '../entities/Ship';
+import {
+  WATER_FOAM_GOLDEN_ANGLE,
+  WATER_FOAM_STAMP_VARIANTS,
+  WaterFoamStampLayer,
+} from './WaterFoamStampLayer';
 
 const MAX_BUBBLES = 24;
 const MAX_WAKE_TRAIL_STAMPS = 220;
 const MAX_WAKE_TRAIL_CUTOUTS = MAX_WAKE_TRAIL_STAMPS * 3;
-const TRAIL_FOAM_VARIANTS = 5;
-const FOAM_GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 const UNDERWATER_OFFSET = -0.18;
 const TRAIL_SURFACE_OFFSET = 0.075;
 const SURFACE_WAKE_LOOK = {
@@ -85,9 +88,7 @@ interface WakeSlot {
   readonly roleConfig: WakeRoleConfig;
   readonly root: THREE.Group;
   readonly underwaterRoot: THREE.Group;
-  readonly trailFoam: readonly THREE.InstancedMesh<THREE.ShapeGeometry, THREE.MeshBasicMaterial>[];
-  readonly trailCutouts: THREE.InstancedMesh<THREE.CircleGeometry, THREE.Material>;
-  readonly trailVariantCounts: number[];
+  readonly trailFoamLayer: WaterFoamStampLayer;
   readonly trailStamps: WakeTrailStamp[];
   readonly lastTrailPoint: THREE.Vector3;
   readonly underwaterRibbon: THREE.Mesh<THREE.ShapeGeometry, THREE.MeshBasicMaterial>;
@@ -121,14 +122,9 @@ export interface ShipWakeSnapshot {
 
 export class ShipWakeFX {
   private readonly root = new THREE.Group();
-  private readonly trailFoamGeometries = Array.from({ length: TRAIL_FOAM_VARIANTS }, (_, index) =>
-    this.createTrailFoamGeometry(index),
-  );
-  private readonly trailCutoutGeometry = new THREE.CircleGeometry(1, 18);
   private readonly underwaterRibbonGeometry = this.createUnderwaterRibbonGeometry();
   private readonly bubbleGeometry = new THREE.IcosahedronGeometry(0.12, 0);
   private readonly bubbleDummy = new THREE.Object3D();
-  private readonly cutoutDummy = new THREE.Object3D();
   private readonly trailPrevious = new THREE.Vector3();
   private readonly slots = new Map<string, WakeSlot>();
   private readonly sternOrigin = new THREE.Vector3();
@@ -189,12 +185,7 @@ export class ShipWakeFX {
       slot.strength = 0;
       slot.phase = Math.random() * Math.PI * 2;
       slot.root.visible = false;
-      for (const trailFoam of slot.trailFoam) {
-        trailFoam.material.opacity = 0;
-        trailFoam.count = 0;
-      }
-      slot.trailCutouts.count = 0;
-      slot.trailVariantCounts.fill(0);
+      slot.trailFoamLayer.reset();
       slot.nextTrailStamp = 0;
       slot.hasTrailPoint = false;
       for (const stamp of slot.trailStamps) {
@@ -220,10 +211,6 @@ export class ShipWakeFX {
 
   dispose(): void {
     this.root.removeFromParent();
-    for (const geometry of this.trailFoamGeometries) {
-      geometry.dispose();
-    }
-    this.trailCutoutGeometry.dispose();
     this.underwaterRibbonGeometry.dispose();
     this.bubbleGeometry.dispose();
 
@@ -236,14 +223,7 @@ export class ShipWakeFX {
 
   private disposeSlot(slot: WakeSlot): void {
     slot.root.removeFromParent();
-
-    for (const trailFoam of slot.trailFoam) {
-      trailFoam.removeFromParent();
-      trailFoam.material.dispose();
-    }
-
-    slot.trailCutouts.removeFromParent();
-    slot.trailCutouts.material.dispose();
+    slot.trailFoamLayer.dispose();
     slot.underwaterRibbon.material.dispose();
     slot.bubbles.material.dispose();
   }
@@ -253,31 +233,15 @@ export class ShipWakeFX {
     const root = new THREE.Group();
     const underwaterRoot = new THREE.Group();
 
-    const trailFoam = this.trailFoamGeometries.map((geometry, index) => {
-      const mesh = new THREE.InstancedMesh(
-        geometry,
-        this.createTrailFoamMaterial(),
-        MAX_WAKE_TRAIL_STAMPS,
-      );
-      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-      mesh.count = 0;
-      mesh.frustumCulled = false;
-      mesh.renderOrder = 21 + index * 0.01;
-      this.root.add(mesh);
-      return mesh;
+    const trailFoamLayer = new WaterFoamStampLayer(this.root, {
+      maxStamps: MAX_WAKE_TRAIL_STAMPS,
+      maxCutouts: MAX_WAKE_TRAIL_CUTOUTS,
+      color: SURFACE_WAKE_LOOK.trailColor,
+      opacity: SURFACE_WAKE_LOOK.trailOpacity,
+      blending: THREE.NormalBlending,
+      renderOrder: 21,
+      cutoutRenderOrder: 20.8,
     });
-    const trailVariantCounts = Array.from({ length: TRAIL_FOAM_VARIANTS }, () => 0);
-
-    const trailCutouts = new THREE.InstancedMesh(
-      this.trailCutoutGeometry,
-      this.createStencilCutoutMaterial(),
-      MAX_WAKE_TRAIL_CUTOUTS,
-    );
-    trailCutouts.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    trailCutouts.count = 0;
-    trailCutouts.frustumCulled = false;
-    trailCutouts.renderOrder = 20.8;
-    this.root.add(trailCutouts);
 
     const trailStamps: WakeTrailStamp[] = [];
     for (let index = 0; index < MAX_WAKE_TRAIL_STAMPS; index += 1) {
@@ -289,7 +253,7 @@ export class ShipWakeFX {
         width: 1,
         length: 1,
         phase: 0,
-        variant: index % TRAIL_FOAM_VARIANTS,
+        variant: index % WATER_FOAM_STAMP_VARIANTS,
         active: false,
       });
     }
@@ -334,9 +298,7 @@ export class ShipWakeFX {
       roleConfig,
       root,
       underwaterRoot,
-      trailFoam,
-      trailCutouts,
-      trailVariantCounts,
+      trailFoamLayer,
       trailStamps,
       lastTrailPoint: new THREE.Vector3(),
       underwaterRibbon,
@@ -373,91 +335,6 @@ export class ShipWakeFX {
     return material;
   }
 
-  private createTrailFoamMaterial(): THREE.MeshBasicMaterial {
-    const material = this.createWakeMaterial(
-      SURFACE_WAKE_LOOK.trailColor,
-      SURFACE_WAKE_LOOK.trailOpacity,
-      THREE.NormalBlending,
-      true,
-    );
-    material.stencilWrite = true;
-    material.stencilWriteMask = 0x00;
-    material.stencilFunc = THREE.NotEqualStencilFunc;
-    material.stencilRef = 1;
-    material.stencilFuncMask = 0xff;
-    material.stencilFail = THREE.KeepStencilOp;
-    material.stencilZFail = THREE.KeepStencilOp;
-    material.stencilZPass = THREE.KeepStencilOp;
-    return material;
-  }
-
-  private createStencilCutoutMaterial(): THREE.MeshBasicMaterial {
-    const material = new THREE.MeshBasicMaterial({
-      color: new THREE.Color('#000000'),
-      colorWrite: false,
-      depthTest: false,
-      depthWrite: false,
-      side: THREE.DoubleSide,
-    });
-    material.toneMapped = false;
-    material.stencilWrite = true;
-    material.stencilFunc = THREE.AlwaysStencilFunc;
-    material.stencilRef = 1;
-    material.stencilFuncMask = 0xff;
-    material.stencilWriteMask = 0xff;
-    material.stencilFail = THREE.KeepStencilOp;
-    material.stencilZFail = THREE.KeepStencilOp;
-    material.stencilZPass = THREE.ReplaceStencilOp;
-    return material;
-  }
-
-  private createTrailFoamGeometry(variant: number): THREE.ShapeGeometry {
-    const shape = new THREE.Shape();
-    const basePoints = [
-      [-0.58, -0.2],
-      [-0.48, 0.16],
-      [-0.26, 0.42],
-      [0.05, 0.52],
-      [0.36, 0.42],
-      [0.58, 0.18],
-      [0.62, -0.08],
-      [0.5, -0.34],
-      [0.2, -0.52],
-      [-0.14, -0.48],
-      [-0.44, -0.34],
-    ];
-    const points = basePoints.map(([x, y], index) => {
-      const chip = Math.sin(variant * 2.17 + index * 1.61);
-      const tangent = Math.cos(variant * 1.31 + index * 2.29);
-      return new THREE.Vector2(x + chip * 0.035, y + tangent * 0.028);
-    });
-
-    shape.moveTo(points[0].x, points[0].y);
-    for (let index = 1; index < points.length; index += 1) {
-      shape.lineTo(points[index].x, points[index].y);
-    }
-    shape.closePath();
-
-    const holeCount = 3 + (variant % 3);
-    for (let index = 0; index < holeCount; index += 1) {
-      const seed = variant * 11.73 + index * 5.19;
-      const hole = new THREE.Path();
-      hole.absellipse(
-        THREE.MathUtils.clamp(Math.sin(seed) * 0.34, -0.46, 0.46),
-        THREE.MathUtils.clamp(Math.cos(seed * 1.37) * 0.18, -0.2, 0.2),
-        THREE.MathUtils.lerp(0.055, 0.17, (Math.sin(seed * 0.73) + 1) * 0.5),
-        THREE.MathUtils.lerp(0.035, 0.095, (Math.cos(seed * 0.91) + 1) * 0.5),
-        0,
-        Math.PI * 2,
-        false,
-        seed,
-      );
-      shape.holes.push(hole);
-    }
-
-    return new THREE.ShapeGeometry(shape, 1);
-  }
-
   private createUnderwaterRibbonGeometry(): THREE.ShapeGeometry {
     const shape = new THREE.Shape();
     shape.moveTo(-0.32, 0);
@@ -488,11 +365,7 @@ export class ShipWakeFX {
     }
 
     let visibleCount = 0;
-    let cutoutCount = 0;
-    slot.trailVariantCounts.fill(0);
-    for (const trailFoam of slot.trailFoam) {
-      trailFoam.material.opacity = (trailFoam.material.userData.baseOpacity as number) * aboveWaterAlpha;
-    }
+    slot.trailFoamLayer.begin(aboveWaterAlpha);
 
     for (const stamp of slot.trailStamps) {
       if (!stamp.active) {
@@ -511,129 +384,33 @@ export class ShipWakeFX {
       const foamShrink = 1 - THREE.MathUtils.smoothstep(progress, 0.12, 0.96);
       const foamScale = Math.max(0.001, foamShrink * ripple);
       const surfaceHeight = snapshot.sampleSurfaceHeight(stamp.position.x, stamp.position.z);
-      const variant = THREE.MathUtils.clamp(stamp.variant, 0, slot.trailFoam.length - 1);
-      const variantCount = slot.trailVariantCounts[variant];
 
-      this.bubbleDummy.position.set(
-        stamp.position.x + Math.sin(stamp.phase + stamp.age * 0.55) * 0.025,
-        surfaceHeight + TRAIL_SURFACE_OFFSET + (visibleCount % 7) * 0.001,
-        stamp.position.z + Math.cos(stamp.phase * 1.3 + stamp.age * 0.42) * 0.025,
-      );
-      this.bubbleDummy.rotation.set(-Math.PI / 2, 0, stamp.yaw + Math.sin(stamp.phase + stamp.age * 0.7) * 0.04);
-      this.bubbleDummy.scale.set(
-        Math.max(0.001, stamp.width * foamScale),
-        Math.max(0.001, stamp.length * foamScale),
-        1,
-      );
-      this.bubbleDummy.updateMatrix();
-      slot.trailFoam[variant].setMatrixAt(variantCount, this.bubbleDummy.matrix);
-      slot.trailVariantCounts[variant] = variantCount + 1;
-      cutoutCount = this.writeTrailCutouts(slot, stamp, surfaceHeight, cutoutCount);
+      slot.trailFoamLayer.addStamp({
+        x: stamp.position.x + Math.sin(stamp.phase + stamp.age * 0.55) * 0.025,
+        y: surfaceHeight + TRAIL_SURFACE_OFFSET + (visibleCount % 7) * 0.001,
+        z: stamp.position.z + Math.cos(stamp.phase * 1.3 + stamp.age * 0.42) * 0.025,
+        yaw: stamp.yaw + Math.sin(stamp.phase + stamp.age * 0.7) * 0.04,
+        width: stamp.width * foamScale,
+        length: stamp.length * foamScale,
+        phase: stamp.phase,
+        progress,
+        variant: stamp.variant,
+      });
       visibleCount += 1;
     }
 
-    for (let index = 0; index < slot.trailFoam.length; index += 1) {
-      const trailFoam = slot.trailFoam[index];
-      trailFoam.count = slot.trailVariantCounts[index];
-      trailFoam.instanceMatrix.needsUpdate = trailFoam.count > 0;
-    }
-    slot.trailCutouts.count = cutoutCount;
-    slot.trailCutouts.instanceMatrix.needsUpdate = cutoutCount > 0;
+    slot.trailFoamLayer.end();
   }
 
   private clearTrailLayer(slot: WakeSlot, clearStamps: boolean): void {
     slot.hasTrailPoint = false;
-    slot.trailVariantCounts.fill(0);
-
-    for (const trailFoam of slot.trailFoam) {
-      trailFoam.material.opacity = 0;
-
-      if (trailFoam.count !== 0) {
-        trailFoam.count = 0;
-        trailFoam.instanceMatrix.needsUpdate = true;
-      }
-    }
-
-    if (slot.trailCutouts.count !== 0) {
-      slot.trailCutouts.count = 0;
-      slot.trailCutouts.instanceMatrix.needsUpdate = true;
-    }
+    slot.trailFoamLayer.reset();
 
     if (clearStamps) {
       for (const stamp of slot.trailStamps) {
         stamp.active = false;
       }
     }
-  }
-
-  private writeTrailCutouts(
-    slot: WakeSlot,
-    stamp: WakeTrailStamp,
-    surfaceHeight: number,
-    firstIndex: number,
-  ): number {
-    let cutoutIndex = firstIndex;
-    const cutoutCount = stamp.width > 1.15 ? 3 : 2;
-    const rightX = Math.cos(stamp.yaw);
-    const rightZ = Math.sin(stamp.yaw);
-    const forwardX = -Math.sin(stamp.yaw);
-    const forwardZ = Math.cos(stamp.yaw);
-    const progress = THREE.MathUtils.clamp(stamp.age / Math.max(stamp.lifetime, 0.0001), 0, 1);
-    const coverSeed = stamp.phase * 1.63;
-    const coverStart = THREE.MathUtils.lerp(0.16, 0.32, (Math.sin(coverSeed) + 1) * 0.5);
-    const coverEnd = THREE.MathUtils.lerp(1.26, 1.46, (Math.cos(coverSeed * 1.37) + 1) * 0.5);
-    const coverExpansion = THREE.MathUtils.lerp(coverStart, coverEnd, THREE.MathUtils.smoothstep(progress, 0.08, 0.86));
-    const holeStart = THREE.MathUtils.lerp(0.34, 0.54, (Math.sin(coverSeed * 0.73) + 1) * 0.5);
-    const holeEnd = THREE.MathUtils.lerp(1.36, 1.62, (Math.cos(coverSeed * 0.91) + 1) * 0.5);
-    const holeExpansion = THREE.MathUtils.lerp(holeStart, holeEnd, THREE.MathUtils.smoothstep(progress, 0.02, 0.68));
-    const cutoutDrift = THREE.MathUtils.lerp(0.55, 1.22, THREE.MathUtils.smoothstep(progress, 0.1, 1));
-    const coverAngle = coverSeed * 2.41;
-    const coverRadius = THREE.MathUtils.lerp(
-      0.08,
-      0.56,
-      Math.pow((Math.sin(coverSeed * 2.19) + 1) * 0.5, 0.36),
-    );
-    const coverOffsetX = Math.cos(coverAngle) * stamp.width * coverRadius;
-    const coverOffsetZ = Math.sin(coverAngle) * stamp.length * coverRadius;
-    const coverWander = 1 - THREE.MathUtils.smoothstep(progress, 0.22, 0.84);
-
-    for (let index = 0; index < cutoutCount && cutoutIndex < MAX_WAKE_TRAIL_CUTOUTS; index += 1) {
-      const seed = stamp.phase * 2.31 + index * 3.17;
-      const isCoverCutout = index === 0;
-      const localX = isCoverCutout
-        ? coverOffsetX * coverWander
-        : Math.sin(seed) * stamp.width * THREE.MathUtils.lerp(0.24, 0.42, (Math.cos(seed * 1.11) + 1) * 0.5) * cutoutDrift;
-      const localZ = isCoverCutout
-        ? coverOffsetZ * coverWander
-        : Math.cos(seed * 1.29) * stamp.length * THREE.MathUtils.lerp(0.24, 0.44, (Math.sin(seed * 0.97) + 1) * 0.5) * cutoutDrift;
-      const scaleX = isCoverCutout
-        ? stamp.width * coverExpansion
-        : stamp.width *
-          THREE.MathUtils.lerp(0.14, 0.28, (Math.sin(seed * 0.71) + 1) * 0.5) *
-          holeExpansion;
-      const scaleY = isCoverCutout
-        ? stamp.length * coverExpansion
-        : stamp.length *
-          THREE.MathUtils.lerp(0.14, 0.3, (Math.cos(seed * 0.83) + 1) * 0.5) *
-          holeExpansion;
-
-      this.cutoutDummy.position.set(
-        stamp.position.x + rightX * localX + forwardX * localZ,
-        surfaceHeight + TRAIL_SURFACE_OFFSET + 0.012 + (cutoutIndex % 5) * 0.001,
-        stamp.position.z + rightZ * localX + forwardZ * localZ,
-      );
-      this.cutoutDummy.rotation.set(-Math.PI / 2, 0, stamp.yaw + Math.sin(seed) * 0.45);
-      this.cutoutDummy.scale.set(
-        Math.max(0.001, scaleX),
-        Math.max(0.001, scaleY),
-        1,
-      );
-      this.cutoutDummy.updateMatrix();
-      slot.trailCutouts.setMatrixAt(cutoutIndex, this.cutoutDummy.matrix);
-      cutoutIndex += 1;
-    }
-
-    return cutoutIndex;
   }
 
   private emitTrailBetweenPoints(slot: WakeSlot, speedRatio: number, surfaceOpacity: number): void {
@@ -706,8 +483,8 @@ export class ShipWakeFX {
         THREE.MathUtils.lerp(0.3 + centerWeight * 0.16, 0.74 + centerWeight * 0.18, Math.random());
       stamp.width = stampSize * THREE.MathUtils.lerp(0.9, 1.12, Math.random());
       stamp.length = stampSize * THREE.MathUtils.lerp(0.86, 1.08, Math.random());
-      stamp.phase = slot.phase + index * FOAM_GOLDEN_ANGLE + Math.random() * 0.08;
-      stamp.variant = Math.floor(Math.random() * slot.trailFoam.length);
+      stamp.phase = slot.phase + index * WATER_FOAM_GOLDEN_ANGLE + Math.random() * 0.08;
+      stamp.variant = Math.floor(Math.random() * WATER_FOAM_STAMP_VARIANTS);
     }
   }
 

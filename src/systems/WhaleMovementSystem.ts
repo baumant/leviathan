@@ -57,6 +57,10 @@ export interface WhaleBreachImpactEvent {
   outerRadius: number;
 }
 
+export interface WhaleBreachSurfaceEvent {
+  position: THREE.Vector3;
+}
+
 export interface WhaleTailSlapEvent {
   origin: THREE.Vector3;
   direction: THREE.Vector3;
@@ -70,6 +74,7 @@ export interface WhaleMovementResult {
   strokePulseFired: boolean;
   strokePulseStrength: number;
   breachStarted: boolean;
+  breachSurfaced: WhaleBreachSurfaceEvent | null;
   breachImpact: WhaleBreachImpactEvent | null;
   tailSlap: WhaleTailSlapEvent | null;
 }
@@ -92,6 +97,7 @@ export class WhaleMovementSystem {
       strokePulseFired: false,
       strokePulseStrength: 0,
       breachStarted: false,
+      breachSurfaced: null,
       breachImpact: null,
       tailSlap: null,
     };
@@ -221,6 +227,7 @@ export class WhaleMovementSystem {
       return this.updateTailSlap(whale, deltaSeconds, oceanHeightAt, result);
     }
 
+    const previousSwimDepth = whale.depth;
     whale.depth += whale.verticalSpeed * deltaSeconds;
     whale.depth = THREE.MathUtils.clamp(whale.depth, MAX_DEPTH, MAX_BREACH_HEIGHT);
     whale.submerged = whale.depth < -0.45;
@@ -240,6 +247,10 @@ export class WhaleMovementSystem {
       whale.verticalSpeed >= BREACH_MIN_VERTICAL_SPEED &&
       whale.depth >= AUTO_BREACH_DEPTH_THRESHOLD
     ) {
+      const surfacedDuringSwimStep = previousSwimDepth < 0 && whale.depth >= 0;
+      const breachSurfacePosition = surfacedDuringSwimStep
+        ? new THREE.Vector3(whale.position.x, oceanHeightAt(whale.position.x, whale.position.z), whale.position.z)
+        : null;
       this.startBreach(whale);
       whale.setDirectionalVisualInput(
         0,
@@ -247,7 +258,15 @@ export class WhaleMovementSystem {
         1,
       );
       result.breachStarted = true;
-      return this.updateBreach(whale, deltaSeconds, oceanHeightAt, result);
+      const breachResult = this.updateBreach(whale, deltaSeconds, oceanHeightAt, result);
+
+      if (breachSurfacePosition && !breachResult.breachSurfaced) {
+        breachResult.breachSurfaced = {
+          position: breachSurfacePosition,
+        };
+      }
+
+      return breachResult;
     }
 
     const pitchTarget = -THREE.MathUtils.clamp(whale.verticalSpeed * 0.075, -0.42, 0.38) - whale.strokeVisual * 0.06;
@@ -324,6 +343,13 @@ export class WhaleMovementSystem {
     whale.submerged = whale.depth < -0.45;
     whale.root.updateMatrixWorld();
     whale.syncTravelState();
+
+    if (previousDepth < 0 && whale.depth >= 0 && whale.verticalSpeed > 0) {
+      result.breachSurfaced = {
+        position: new THREE.Vector3(whale.position.x, surfaceHeight, whale.position.z),
+      };
+      whale.strokeVisual = Math.max(whale.strokeVisual, 1);
+    }
 
     if (whale.breachImpactPending && progress > 0.45 && previousDepth > 0 && whale.depth <= 0) {
       whale.breachImpactPending = false;
