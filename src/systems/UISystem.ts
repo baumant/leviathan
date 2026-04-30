@@ -138,7 +138,7 @@ export class UISystem {
     bars.className = 'hud__bars';
 
     bars.append(
-      this.createBarRow('Whale hull', this.whaleFill, this.whaleValue, 'hud__bar-fill--whale', this.whaleHealFeedbackEl),
+      this.createBarRow('Whale health', this.whaleFill, this.whaleValue, 'hud__bar-fill--whale', this.whaleHealFeedbackEl),
       this.createBarRow('Air', this.airFill, this.airValue, 'hud__bar-fill--air'),
     );
 
