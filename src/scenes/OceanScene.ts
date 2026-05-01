@@ -36,7 +36,7 @@ import { TailSlapShockwaveFX } from '../fx/TailSlapShockwaveFX';
 import { TopsideSubsurfaceRevealFX, TopsideSubsurfaceRevealTarget } from '../fx/TopsideSubsurfaceRevealFX';
 import { UnderwaterEnvironmentFX } from '../fx/UnderwaterEnvironmentFX';
 import { createOceanUndersideMaterial, UnderwaterReadabilityFX } from '../fx/UnderwaterReadabilityFX';
-import { VibeJamPortalFX } from '../fx/VibeJamPortalFX';
+import { VibeJamPortalFX, type VibeJamPortalKind } from '../fx/VibeJamPortalFX';
 import { WhaleBloodFX } from '../fx/WhaleBloodFX';
 import { WhaleSurfaceSprayFX } from '../fx/WhaleSurfaceSprayFX';
 import {
@@ -64,6 +64,7 @@ import {
   type HUDLeaderboardEntrySnapshot,
   type HUDLeaderboardSnapshot,
   type HUDLeaderboardStatus,
+  type HUDPortalPromptSnapshot,
   type HUDRunSummarySnapshot,
   type HUDCrewPointerSnapshot,
   type HUDShipBarSnapshot,
@@ -95,8 +96,13 @@ const SEABED_DEPTH_MULTIPLIER = 2;
 const SKY_RADIUS = 420;
 const MOON_DISTANCE = 315;
 const VIBE_PORTAL_TRIGGER_RADIUS = 8.5;
+const VIBE_PORTAL_WARNING_RADIUS = 44;
+const VIBE_PORTAL_PROMPT_SAFE_MARGIN_X = 104;
+const VIBE_PORTAL_PROMPT_SAFE_MARGIN_TOP = 84;
+const VIBE_PORTAL_PROMPT_SAFE_MARGIN_BOTTOM = 196;
 const VIBE_PORTAL_EXIT_POSITION = new THREE.Vector3(0, 0, 0);
-const VIBE_PORTAL_RETURN_POSITION = new THREE.Vector3(0, 0, -68);
+const VIBE_PORTAL_RETURN_POSITION = new THREE.Vector3(ARENA_RADIUS - 12, 0, 0);
+const VIBE_PORTAL_RETURN_SPAWN_POSITION = new THREE.Vector3(0, 0, -68);
 const FOG_BANK_INNER_RADIUS = ARENA_RADIUS * 1.32;
 const FOG_BANK_MID_RADIUS = ARENA_RADIUS * 1.55;
 const FOG_BANK_OUTER_RADIUS = ARENA_RADIUS * 1.76;
@@ -381,6 +387,8 @@ export class OceanScene {
   private readonly tempHealthBarAnchor = new THREE.Vector3();
   private readonly tempHealthBarProjection = new THREE.Vector3();
   private readonly tempCameraSpacePoint = new THREE.Vector3();
+  private readonly tempPortalPromptAnchor = new THREE.Vector3();
+  private readonly tempPortalPromptProjection = new THREE.Vector3();
   private readonly tempAudioCameraForward = new THREE.Vector3();
   private readonly tempCollisionHalfExtentsA = new THREE.Vector2();
   private readonly tempCollisionHalfExtentsB = new THREE.Vector2();
@@ -1061,10 +1069,10 @@ export class OceanScene {
     this.sampleOceanHeight(x, z) - this.sampleOceanFloorHeight(x, z);
 
   private placeWhaleAtVibeJamReturnPortal(): void {
-    const surfaceHeight = this.sampleOceanHeight(VIBE_PORTAL_RETURN_POSITION.x, VIBE_PORTAL_RETURN_POSITION.z);
-    const headingToCenter = createPortalHeading(VIBE_PORTAL_RETURN_POSITION);
+    const surfaceHeight = this.sampleOceanHeight(VIBE_PORTAL_RETURN_SPAWN_POSITION.x, VIBE_PORTAL_RETURN_SPAWN_POSITION.z);
+    const headingToCenter = createPortalHeading(VIBE_PORTAL_RETURN_SPAWN_POSITION);
 
-    this.whale.position.set(VIBE_PORTAL_RETURN_POSITION.x, surfaceHeight - 0.18, VIBE_PORTAL_RETURN_POSITION.z);
+    this.whale.position.set(VIBE_PORTAL_RETURN_SPAWN_POSITION.x, surfaceHeight - 0.18, VIBE_PORTAL_RETURN_SPAWN_POSITION.z);
     this.whale.depth = -0.18;
     this.whale.submerged = false;
     this.whale.yaw = headingToCenter;
@@ -3851,6 +3859,108 @@ export class OceanScene {
     };
   }
 
+  private collectPortalPrompt(): HUDPortalPromptSnapshot | undefined {
+    if (this.phase !== 'playing') {
+      return undefined;
+    }
+
+    const portals = this.vibeJamReturnPortal
+      ? [this.vibeJamExitPortal, this.vibeJamReturnPortal]
+      : [this.vibeJamExitPortal];
+    let nearestPortal: VibeJamPortalFX | null = null;
+    let nearestPortalKind: VibeJamPortalKind | null = null;
+    let nearestDistance = Number.POSITIVE_INFINITY;
+
+    for (const portal of portals) {
+      const distance = this.getWhaleDistanceToPortal(portal);
+
+      if (distance < nearestDistance) {
+        nearestPortal = portal;
+        nearestPortalKind = portal === this.vibeJamExitPortal ? 'exit' : 'return';
+        nearestDistance = distance;
+      }
+    }
+
+    if (!nearestPortal || !nearestPortalKind || nearestDistance > VIBE_PORTAL_WARNING_RADIUS) {
+      return undefined;
+    }
+
+    this.tempPortalPromptAnchor.copy(nearestPortal.root.position);
+    this.tempPortalPromptAnchor.y += nearestPortal === this.vibeJamExitPortal ? 4.8 : 8.6;
+    this.tempCameraSpacePoint.copy(this.tempPortalPromptAnchor).applyMatrix4(this.camera.matrixWorldInverse);
+    this.tempPortalPromptProjection.copy(this.tempPortalPromptAnchor).project(this.camera);
+
+    const centerX = this.viewportWidth * 0.5;
+    const centerY = this.viewportHeight * 0.5;
+    const safeLeft = VIBE_PORTAL_PROMPT_SAFE_MARGIN_X;
+    const safeRight = Math.max(safeLeft + 1, this.viewportWidth - VIBE_PORTAL_PROMPT_SAFE_MARGIN_X);
+    const safeTop = VIBE_PORTAL_PROMPT_SAFE_MARGIN_TOP;
+    const safeBottom = Math.max(safeTop + 1, this.viewportHeight - VIBE_PORTAL_PROMPT_SAFE_MARGIN_BOTTOM);
+    const projectedX = (this.tempPortalPromptProjection.x * 0.5 + 0.5) * this.viewportWidth;
+    const projectedY = (-this.tempPortalPromptProjection.y * 0.5 + 0.5) * this.viewportHeight;
+    const finiteProjection = Number.isFinite(projectedX) && Number.isFinite(projectedY);
+    const behindCamera = this.tempCameraSpacePoint.z >= -this.camera.near;
+    let screenX = projectedX;
+    let screenY = projectedY;
+
+    if (
+      behindCamera ||
+      !finiteProjection ||
+      this.tempPortalPromptProjection.z < -1 ||
+      this.tempPortalPromptProjection.z > 1 ||
+      projectedX < safeLeft ||
+      projectedX > safeRight ||
+      projectedY < safeTop ||
+      projectedY > safeBottom
+    ) {
+      let directionX = finiteProjection ? projectedX - centerX : this.tempCameraSpacePoint.x;
+      let directionY = finiteProjection ? projectedY - centerY : -this.tempCameraSpacePoint.y;
+
+      if (behindCamera) {
+        directionX *= -1;
+        directionY *= -1;
+      }
+
+      if (!Number.isFinite(directionX) || !Number.isFinite(directionY) || Math.hypot(directionX, directionY) <= 0.001) {
+        directionX = 0;
+        directionY = -1;
+      }
+
+      const scaleX =
+        directionX > 0
+          ? (safeRight - centerX) / directionX
+          : directionX < 0
+            ? (safeLeft - centerX) / directionX
+            : Number.POSITIVE_INFINITY;
+      const scaleY =
+        directionY > 0
+          ? (safeBottom - centerY) / directionY
+          : directionY < 0
+            ? (safeTop - centerY) / directionY
+            : Number.POSITIVE_INFINITY;
+      const edgeScale = Math.max(0, Math.min(scaleX, scaleY));
+
+      screenX = centerX + directionX * edgeScale;
+      screenY = centerY + directionY * edgeScale;
+    }
+
+    const alpha =
+      1 -
+      THREE.MathUtils.smoothstep(
+        nearestDistance,
+        VIBE_PORTAL_TRIGGER_RADIUS + 6,
+        VIBE_PORTAL_WARNING_RADIUS,
+      );
+
+    return {
+      alpha,
+      copy: nearestPortalKind === 'exit' ? 'Takes you to a new game.' : 'Returns you to your previous game.',
+      screenX: THREE.MathUtils.clamp(screenX, safeLeft, safeRight),
+      screenY: THREE.MathUtils.clamp(screenY, safeTop, safeBottom),
+      title: nearestPortalKind === 'exit' ? 'EXIT PORTAL' : 'ENTRY PORTAL',
+    };
+  }
+
   private updateHud(): void {
     const livingShips = this.ships.filter((ship) => !ship.sinking);
     const rowboatsRemaining = livingShips.filter((ship) => ship.role === 'rowboat').length;
@@ -3965,10 +4075,12 @@ export class OceanScene {
     const openingFlashAlpha = this.phase === 'playing' ? this.getGoalFlashAlpha() : 0;
     const showCrewEatFlash = crewEatFlashAlpha > 0;
     const crewPointer = this.collectCrewPointer(crewEatFlashAlpha);
+    const portalPrompt = this.collectPortalPrompt();
 
     this.ui.update({
       capitalShipBars,
       crewPointer,
+      portalPrompt,
       objective,
       whaleHealth: this.whale.health / this.whale.maxHealth,
       whaleAir: airPercent,

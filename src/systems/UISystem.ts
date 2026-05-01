@@ -28,6 +28,14 @@ export interface HUDCrewPointerSnapshot {
   screenY: number;
 }
 
+export interface HUDPortalPromptSnapshot {
+  alpha: number;
+  copy: string;
+  screenX: number;
+  screenY: number;
+  title: string;
+}
+
 export type HUDLeaderboardStatus = 'unavailable' | 'loading' | 'needs_name' | 'submitting' | 'ready' | 'error';
 
 export interface HUDRunSummarySnapshot {
@@ -57,6 +65,7 @@ export interface HUDLeaderboardSnapshot {
 export interface HUDSnapshot {
   capitalShipBars: HUDShipBarSnapshot[];
   crewPointer?: HUDCrewPointerSnapshot;
+  portalPrompt?: HUDPortalPromptSnapshot;
   objective: string;
   whaleHealth: number;
   whaleAir: number;
@@ -112,6 +121,9 @@ export class UISystem {
   private readonly shipsDestroyedValueEl = document.createElement('div');
   private readonly shipBarsLayer = document.createElement('div');
   private readonly crewPointerEl = document.createElement('div');
+  private readonly portalPromptEl = document.createElement('section');
+  private readonly portalPromptTitleEl = document.createElement('p');
+  private readonly portalPromptCopyEl = document.createElement('p');
   private readonly overlayCard = document.createElement('section');
   private readonly overlayTitle = document.createElement('h2');
   private readonly overlayCopy = document.createElement('p');
@@ -217,6 +229,13 @@ export class UISystem {
     this.crewPointerEl.hidden = true;
     this.crewPointerEl.setAttribute('aria-hidden', 'true');
 
+    this.portalPromptEl.className = 'hud__portal-prompt';
+    this.portalPromptEl.hidden = true;
+    this.portalPromptEl.setAttribute('aria-live', 'polite');
+    this.portalPromptTitleEl.className = 'hud__portal-prompt-title';
+    this.portalPromptCopyEl.className = 'hud__portal-prompt-copy';
+    this.portalPromptEl.append(this.portalPromptTitleEl, this.portalPromptCopyEl);
+
     this.goalFlashEl.className = 'hud__goal-flash';
     this.goalFlashTitleEl.className = 'hud__goal-flash-title';
     this.goalFlashCopyEl.className = 'hud__goal-flash-copy';
@@ -302,6 +321,7 @@ export class UISystem {
       this.bottomRow,
       this.shipBarsLayer,
       this.crewPointerEl,
+      this.portalPromptEl,
       this.goalFlashEl,
       this.controlsStrip,
       this.overlayCard,
@@ -348,6 +368,7 @@ export class UISystem {
     this.updateWhaleHealFeedback(snapshot.whaleHealFeedbackText, snapshot.whaleHealFeedbackAlpha ?? 0);
     this.syncCapitalShipBars(snapshot.capitalShipBars);
     this.updateCrewPointer(snapshot.crewPointer);
+    this.updatePortalPrompt(snapshot.portalPrompt);
     this.updateGoalFlash(snapshot.goalFlashTitle, snapshot.goalFlashText, snapshot.goalFlashAlpha ?? 0);
 
     this.scoreValueEl.textContent = `${snapshot.score}`;
@@ -631,6 +652,24 @@ export class UISystem {
     this.crewPointerEl.style.top = `${pointer.screenY}px`;
     this.crewPointerEl.style.opacity = `${alpha}`;
     this.crewPointerEl.style.setProperty('--hud-crew-pointer-angle', `${pointer.angleRadians}rad`);
+  }
+
+  private updatePortalPrompt(prompt: HUDPortalPromptSnapshot | undefined): void {
+    const alpha = THREE.MathUtils.clamp(prompt?.alpha ?? 0, 0, 1);
+    const visible = Boolean(prompt) && alpha > 0.001;
+
+    this.portalPromptEl.hidden = !visible;
+
+    if (!prompt || !visible) {
+      return;
+    }
+
+    this.portalPromptTitleEl.textContent = prompt.title;
+    this.portalPromptCopyEl.textContent = prompt.copy;
+    this.portalPromptEl.style.left = `${prompt.screenX}px`;
+    this.portalPromptEl.style.top = `${prompt.screenY}px`;
+    this.portalPromptEl.style.opacity = `${alpha}`;
+    this.portalPromptEl.style.transform = `translate(-50%, ${THREE.MathUtils.lerp(8, 0, alpha).toFixed(1)}px)`;
   }
 
   private syncCapitalShipBars(shipBars: readonly HUDShipBarSnapshot[]): void {
